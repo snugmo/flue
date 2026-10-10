@@ -139,7 +139,6 @@ func newTestFilter(t *testing.T, allow map[string]struct{}) *agentFilter {
 	return &agentFilter{
 		upstream: agent.NewClient(upstreamConn),
 		allow:    allow,
-		verbose:  true,
 	}
 }
 

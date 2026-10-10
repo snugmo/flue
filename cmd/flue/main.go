@@ -48,7 +48,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -61,29 +61,61 @@ import (
 )
 
 var (
-	sockArg   = flag.String("sock", "", "Agent socket path to use (default $SSH_AUTH_SOCK)")
+	sockArg  = flag.String("sock", "", "Agent socket path to use (default $SSH_AUTH_SOCK)")
+	logLevel = flag.String("log-level", "info", "log level: debug, info, warn, or error")
 	allowKeys = newAllowKeyFlag()
-	verbose   = flag.Bool("verbose", false, "log every agent request to stderr")
 )
+
+// log is the package-level slog logger. The default is rebuilt in main
+// from the -log-level flag; the declaration-time default keeps tests (which
+// never call main) working.
+var log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 func init() {
 	flag.Var(allowKeys, "allow-key", "SHA256 fingerprint to allow (repeatable)")
 }
 
+// parseLevel maps a -log-level flag value to a slog.Level.
+func parseLevel(s string) (slog.Level, error) {
+	switch strings.ToLower(s) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info":
+		return slog.LevelInfo, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	}
+	return 0, fmt.Errorf("unknown log level %q (want debug, info, warn, or error)", s)
+}
+
+// fatalf logs at error level and exits 1, mirroring log.Fatalf.
+func fatalf(format string, args ...any) {
+	log.Error(format, args...)
+	os.Exit(1)
+}
+
 func main() {
 	flag.Parse()
+
+	if lvl, err := parseLevel(*logLevel); err != nil {
+		fatalf("flue: %v", err)
+	} else {
+		log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
+	}
 
 	sockPath := *sockArg
 	if sockPath == "" {
 		sockPath = os.Getenv("SSH_AUTH_SOCK")
 		if sockPath == "" {
-			log.Fatalf("no agent socket: set -sock or SSH_AUTH_SOCK")
+			fatalf("flue: no agent socket: set -sock or SSH_AUTH_SOCK")
 		}
 	}
 
 	args := flag.Args()
 	if len(args) == 0 {
-		log.Fatalf("usage: flue [-sock path] [-allow-key fp]... -- command [args...]")
+		fatalf("flue: usage: flue [-sock path] [-allow-key fp]... -- command [args...]")
 	}
 
 	// Resolve the command to an absolute path.
@@ -99,7 +131,7 @@ func main() {
 	// The container receives end B (fd 3); the host keeps end A.
 	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
-		log.Fatalf("socketpair: %v", err)
+		fatalf("flue: socketpair: %v", err)
 	}
 	a, b := pair[0], pair[1]
 	// Pass end B as an extra file in the child; it will be fd 3
@@ -115,29 +147,27 @@ func main() {
 	cmd.Env = os.Environ()
 
 	if err := cmd.Start(); err != nil {
-		log.Fatalf("start %s: %v", cmdPath, err)
+		fatalf("flue: start %s: %v", cmdPath, err)
 	}
 
 	// Close the host copy of end B; the container now owns it.
 	if err := unix.Close(b); err != nil {
-		log.Printf("flue: close control end B: %v", err)
+		log.Debug("flue: close control end B", "err", err)
 	}
 
 	// The host's control socket is end A.
 	ctrl, err := net.FileConn(os.NewFile(uintptr(a), "flue-control-host"))
 	if err != nil {
-		log.Fatalf("control fd: %v", err)
+		fatalf("flue: control fd: %v", err)
 	}
 
 	allow := allowKeys.toSet()
 	filter := &agentFilter{
 		upstream: nil, // set per-client in handleClient
 		allow:    allow,
-		verbose:  *verbose,
 	}
 
-	log.Printf("flue: agent %s, filter: %s, exec: %v",
-		sockPath, allowKeys.describe(), args)
+	log.Info("flue: agent", "sock", sockPath, "filter", allowKeys.describe(), "exec", args)
 
 	var wg sync.WaitGroup
 	listener, acceptDone := receiveListener(ctrl, filter, &wg)
@@ -165,7 +195,7 @@ func main() {
 		if ee, ok := err.(*exec.ExitError); ok {
 			code = ee.ExitCode()
 		}
-		log.Printf("flue: command exited: %v", err)
+		log.Warn("flue: command exited", "err", err)
 		os.Exit(code)
 	}
 }
@@ -209,7 +239,6 @@ func (a *allowKeyFlag) describe() string {
 type agentFilter struct {
 	upstream agent.ExtendedAgent
 	allow    map[string]struct{} // empty = allow all
-	verbose  bool
 }
 
 // isAllowed checks whether a key's fingerprint is in the allowlist.
@@ -221,15 +250,10 @@ func (f *agentFilter) isAllowed(fp string) bool {
 	return ok
 }
 
+// logf traces one agent operation at debug level (enable with
+// -log-level=debug; the former -verbose flag).
 func (f *agentFilter) logf(op, fp string, allowed bool) {
-	if !f.verbose {
-		return
-	}
-	status := "allowed"
-	if !allowed {
-		status = "DENIED"
-	}
-	log.Printf("flue: %s %s [%s]", op, fp, status)
+	log.Debug("flue: agent op", "op", op, "fp", fp, "allowed", allowed)
 }
 
 // keyFingerprint computes the SHA256: fingerprint of an ssh.PublicKey.
@@ -341,7 +365,7 @@ func (f *agentFilter) Extension(extensionType string, req []byte) (resp []byte, 
 // benign "use of closed network connection".
 func closeQuiet(c net.Conn) {
 	if err := c.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-		log.Printf("flue: close: %v", err)
+		log.Debug("flue: close", "err", err)
 	}
 }
 
@@ -349,7 +373,7 @@ func closeQuiet(c net.Conn) {
 // already closed.
 func closeFD(fd int) {
 	if err := unix.Close(fd); err != nil && !errors.Is(err, unix.EBADF) {
-		log.Printf("flue: close fd %d: %v", fd, err)
+		log.Debug("flue: close fd", "fd", fd, "err", err)
 	}
 }
 
@@ -357,7 +381,7 @@ func closeFD(fd int) {
 // closed.
 func closeFile(f *os.File) {
 	if err := f.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
-		log.Printf("flue: close file: %v", err)
+		log.Debug("flue: close file", "err", err)
 	}
 }
 
@@ -377,19 +401,19 @@ func receiveListener(ctrl net.Conn, filter *agentFilter, wg *sync.WaitGroup) (ne
 	_ = n
 	if err != nil {
 		if err == io.EOF || err == unix.ECONNRESET {
-			log.Printf("flue: control channel closed before listener received")
+			log.Warn("flue: control channel closed before listener received")
 		} else {
-			log.Printf("flue: control read: %v", err)
+			log.Warn("flue: control read", "err", err)
 		}
 		return nil, closedChannel()
 	}
 	if flags&unix.MSG_CTRUNC != 0 {
-		log.Printf("flue: control message truncated; discarding")
+		log.Warn("flue: control message truncated; discarding")
 		return nil, closedChannel()
 	}
 	cmsgs, err := unix.ParseSocketControlMessage(oob[:oobn])
 	if err != nil {
-		log.Printf("flue: parse cmsg: %v", err)
+		log.Warn("flue: parse cmsg", "err", err)
 		return nil, closedChannel()
 	}
 	// Expect exactly one listener fd; use the first, close any extras.
@@ -397,7 +421,7 @@ func receiveListener(ctrl net.Conn, filter *agentFilter, wg *sync.WaitGroup) (ne
 	for _, cmsg := range cmsgs {
 		rights, rerr := unix.ParseUnixRights(&cmsg)
 		if rerr != nil {
-			log.Printf("flue: parse rights: %v", rerr)
+			log.Warn("flue: parse rights", "err", rerr)
 			continue
 		}
 		for _, r := range rights {
@@ -409,18 +433,18 @@ func receiveListener(ctrl net.Conn, filter *agentFilter, wg *sync.WaitGroup) (ne
 		}
 	}
 	if listenFd < 0 {
-		log.Printf("flue: no listener fd received")
+		log.Warn("flue: no listener fd received")
 		return nil, closedChannel()
 	}
 
 	// Wrap the received listener fd in a *net.UnixListener so Accept works.
 	listener, err := net.FileListener(os.NewFile(uintptr(listenFd), "flue-listener"))
 	if err != nil {
-		log.Printf("flue: listener fd: %v", err)
+		log.Warn("flue: listener fd", "err", err)
 		closeFD(listenFd)
 		return nil, closedChannel()
 	}
-	log.Printf("flue: accepting on handed-over listener")
+	log.Debug("flue: accepting on handed-over listener")
 
 	// Accept client connections in a background loop; it ends when the
 	// listener is closed by the caller.
@@ -430,7 +454,7 @@ func receiveListener(ctrl net.Conn, filter *agentFilter, wg *sync.WaitGroup) (ne
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
-				log.Printf("flue: accept: %v", err)
+				log.Debug("flue: accept", "err", err)
 				return
 			}
 			wg.Add(1)
@@ -464,7 +488,7 @@ func handleClient(client net.Conn, filter *agentFilter) {
 	// Dial a fresh upstream agent connection for this client.
 	upstream, err := dialAgent()
 	if err != nil {
-		log.Printf("flue: dial upstream: %v", err)
+		log.Warn("flue: dial upstream", "err", err)
 		return
 	}
 	defer closeQuiet(upstream)
@@ -473,7 +497,6 @@ func handleClient(client net.Conn, filter *agentFilter) {
 	clientFilter := &agentFilter{
 		upstream: agent.NewClient(upstream),
 		allow:    filter.allow,
-		verbose:  filter.verbose,
 	}
 
 	// ServeAgent returns when the client connection ends; I/O errors there
