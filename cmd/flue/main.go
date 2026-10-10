@@ -18,6 +18,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -36,6 +37,8 @@ func main() {
 
 	fdNum, err := strconv.Atoi(*fdArg)
 	if err != nil || fdNum < 3 {
+		// FDs 0-2 are stdin/stdout/stderr and cannot be the preserved
+		// agent socket, so we require a descriptor at or above 3.
 		log.Fatalf("invalid -fd %q: must be an integer >= 3", *fdArg)
 	}
 
@@ -117,9 +120,9 @@ func handle(client net.Conn, fdNum int, wg *sync.WaitGroup) {
 				}
 			}
 			if err != nil {
-				// unix.Read returns 0, io.EOF on peer close; that's the
-				// normal end of the agent connection.
-				if err != unix.Errno(0) {
+				// A 0-byte read with a nil errno is the normal EOF from
+				// the agent closing; only log if there was a real error.
+				if err != nil && err != io.EOF {
 					log.Printf("agent->client read: %v", err)
 				}
 				break
