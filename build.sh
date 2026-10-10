@@ -77,8 +77,8 @@ buildah build \
     "${SCRIPT_DIR}"
 
 # Also build the host-side helper binary for local use.
-printf '>> Building fluehost (host-side helper) ...\n'
-CGO_ENABLED=0 go build -ldflags="-s -w" -o "${PROJECT_ROOT}/fluehost" "${PROJECT_ROOT}/cmd/fluehost"
+printf '>> Building flue (host-side helper) ...\n'
+CGO_ENABLED=0 go build -ldflags="-s -w" -o "${PROJECT_ROOT}/flue" "${PROJECT_ROOT}/cmd/flue"
 
 printf '>> Build complete: %s\n' "${FULL_IMAGE}"
 

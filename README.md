@@ -5,17 +5,18 @@ key filtering.
 
 Two small Go binaries:
 
-- **`flue`** (container-side) listens on a Unix socket inside the container
-  and forwards each client connection's file descriptor to the host over a
-  socketpair control channel (SCM_RIGHTS). No protocol parsing here.
-- **`fluehost`** (host-side) creates that socketpair, passes one end into
-  the container via `podman exec --preserve-fds 1`, and relays every
-  forwarded client to the real `$SSH_AUTH_SOCK` using
+- **`flue-broker`** (container-side) listens on a Unix socket inside the
+  container and forwards each client connection's file descriptor to the
+  host over a socketpair control channel (SCM_RIGHTS). No protocol parsing
+  here.
+- **`flue`** (host-side) creates that socketpair, passes one end into the
+  container via `podman exec --preserve-fds 1`, and relays every forwarded
+  client to the real `$SSH_AUTH_SOCK` using
   `golang.org/x/crypto/ssh/agent` with a filtering wrapper.
 
-Built from source at `cmd/flue/` and `cmd/fluehost/` and installed as
-`/usr/local/bin/flue` and `/usr/local/bin/fluehost` (fully static binaries,
-no runtime deps).
+Built from source at `cmd/flue-broker/` and `cmd/flue/` and installed as
+`/usr/local/bin/flue-broker` and `/usr/local/bin/flue` (fully static
+binaries, no runtime deps).
 
 ## Build
 
@@ -40,41 +41,41 @@ no runtime deps).
 1. SSH agent forwarding is active in your session on the host
    (`SSH_AUTH_SOCK` is set, `ssh-add -l` lists keys).
 2. The container is running.
-3. The container's image includes the `flue` binary (use this
+3. The container's image includes the `flue-broker` binary (use this
    image, or build and install the binary into your own image).
 
-### With fluehost (recommended)
+### With flue (recommended)
 
-`fluehost` is the host-side half. It creates a socketpair, passes one end
-into the container as fd 3, and proxies every client connection to the real
+`flue` is the host-side half. It creates a socketpair, passes one end into
+the container as fd 3, and proxies every client connection to the real
 agent with filtering:
 
 ```sh
-fluehost -- podman exec \
+flue -- podman exec \
   --preserve-fds 1 \
   -e SSH_AUTH_SOCK=/tmp/flue.sock \
-  <container> flue
+  <container> flue-broker
 ```
 
 or build it once and keep it on your `PATH`:
 
 ```sh
-go build -o ~/bin/fluehost ./cmd/fluehost
-fluehost -- podman exec --preserve-fds 1 \
-  -e SSH_AUTH_SOCK=/tmp/flue.sock <container> flue
+go build -o ~/bin/flue ./cmd/flue
+flue -- podman exec --preserve-fds 1 \
+  -e SSH_AUTH_SOCK=/tmp/flue.sock <container> flue-broker
 ```
 
-`fluehost` dials `$SSH_AUTH_SOCK` (or `-sock`) once per client connection,
-so repeated `ssh` / `ssh-add` / `git` invocations all work.
+`flue` dials `$SSH_AUTH_SOCK` (or `-sock`) once per client connection, so
+repeated `ssh` / `ssh-add` / `git` invocations all work.
 
 ### In a shell (background the proxy, get a shell)
 
 ```sh
-fluehost -- podman exec \
+flue -- podman exec \
   --preserve-fds 1 \
   -e SSH_AUTH_SOCK=/tmp/flue.sock \
   <container> sh -c '
-    flue &
+    flue-broker &
     exec bash
   '
 ```
@@ -89,7 +90,7 @@ $ git clone git@github.com:your/repo.git   # works
 
 ### Flags
 
-**flue** (container-side):
+**flue-broker** (container-side):
 
 | Flag      | Default          | Description                                    |
 | --------- | ---------------- | ---------------------------------------------- |
@@ -97,7 +98,7 @@ $ git clone git@github.com:your/repo.git   # works
 | `-fd`     | `3`              | File descriptor number of the preserved control socket |
 | `-verbose`| `false`          | Log each forwarded client connection           |
 
-**fluehost** (host-side):
+**flue** (host-side):
 
 | Flag         | Default            | Description                                          |
 | ------------ | ------------------ | ---------------------------------------------------- |
@@ -107,20 +108,20 @@ $ git clone git@github.com:your/repo.git   # works
 
 ## How it works
 
-1. `fluehost` creates a `SOCK_SEQPACKET` Unix socketpair.
+1. `flue` creates a `SOCK_SEQPACKET` Unix socketpair.
 2. It passes one end into the container as fd 3 via `podman exec
    --preserve-fds 1`, closes its copy, and keeps the other end as the
    control channel.
-3. Inside the container, `flue` listens on `/tmp/flue.sock`. For each
-   client connection (ssh, ssh-add, git), it extracts the fd, sends it to
-   the host over the control socket (SCM_RIGHTS), and closes the local
-   copy.
-4. On the host, `fluehost` receives the fd, dials a fresh connection to
+3. Inside the container, `flue-broker` listens on `/tmp/flue.sock`. For
+   each client connection (ssh, ssh-add, git), it extracts the fd, sends
+   it to the host over the control socket (SCM_RIGHTS), and closes the
+   local copy.
+4. On the host, `flue` receives the fd, dials a fresh connection to
    `$SSH_AUTH_SOCK`, and runs `agent.ServeAgent(filter, clientConn)` —
    the filter wraps the upstream agent client and enforces the key
    allowlist.
-5. When the podman exec exits, the control socket closes, `flue` exits,
-   and the listening socket is removed.
+5. When the podman exec exits, the control socket closes, `flue-broker`
+   exits, and the listening socket is removed.
 
 ### Filter policy
 
@@ -151,37 +152,37 @@ Run these against a real container to verify the full path works:
 
 ```sh
 # 1. ssh-add -l run twice in a row succeeds both times
-fluehost -- podman exec --preserve-fds 1 \
+flue -- podman exec --preserve-fds 1 \
   -e SSH_AUTH_SOCK=/tmp/flue.sock <container> sh -c '
-    flue & sleep 0.5
+    flue-broker & sleep 0.5
     ssh-add -l && ssh-add -l
   '
 
 # 2. A loop of ~20 concurrent ssh-add -l calls all succeed
-fluehost -- podman exec --preserve-fds 1 \
+flue -- podman exec --preserve-fds 1 \
   -e SSH_AUTH_SOCK=/tmp/flue.sock <container> sh -c '
-    flue & sleep 0.5
+    flue-broker & sleep 0.5
     for i in $(seq 1 20); do ssh-add -l & done; wait
   '
 
 # 3. ssh-add -D is refused
-fluehost -- podman exec --preserve-fds 1 \
+flue -- podman exec --preserve-fds 1 \
   -e SSH_AUTH_SOCK=/tmp/flue.sock <container> sh -c '
-    flue & sleep 0.5
+    flue-broker & sleep 0.5
     ssh-add -D 2>&1  # expect an error
   '
 
 # 4. ssh -T git@<forge> or git ls-remote over ssh works
-fluehost -- podman exec --preserve-fds 1 \
+flue -- podman exec --preserve-fds 1 \
   -e SSH_AUTH_SOCK=/tmp/flue.sock <container> sh -c '
-    flue & sleep 0.5
+    flue-broker & sleep 0.5
     git ls-remote git@github.com:your/repo.git
   '
 
 # 5. With -allow-key, only that key shows in ssh-add -l
-fluehost -allow-key SHA256:... -- podman exec --preserve-fds 1 \
+flue -allow-key SHA256:... -- podman exec --preserve-fds 1 \
   -e SSH_AUTH_SOCK=/tmp/flue.sock <container> sh -c '
-    flue & sleep 0.5
+    flue-broker & sleep 0.5
     ssh-add -l  # only the allowed key is listed
   '
 ```

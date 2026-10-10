@@ -10,7 +10,7 @@
 
 # Built binary
 /flue
-/fluehost
+/flue-broker
 
 # Test binary, built with `go test -c`
 *.test

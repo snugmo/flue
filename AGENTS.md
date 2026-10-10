@@ -2,15 +2,15 @@
 
 ## Project Overview
 
-**flue** — a narrow channel from your host's SSH agent into a container. Two Go binaries: `flue` (container-side) listens on a Unix socket inside the container and forwards each client connection to the host over a control socketpair (fd 3, passed via `podman exec --preserve-fds`); `fluehost` (host-side) creates that socketpair, execs the container command with one end preserved, and relays every forwarded client connection to the real host agent (`$SSH_AUTH_SOCK`) using `golang.org/x/crypto/ssh/agent` with a key-allowlist filter. From the [Snugmo](https://github.com/snugmo) GitHub org.
+**flue** — a narrow channel from your host's SSH agent into a container. Two Go binaries: `flue-broker` (container-side) listens on a Unix socket inside the container and forwards each client connection to the host over a control socketpair (fd 3, passed via `podman exec --preserve-fds`); `flue` (host-side) creates that socketpair, execs the container command with one end preserved, and relays every forwarded client connection to the real host agent (`$SSH_AUTH_SOCK`) using `golang.org/x/crypto/ssh/agent` with a key-allowlist filter. From the [Snugmo](https://github.com/snugmo) GitHub org.
 
 ## Structure
 
 ```
 cmd/
-  flue/
+  flue-broker/
     main.go            # Container-side: Unix socket listener -> SCM_RIGHTS fd pass to host
-  fluehost/
+  flue/
     main.go            # Host-side: socketpair control channel, agent proxy with filtering
     filter_test.go     # Tests for the agent filter (list, sign, deny mutating ops)
 go.mod                 # Module github.com/snugmo/flue; runtime deps: golang.org/x/sys + x/crypto; test deps: goleak + go-cmp
@@ -25,11 +25,11 @@ LICENSE                # AGPL-3.0
 
 | Task                  | Command                          |
 | --------------------- | -------------------------------- |
-| Build the binaries    | `go build -o flue ./cmd/flue && go build -o fluehost ./cmd/fluehost` |
+| Build the binaries    | `go build -o flue-broker ./cmd/flue-broker && go build -o flue ./cmd/flue` |
 | Build the image       | `./build.sh`                     |
 | Build + push          | `./build.sh push`                |
 | Build + push (custom) | `./build.sh push <registry>`     |
-| Forward agent         | `fluehost -- podman exec -e SSH_AUTH_SOCK=/tmp/flue.sock --preserve-fds 1 <container> flue` |
+| Forward agent         | `flue -- podman exec -e SSH_AUTH_SOCK=/tmp/flue.sock --preserve-fds 1 <container> flue-broker` |
 | Run tests             | `go test ./...`                  |
 
 Build overrides: `DEV_VERSION=`, `DEV_IMAGE_NAME=`, `DEV_REGISTRY=`, `DEV_BASE_IMAGE=` (see `build.sh`).
@@ -42,13 +42,13 @@ Build overrides: `DEV_VERSION=`, `DEV_IMAGE_NAME=`, `DEV_REGISTRY=`, `DEV_BASE_I
 - Prefix every commit subject with a single emoji representing the change, followed by the conventional type prefix (`feat:`, `chore:`, `docs:`, `fix:`, …); keep subjects under 72 characters. Examples: `✨ feat: add flue`, `📦 chore: update golang.org/x/sys`, `✏️ docs: …`, `🐛 fix: …`.
 - End commit messages with an `Assisted-by: <agent>:<model>` trailer, where `<agent>` is the coding agent doing the committing (no "generated with" line).
 
-### Go Source (`cmd/flue/main.go`)
+### Go Source (`cmd/flue-broker/main.go`)
 
 - **Static binary**: always build with `CGO_ENABLED=0` and `-ldflags="-s -w"` so the binary runs in any Linux container without glibc or shared libraries.
 - **SCM_RIGHTS fd pass**: the container-side proxy receives each client connection and sends its fd to the host over the control socketpair using `unix.UnixRights` + `WriteMsgUnix`. No protocol parsing happens here.
 - **No external dependencies** beyond `golang.org/x/sys` (standard-library-adjacent, needed only for the raw socket syscalls).
 
-### Go Source (`cmd/fluehost/main.go`)
+### Go Source (`cmd/flue/main.go`)
 
 - **Socketpair control channel**: `SOCK_SEQPACKET` socketpair; one end is passed to the container as fd 3 via `exec.Command.ExtraFiles`, the other end stays on the host.
 - **Per-client upstream**: each forwarded client gets a fresh `net.Dial("unix", SSH_AUTH_SOCK)` connection, wrapped in an `agentFilter` that implements `agent.ExtendedAgent`.
@@ -71,7 +71,7 @@ Build overrides: `DEV_VERSION=`, `DEV_IMAGE_NAME=`, `DEV_REGISTRY=`, `DEV_BASE_I
 
 ## Gotchas
 
-1. **Agent forwarding must be active**: `SSH_AUTH_SOCK` must be set in the exec'ing shell and at least one key must be added (`ssh-add -l`). Without this, the host agent socket is not available and `fluehost` will fail on the first I/O.
+1. **Agent forwarding must be active**: `SSH_AUTH_SOCK` must be set in the exec'ing shell and at least one key must be added (`ssh-add -l`). Without this, the host agent socket is not available and `flue` will fail on the first I/O.
 2. **Trusted containers only**: the filter restricts which keys can sign, but anyone inside the container can see the listed keys. Use `--allow-key` to limit exposure.
 3. **Preserved FD number**: defaults to 3 (the first FD after stdin/stdout/stderr). If you have other FDs open in your shell, use `-fd` to target the correct one.
 4. **Base image dependency**: the extension build pulls the cote base image from the registry. The base image must be pushed before building flue. Override with `DEV_BASE_IMAGE`.
