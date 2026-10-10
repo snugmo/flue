@@ -7,8 +7,10 @@ Two small Go binaries:
 
 - **`flue-broker`** (container-side) listens on a Unix socket inside the
   container and hands that listening socket's file descriptor to the host
-  once over a socketpair control channel (SCM_RIGHTS), then just watches
-  that channel for host shutdown. No protocol parsing here.
+  once over a socketpair control channel (SCM_RIGHTS). It can run standalone
+  (then just watches for host shutdown) or in wrapper mode, where it
+  launches a child command (e.g. a shell) with `SSH_AUTH_SOCK` pointed at its
+  socket. No protocol parsing here.
 - **`flue`** (host-side) creates that socketpair, passes one end into the
   container via `podman exec --preserve-fds 1`, receives the listener
   fd, `accept()`s each client connection itself, and proxies it to the
@@ -69,16 +71,15 @@ flue -- podman exec --preserve-fds 1 \
 `flue` dials `$SSH_AUTH_SOCK` (or `-sock`) once per client connection, so
 repeated `ssh` / `ssh-add` / `git` invocations all work.
 
-### In a shell (background the proxy, get a shell)
+### In a shell (wrapper mode)
+
+The cleanest way to get a shell (or any command) inside the container with
+the agent available is wrapper mode: hand `flue-broker` a command and it runs
+it as a child with `SSH_AUTH_SOCK` set for you. When the command exits,
+`flue` returns its exit code.
 
 ```sh
-flue -- podman exec \
-  --preserve-fds 1 \
-  -e SSH_AUTH_SOCK=/tmp/flue.sock \
-  <container> sh -c '
-    flue-broker &
-    exec bash
-  '
+flue -- podman exec --preserve-fds 1 <container> flue-broker bash
 ```
 
 Then inside the container:
@@ -87,7 +88,14 @@ Then inside the container:
 $ ssh-add -l
 256 SHA256:xxxx your-key (ED25519)
 $ git clone git@github.com:your/repo.git   # works
+$ exit
+# your host prompt returns, with the shell's exit code
 ```
+
+Any command works, not just a shell — e.g. `flue-broker git ls-remote
+git@github.com:you/repo.git`. `-e SSH_AUTH_SOCK=…` is not needed: the broker
+sets it for the child. (The older `sh -c 'flue-broker & exec bash'` form
+still works, but wrapper mode replaces it.)
 
 ### Flags
 
@@ -97,6 +105,10 @@ $ git clone git@github.com:your/repo.git   # works
 | -------- | ---------------- | ---------------------------------------------------- |
 | `-sock`  | `/tmp/flue.sock` | Unix socket path inside the container                |
 | `-fd`    | `3`              | File descriptor number of the preserved control socket |
+
+After the flags, an optional command starts wrapper mode: `flue-broker
+[command] [args…]` runs that command as a child with `SSH_AUTH_SOCK` set to
+`-sock` (see wrapper mode above). No command = standalone mode.
 
 **flue** (host-side):
 
@@ -114,15 +126,20 @@ $ git clone git@github.com:your/repo.git   # works
    control channel.
 3. Inside the container, `flue-broker` listens on `/tmp/flue.sock` and
    sends that listening socket's fd to the host over the control socket
-   (SCM_RIGHTS) exactly once, then just watches the control channel for
-   EOF and keeps the socket path alive.
+   (SCM_RIGHTS) exactly once. It then either (standalone) blocks watching
+   for the host to go away, or (wrapper mode) launches the wrapped command
+   as a child with `SSH_AUTH_SOCK` pointed at its socket and waits for it.
 4. On the host, `flue` receives the listener fd and `accept()`s client
    connections directly; for each one it dials a fresh connection to
    `$SSH_AUTH_SOCK` and runs `agent.ServeAgent(filter, clientConn)` —
    the filter wraps the upstream agent client and enforces the key
    allowlist.
-5. When the podman exec exits, the control socket closes, `flue-broker`
-   exits, and the listening socket is removed.
+5. Lifetime is driven by the process tree, not the control channel (which
+   is one-shot). In wrapper mode, when the wrapped command exits,
+   `flue-broker` exits, the `podman exec` returns, and `flue` — which is
+   blocked on that child — tears down the listener and exits with the
+   command's exit status. In standalone mode `flue` runs until it is
+   signalled.
 
 ### Filter policy
 
