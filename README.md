@@ -21,6 +21,12 @@ Built from source at `cmd/flue-broker/` and `cmd/flue/` and installed as
 `/usr/local/bin/flue-broker` and `/usr/local/bin/flue` (fully static
 binaries, no runtime deps).
 
+> **Field-verified end to end.** The full path has been exercised for real:
+> laptop `ssh-agent` → host workstation → a snugmo container, where
+> `git push` over SSH ran with the askpass prompt surfacing on the laptop's
+> Wayland desktop. Signing round-trips (not just `ssh-add -l`) work across
+> podman, with only the allowlisted key visible in the container.
+
 ## Build
 
 ```bash
