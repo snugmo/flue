@@ -1,15 +1,19 @@
 // Command fluehost is the host-side half of the flue SSH agent bridge.
 //
-// It opens the host's SSH agent socket (normally $SSH_AUTH_SOCK) with the
-// canonical socket()+connect(2) sequence, dup2's the resulting connected
-// descriptor onto a chosen FD number (default 3), and then exec's a command
-// with that FD left open. Because a dup'd FD stays open across exec(2), the
-// child receives a ready-to-use, connected agent socket on that FD.
+// It creates a Unix socketpair (SOCK_SEQPACKET), passes one end into the
+// container as fd 3 via `podman exec --preserve-fds 1`, and relays every
+// client connection the container forwards over that control channel to
+// the real host agent ($SSH_AUTH_SOCK) using
+// golang.org/x/crypto/ssh/agent with a filtering wrapper. Each client gets
+// a fresh upstream connection, so repeated ssh / ssh-add / git invocations
+// all work.
 //
-// This is the reliable replacement for the shell redirection trick
-// (exec 3< "$SSH_AUTH_SOCK" 3> "$SSH_AUTH_SOCK"), which can fail with
-// ENXIO on some Unix socket states because the shell uses open(2)'s
-// implicit-connect path rather than an explicit connect(2).
+// The filter implements agent.ExtendedAgent:
+//   - List: forwarded, but only keys matching --allow-key are returned
+//     (all keys if no --allow-key flag is given).
+//   - Sign / SignWithFlags: forwarded only for allowed keys.
+//   - Add, Remove, RemoveAll, Lock, Unlock, Signers: always denied.
+//   - Extension: only session-bind@openssh.com is forwarded.
 //
 // Typical use:
 //
@@ -17,32 +21,33 @@
 //	  --preserve-fds 1 \
 //	  -e SSH_AUTH_SOCK=/tmp/flue.sock \
 //	  <container> flue
-//
-// fluehost opens the agent socket as FD 3, then exec's the podman command,
-// which preserves FD 3 into the container where flue relays it on its own
-// Unix socket.
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"flag"
+	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
-	"syscall"
+	"sync"
 
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/sys/unix"
 )
 
-func main() {
-	sockArg := flag.String("sock", "",
-		"Agent socket path to open (default $SSH_AUTH_SOCK)")
-	fdArg := flag.String("fd", "3",
-		"File descriptor number to place the connected agent socket on (default 3)")
-	flag.Parse()
+var (
+	sockArg   = flag.String("sock", "", "Agent socket path to use (default $SSH_AUTH_SOCK)")
+	allowKeys = newAllowKeyFlag()
+	verbose   = flag.Bool("verbose", false, "log every agent request to stderr")
+)
 
+func main() {
 	sockPath := *sockArg
 	if sockPath == "" {
 		sockPath = os.Getenv("SSH_AUTH_SOCK")
@@ -51,59 +56,335 @@ func main() {
 		}
 	}
 
-	fdNum, err := strconv.Atoi(*fdArg)
-	if err != nil || fdNum < 3 {
-		log.Fatalf("invalid -fd %q: must be an integer >= 3", *fdArg)
-	}
-
 	args := flag.Args()
 	if len(args) == 0 {
-		log.Fatalf("usage: fluehost [-sock path] [-fd N] -- command [args...]")
+		log.Fatalf("usage: fluehost [-sock path] [-allow-key fp]... -- command [args...]")
 	}
 
-	// Open and connect to the agent socket using the explicit
-	// socket()+connect(2) path (net.Dial does exactly this), which is more
-	// reliable than the shell's open(2) implicit connect.
-	conn, err := net.Dial("unix", sockPath)
-	if err != nil {
-		log.Fatalf("connect to agent socket %s: %v", sockPath, err)
-	}
-	uc := conn.(*net.UnixConn)
-
-	// Hand the fd to a long-lived *os.File. This closes the conn's reference
-	// but keeps the descriptor open in the returned file, so the socket stays
-	// connected until that file is closed (which we never do: the exec below
-	// replaces the process before any close can run).
-	connFile, err := uc.File()
-	if err != nil {
-		log.Fatalf("resolve fd for %s: %v", sockPath, err)
-	}
-	_ = connFile // keep the *os.File (and thus the fd) alive
-	connFD := int(connFile.Fd())
-
-	// Close any pre-existing fdNum so we don't leak it, then move the
-	// connected socket onto fdNum. The descriptor remains open across the
-	// exec below, so the child inherits it.
-	if err := unix.Close(fdNum); err != nil && err != unix.EBADF {
-		log.Printf("close fd %d: %v", fdNum, err)
-	}
-	if err := unix.Dup2(connFD, fdNum); err != nil {
-		log.Fatalf("dup2 %d -> %d: %v", connFD, fdNum, err)
-	}
-
-	log.Printf("fluehost: agent socket %s connected on fd %d; exec: %v",
-		sockPath, fdNum, args)
-
-	// exec the command; the child inherits fdNum pointing at the agent.
-	// Resolve the command to an absolute path so exec works even when the
-	// caller passes a bare name like "podman".
+	// Resolve the command to an absolute path.
 	cmdPath := args[0]
 	if !strings.Contains(cmdPath, "/") {
-		if resolved, rerr := exec.LookPath(cmdPath); rerr == nil {
+		if resolved, err := exec.LookPath(cmdPath); err == nil {
 			cmdPath = resolved
 			args[0] = resolved
 		}
 	}
-	execErr := syscall.Exec(cmdPath, args, os.Environ())
-	log.Fatalf("exec %s: %v", cmdPath, execErr)
+
+	// Create a socketpair for the control channel.
+	// The container receives end B (fd 3); the host keeps end A.
+	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		log.Fatalf("socketpair: %v", err)
+	}
+	a, b := pair[0], pair[1]
+	// Pass end B as an extra file in the child; it will be fd 3
+	// (first extra file after stdin/stdout/stderr).
+	childFd := os.NewFile(uintptr(b), "flue-control-child")
+	defer childFd.Close()
+
+	cmd := exec.Command(cmdPath, args[1:]...)
+	cmd.ExtraFiles = []*os.File{childFd}
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
+
+	if err := cmd.Start(); err != nil {
+		log.Fatalf("start %s: %v", cmdPath, err)
+	}
+
+	// Close the host copy of end B; the container now owns it.
+	unix.Close(b)
+
+	// The host's control socket is end A.
+	ctrl, err := net.FileConn(os.NewFile(uintptr(a), "flue-control-host"))
+	if err != nil {
+		log.Fatalf("control fd: %v", err)
+	}
+
+	allow := allowKeys.toSet()
+	filter := &agentFilter{
+		upstream: nil, // set per-client in handleClient
+		allow:    allow,
+		verbose:  *verbose,
+	}
+
+	log.Printf("fluehost: agent %s, filter: %s, exec: %v",
+		sockPath, allowKeys.describe(), args)
+
+	var wg sync.WaitGroup
+	serveControl(ctrl, filter, &wg)
+	wg.Wait()
+
+	if err := cmd.Wait(); err != nil {
+		code := 1
+		if ee, ok := err.(*exec.ExitError); ok {
+			code = ee.ExitCode()
+		}
+		os.Exit(code)
+	}
+}
+
+// --- allow-key repeatable flag ---
+
+type allowKeyFlag struct {
+	vals []string
+}
+
+func newAllowKeyFlag() *allowKeyFlag { return &allowKeyFlag{} }
+
+func (a *allowKeyFlag) String() string { return strings.Join(a.vals, ",") }
+
+func (a *allowKeyFlag) Set(s string) error {
+	a.vals = append(a.vals, s)
+	return nil
+}
+
+// toSet returns a map of fingerprint → struct{} for O(1) lookups.
+func (a *allowKeyFlag) toSet() map[string]struct{} {
+	m := make(map[string]struct{}, len(a.vals))
+	for _, v := range a.vals {
+		m[v] = struct{}{}
+	}
+	return m
+}
+
+// describe returns a human-readable summary for logging.
+func (a *allowKeyFlag) describe() string {
+	if len(a.vals) == 0 {
+		return "all keys"
+	}
+	return strings.Join(a.vals, ", ")
+}
+
+// --- agent filter ---
+
+// agentFilter wraps an upstream ssh agent client and implements
+// agent.ExtendedAgent with a key allowlist policy.
+type agentFilter struct {
+	upstream agent.ExtendedAgent
+	allow    map[string]struct{} // empty = allow all
+	verbose  bool
+}
+
+// isAllowed checks whether a key's fingerprint is in the allowlist.
+func (f *agentFilter) isAllowed(fp string) bool {
+	if len(f.allow) == 0 {
+		return true
+	}
+	_, ok := f.allow[fp]
+	return ok
+}
+
+func (f *agentFilter) logf(op, fp string, allowed bool) {
+	if !f.verbose {
+		return
+	}
+	status := "allowed"
+	if !allowed {
+		status = "DENIED"
+	}
+	log.Printf("fluehost: %s %s [%s]", op, fp, status)
+}
+
+// keyFingerprint computes the SHA256: fingerprint of an ssh.PublicKey.
+func keyFingerprint(key ssh.PublicKey) string {
+	return ssh.FingerprintSHA256(key)
+}
+
+// keyFingerprintFromBlob computes the SHA256: fingerprint from a raw key blob.
+// Uses the same algorithm as ssh.FingerprintSHA256: SHA256 of the blob,
+// encoded with base64.RawStdEncoding (no padding), prefixed with "SHA256:".
+func keyFingerprintFromBlob(blob []byte) string {
+	h := sha256.Sum256(blob)
+	return "SHA256:" + base64.RawStdEncoding.EncodeToString(h[:])
+}
+
+// List returns keys, filtered by allowlist if one is set.
+func (f *agentFilter) List() ([]*agent.Key, error) {
+	keys, err := f.upstream.List()
+	if err != nil {
+		return nil, err
+	}
+	if len(f.allow) == 0 {
+		f.logf("list", fmt.Sprintf("%d keys", len(keys)), true)
+		return keys, nil
+	}
+	var out []*agent.Key
+	for _, k := range keys {
+		fp := keyFingerprintFromBlob(k.Blob)
+		if f.isAllowed(fp) {
+			out = append(out, k)
+		} else {
+			f.logf("list", fp, false)
+		}
+	}
+	f.logf("list", fmt.Sprintf("%d of %d keys allowed", len(out), len(keys)), true)
+	return out, nil
+}
+
+// Sign forwards the signing request only for allowed keys.
+func (f *agentFilter) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error) {
+	fp := keyFingerprint(key)
+	if !f.isAllowed(fp) {
+		f.logf("sign", fp, false)
+		return nil, fmt.Errorf("signing denied for key %s", fp)
+	}
+	f.logf("sign", fp, true)
+	return f.upstream.Sign(key, data)
+}
+
+// SignWithFlags is like Sign but with flags (needed for RSA rsa-sha2-256/512).
+func (f *agentFilter) SignWithFlags(key ssh.PublicKey, data []byte, flags agent.SignatureFlags) (*ssh.Signature, error) {
+	fp := keyFingerprint(key)
+	if !f.isAllowed(fp) {
+		f.logf("sign(flags)", fp, false)
+		return nil, fmt.Errorf("signing denied for key %s", fp)
+	}
+	f.logf("sign(flags)", fp, true)
+	return f.upstream.SignWithFlags(key, data, flags)
+}
+
+// Add is always denied.
+func (f *agentFilter) Add(k agent.AddedKey) error {
+	f.logf("add", "", false)
+	return fmt.Errorf("adding keys is not allowed through flue")
+}
+
+// Remove is always denied.
+func (f *agentFilter) Remove(key ssh.PublicKey) error {
+	f.logf("remove", keyFingerprint(key), false)
+	return fmt.Errorf("removing keys is not allowed through flue")
+}
+
+// RemoveAll is always denied.
+func (f *agentFilter) RemoveAll() error {
+	f.logf("remove-all", "", false)
+	return fmt.Errorf("removing all keys is not allowed through flue")
+}
+
+// Lock is always denied.
+func (f *agentFilter) Lock(passphrase []byte) error {
+	f.logf("lock", "", false)
+	return fmt.Errorf("locking the agent is not allowed through flue")
+}
+
+// Unlock is always denied.
+func (f *agentFilter) Unlock(passphrase []byte) error {
+	f.logf("unlock", "", false)
+	return fmt.Errorf("unlocking the agent is not allowed through flue")
+}
+
+// Signers returns signers for the given key blob.
+func (f *agentFilter) Signers() ([]ssh.Signer, error) {
+	f.logf("signers", "", false)
+	return nil, fmt.Errorf("signers request is not allowed through flue")
+}
+
+// Extension forwards only session-bind@openssh.com; everything else is
+// unsupported.
+func (f *agentFilter) Extension(extensionType string, req []byte) (resp []byte, err error) {
+	if extensionType == "session-bind@openssh.com" {
+		return f.upstream.Extension(extensionType, req)
+	}
+	return nil, agent.ErrExtensionUnsupported
+}
+
+// --- control channel ---
+
+// serveControl reads client fds from the control socket and proxies each
+// one to the agent in its own goroutine. Returns when the control socket
+// is closed (host or container went away).
+func serveControl(ctrl net.Conn, filter *agentFilter, wg *sync.WaitGroup) {
+	defer ctrl.Close()
+
+	buf := make([]byte, 4096)
+	oob := make([]byte, 4096)
+
+	for {
+		n, oobn, _, _, err := ctrl.(*net.UnixConn).ReadMsgUnix(buf, oob)
+		if err != nil {
+			if err == io.EOF || err == unix.ECONNRESET {
+				log.Printf("fluehost: control channel closed")
+				break
+			}
+			log.Printf("fluehost: control read: %v", err)
+			break
+		}
+		_ = n
+
+		cmsgs, err := unix.ParseSocketControlMessage(oob[:oobn])
+		if err != nil {
+			log.Printf("fluehost: parse cmsg: %v", err)
+			continue
+		}
+
+		var fds []int
+		for _, cmsg := range cmsgs {
+			rights, err := unix.ParseUnixRights(&cmsg)
+			if err != nil {
+				log.Printf("fluehost: parse rights: %v", err)
+				continue
+			}
+			fds = append(fds, rights...)
+		}
+
+		if len(fds) > 1 {
+			log.Printf("fluehost: expected 1 fd, got %d; closing all", len(fds))
+			for _, fd := range fds {
+				unix.Close(fd)
+			}
+			continue
+		}
+		if len(fds) != 1 {
+			continue
+		}
+
+		clientFd := fds[0]
+		wg.Add(1)
+		go func(fd int) {
+			defer wg.Done()
+			defer unix.Close(fd)
+			handleClient(fd, filter)
+		}(clientFd)
+	}
+}
+
+// handleClient proxies a single client connection (fd) to the agent.
+// It dials a fresh upstream agent connection for this client, wraps it
+// with the filter, and runs agent.ServeAgent.
+func handleClient(fd int, filter *agentFilter) {
+	client, err := net.FileConn(os.NewFile(uintptr(fd), "flue-client"))
+	if err != nil {
+		log.Printf("fluehost: file conn: %v", err)
+		return
+	}
+	defer client.Close()
+
+	// Dial a fresh upstream agent connection for this client.
+	upstream, err := dialAgent()
+	if err != nil {
+		log.Printf("fluehost: dial upstream: %v", err)
+		return
+	}
+	defer upstream.Close()
+
+	// Build a per-client filter wrapping this client's upstream.
+	upstreamExt := agent.NewClient(upstream)
+	clientFilter := &agentFilter{
+		upstream: upstreamExt,
+		allow:    filter.allow,
+		verbose:  filter.verbose,
+	}
+
+	agent.ServeAgent(clientFilter, client)
+}
+
+// dialAgent connects to the host's real SSH agent.
+func dialAgent() (net.Conn, error) {
+	sockPath := os.Getenv("SSH_AUTH_SOCK")
+	if sockPath == "" {
+		sockPath = *sockArg
+	}
+	return net.Dial("unix", sockPath)
 }

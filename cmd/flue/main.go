@@ -1,24 +1,24 @@
-// Command flue listens on a Unix domain socket inside a container
-// and proxies every byte to and from a preserved file descriptor (default 3)
-// that points at the host's SSH authentication agent socket.
+// Command flue is the container-side half of the flue SSH agent bridge.
 //
-// This enables "SSH agent forwarding through podman exec --preserve-fds":
+// It listens on a Unix socket inside the container (default /tmp/flue.sock)
+// so that ssh / ssh-add / git can use it (via SSH_AUTH_SOCK). For each
+// client connection, it sends the connected fd to the host over a control
+// socketpair (fd 3, received via podman exec --preserve-fds) using
+// SCM_RIGHTS, then closes the local copy. No protocol parsing or key
+// filtering happens here: the host side (fluehost) proxies each
+// connection to the real agent with filtering applied.
 //
-//		podman exec \
-//	 -e SSH_AUTH_SOCK=/tmp/flue.sock \
-//		  --preserve-fds 1 \
-//	 <container> flue
+// Usage (see fluehost on the host side):
 //
-// The host passes the forwarded agent socket (FD 3 in the exec'd process) to
-// the container; the proxy opens /tmp/flue.sock and shuttles bytes
-// between it and FD 3. Inside the container, ssh/ssh-add talk to
-// /tmp/flue.sock and transparently reach the real agent on the host.
+//	fluehost -- podman exec \
+//	  --preserve-fds 1 \
+//	  -e SSH_AUTH_SOCK=/tmp/flue.sock \
+//	  <container> flue
 package main
 
 import (
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
@@ -28,27 +28,26 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func main() {
-	sockPath := flag.String("sock", "/tmp/flue.sock",
+var (
+	sockPath = flag.String("sock", "/tmp/flue.sock",
 		"Unix socket path to listen on inside the container")
-	fdArg := flag.String("fd", "3",
-		"File descriptor number of the preserved host agent socket (default 3)")
-	flag.Parse()
+	fdArg = flag.String("fd", "3",
+		"File descriptor number of the preserved control socket (default 3)")
+	verbose = flag.Bool("verbose", false,
+		"log each forwarded client connection to stderr")
+)
 
+func main() {
 	fdNum, err := strconv.Atoi(*fdArg)
 	if err != nil || fdNum < 3 {
-		// FDs 0-2 are stdin/stdout/stderr and cannot be the preserved
-		// agent socket, so we require a descriptor at or above 3.
 		log.Fatalf("invalid -fd %q: must be an integer >= 3", *fdArg)
 	}
 
-	// Verify the preserved FD is usable before we start.
 	var st unix.Stat_t
 	if err := unix.Fstat(fdNum, &st); err != nil {
 		log.Fatalf("preserved fd %d is not usable: %v", fdNum, err)
 	}
 
-	// Remove any stale socket file from a previous run.
 	if err := os.Remove(*sockPath); err != nil && !os.IsNotExist(err) {
 		log.Fatalf("remove stale socket %s: %v", *sockPath, err)
 	}
@@ -57,9 +56,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("listen %s: %v", *sockPath, err)
 	}
-	log.Printf("flue: listening on %s, proxying to fd %d", *sockPath, fdNum)
+	os.Chmod(*sockPath, 0600)
+	log.Printf("flue: listening on %s, control fd %d", *sockPath, fdNum)
 
 	var wg sync.WaitGroup
+
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -67,71 +68,44 @@ func main() {
 			continue
 		}
 		wg.Add(1)
-		go handle(conn, fdNum, &wg)
+		go func(conn net.Conn) {
+			defer wg.Done()
+			if err := sendToHost(conn, fdNum); err != nil {
+				log.Printf("forward client: %v", err)
+			} else if *verbose {
+				log.Printf("forwarded client")
+			}
+		}(conn)
 	}
 }
 
-func handle(client net.Conn, fdNum int, wg *sync.WaitGroup) {
-	defer wg.Done()
-	defer func() {
-		if err := client.Close(); err != nil {
-			log.Printf("close client: %v", err)
-		}
-	}()
+// sendToHost hands the client connection's fd to the host over the control
+// socket, then closes the local copy. The host proxies the connection to
+// the real agent.
+func sendToHost(conn net.Conn, fdNum int) error {
+	defer conn.Close()
 
-	// Each relay direction gets its own buffer so the two goroutines
-	// never share a slice they read and write concurrently.
-	clientToAgent := make([]byte, 64*1024)
-	agentToClient := make([]byte, 64*1024)
+	uc, ok := conn.(*net.UnixConn)
+	if !ok {
+		return fmt.Errorf("client is not a Unix socket")
+	}
+	f, err := uc.File()
+	if err != nil {
+		return fmt.Errorf("get fd: %w", err)
+	}
+	defer f.Close()
 
-	done := make(chan struct{}, 2)
-	relayWG := &sync.WaitGroup{}
+	ctrl, err := net.FileConn(os.NewFile(uintptr(fdNum), "flue-control"))
+	if err != nil {
+		return fmt.Errorf("control fd: %w", err)
+	}
+	defer ctrl.Close()
 
-	// client -> agent: read from the client net.Conn, write raw to the agent fd
-	relayWG.Add(1)
-	go func() {
-		defer relayWG.Done()
-		for {
-			n, err := client.Read(clientToAgent)
-			if n > 0 {
-				if _, werr := unix.Write(int(fdNum), clientToAgent[:n]); werr != nil {
-					log.Printf("client->agent write: %v", werr)
-					break
-				}
-			}
-			if err != nil {
-				log.Printf("client->agent read: %v", err)
-				break
-			}
-		}
-		done <- struct{}{}
-	}()
-
-	// agent -> client: read raw from the agent fd, write to the client net.Conn
-	relayWG.Add(1)
-	go func() {
-		defer relayWG.Done()
-		for {
-			n, err := unix.Read(int(fdNum), agentToClient)
-			if n > 0 {
-				if _, werr := client.Write(agentToClient[:n]); werr != nil {
-					log.Printf("agent->client write: %v", werr)
-					break
-				}
-			}
-			if err != nil {
-				// A 0-byte read with a nil errno is the normal EOF from
-				// the agent closing; only log if there was a real error.
-				if err != io.EOF {
-					log.Printf("agent->client read: %v", err)
-				}
-				break
-			}
-		}
-		done <- struct{}{}
-	}()
-
-	<-done
-	relayWG.Wait()
-	fmt.Fprintf(os.Stderr, "flue: connection closed\n")
+	// One byte of payload; the fd travels in a SCM_RIGHTS control message.
+	oob := unix.UnixRights(int(f.Fd()))
+	if _, _, err := ctrl.(*net.UnixConn).WriteMsgUnix(
+		[]byte{0}, oob, nil); err != nil {
+		return fmt.Errorf("send fd: %w", err)
+	}
+	return nil
 }

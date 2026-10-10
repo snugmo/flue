@@ -2,17 +2,18 @@
 
 ## Project Overview
 
-**flue** — a narrow channel from your host's SSH agent into a container. Two Go binaries: `flue` (container-side) listens on a Unix socket inside a container and proxies every byte to/from a preserved file descriptor pointing at the host's SSH authentication agent socket; `fluehost` (host-side) opens that agent socket with a proper `socket()`+`connect(2)`, dups it onto FD 3, and `exec`s `podman exec --preserve-fds` so the connected socket is forwarded into the container. From the [Snugmo](https://github.com/snugmo) GitHub org.
+**flue** — a narrow channel from your host's SSH agent into a container. Two Go binaries: `flue` (container-side) listens on a Unix socket inside the container and forwards each client connection to the host over a control socketpair (fd 3, passed via `podman exec --preserve-fds`); `fluehost` (host-side) creates that socketpair, execs the container command with one end preserved, and relays every forwarded client connection to the real host agent (`$SSH_AUTH_SOCK`) using `golang.org/x/crypto/ssh/agent` with a key-allowlist filter. From the [Snugmo](https://github.com/snugmo) GitHub org.
 
 ## Structure
 
 ```
 cmd/
   flue/
-    main.go            # Container-side proxy: Unix socket listener -> raw unix.Read/Write to preserved FD
+    main.go            # Container-side: Unix socket listener -> SCM_RIGHTS fd pass to host
   fluehost/
-    main.go            # Host-side helper: connect() to agent socket, dup2 onto FD 3, exec command
-go.mod                 # Module github.com/snugmo/flue, depends on golang.org/x/sys
+    main.go            # Host-side: socketpair control channel, agent proxy with filtering
+    filter_test.go     # Tests for the agent filter (list, sign, deny mutating ops)
+go.mod                 # Module github.com/snugmo/flue, depends on golang.org/x/sys + x/crypto
 go.sum
 Containerfile          # Two-stage: builds static binaries in go-build, copies to final image
 build.sh               # Buildah wrapper with registry/tag config
@@ -30,6 +31,7 @@ LICENSE                # AGPL-3.0
 | Build + push (custom) | `./build.sh push <registry>`     |
 | Run the proxy         | `podman exec -e SSH_AUTH_SOCK=/tmp/flue.sock --preserve-fds 1 <container> flue` |
 | Forward agent (via fluehost) | `fluehost -- podman exec -e SSH_AUTH_SOCK=/tmp/flue.sock --preserve-fds 1 <container> flue` |
+| Run tests             | `go test ./...`                  |
 
 Build overrides: `DEV_VERSION=`, `DEV_IMAGE_NAME=`, `DEV_REGISTRY=`, `DEV_BASE_IMAGE=` (see `build.sh`).
 
@@ -44,9 +46,15 @@ Build overrides: `DEV_VERSION=`, `DEV_IMAGE_NAME=`, `DEV_REGISTRY=`, `DEV_BASE_I
 ### Go Source (`cmd/flue/main.go`)
 
 - **Static binary**: always build with `CGO_ENABLED=0` and `-ldflags="-s -w"` so the binary runs in any Linux container without glibc or shared libraries.
-- **Raw unix syscalls for the agent FD**: the preserved FD is a Unix socket. Go's `os.File.Read()` returns `EINVAL` on Unix sockets, so the proxy uses `unix.Read`/`unix.Write` from `golang.org/x/sys/unix` for the agent side. The client side (container-local socket) uses the normal `net.Conn` interface.
-- **Bidirectional relay**: two goroutines per connection — one copies client→agent, the other agent→client. Each `done` channel signals the first direction to close; the other follows.
+- **SCM_RIGHTS fd pass**: the container-side proxy receives each client connection and sends its fd to the host over the control socketpair using `unix.UnixRights` + `WriteMsgUnix`. No protocol parsing happens here.
 - **No external dependencies** beyond `golang.org/x/sys` (standard-library-adjacent, needed only for the raw socket syscalls).
+
+### Go Source (`cmd/fluehost/main.go`)
+
+- **Socketpair control channel**: `SOCK_SEQPACKET` socketpair; one end is passed to the container as fd 3 via `exec.Command.ExtraFiles`, the other end stays on the host.
+- **Per-client upstream**: each forwarded client gets a fresh `net.Dial("unix", SSH_AUTH_SOCK)` connection, wrapped in an `agentFilter` that implements `agent.ExtendedAgent`.
+- **Key allowlist**: `--allow-key` (repeatable) filters `List` and `Sign`/`SignWithFlags` by SHA256 fingerprint. `Add`, `Remove`, `RemoveAll`, `Lock`, `Unlock`, `Signers` are always denied. Only the `session-bind@openssh.com` extension is forwarded.
+- **Dependencies**: `golang.org/x/sys` (unix syscalls) + `golang.org/x/crypto` (ssh agent protocol).
 
 ### Containerfile
 
@@ -64,8 +72,8 @@ Build overrides: `DEV_VERSION=`, `DEV_IMAGE_NAME=`, `DEV_REGISTRY=`, `DEV_BASE_I
 
 ## Gotchas
 
-1. **Agent forwarding must be active**: `SSH_AUTH_SOCK` must be set in the exec'ing shell and at least one key must be added (`ssh-add -l`). Without this, FD 3 is not a valid agent socket and the proxy will fail on the first I/O.
-2. **Trusted containers only**: the proxy adds no access control. Anyone inside the container can use your SSH keys.
+1. **Agent forwarding must be active**: `SSH_AUTH_SOCK` must be set in the exec'ing shell and at least one key must be added (`ssh-add -l`). Without this, the host agent socket is not available and `fluehost` will fail on the first I/O.
+2. **Trusted containers only**: the filter restricts which keys can sign, but anyone inside the container can see the listed keys. Use `--allow-key` to limit exposure.
 3. **Preserved FD number**: defaults to 3 (the first FD after stdin/stdout/stderr). If you have other FDs open in your shell, use `-fd` to target the correct one.
 4. **Base image dependency**: the extension build pulls the cote base image from the registry. The base image must be pushed before building flue. Override with `DEV_BASE_IMAGE`.
 5. **Static binary**: the binary is built with `CGO_ENABLED=0`. Do not add cgo dependencies — they will break the static build.
@@ -73,5 +81,5 @@ Build overrides: `DEV_VERSION=`, `DEV_IMAGE_NAME=`, `DEV_REGISTRY=`, `DEV_BASE_I
 ## Adding Features
 
 - **New flags**: add to the `flag` block in `main.go`; document in the README `### Flags` table.
-- **New protocol support** (e.g., GPG agent, SSH key agent v2): extend the `handle` function or add a new command under `cmd/`.
+- **New protocol support** (e.g., GPG agent, SSH key agent v2): extend the `agentFilter` or add a new command under `cmd/`.
 - **New image variant**: add a stage to the Containerfile or a new build target in `build.sh`.
