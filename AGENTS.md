@@ -39,7 +39,7 @@ Build overrides: `DEV_VERSION=`, `DEV_IMAGE_NAME=`, `DEV_REGISTRY=`, `DEV_BASE_I
 ### Commit Conventions
 
 - Make small, logically contained commits; one per meaningful change, committed as you go.
-- Prefix every commit subject with a single emoji representing the change, followed by the conventional type prefix (`feat:`, `chore:`, `docs:`, `fix:`, …); keep subjects under 72 characters. Examples: `✨ feat: add flue`, `📦 chore: update golang.org/x/sys`, `✏️ docs: …`, `🐛 fix: …`.
+- Prefix every commit subject with a single emoji, followed by the conventional type prefix (`feat:`, `chore:`, `docs:`, `fix:`, …); keep subjects under 72 characters. Choose whichever single emoji best represents the actual change — there is no fixed set of allowed emojis, and it should vary from commit to commit. Pick an emoji that captures the essence of what changed, not just a stand-in for the type prefix (e.g. `🏷️` for a rename, `🧪` for new tests, `📝` for prose edits — the past history shows a wide range in use). The examples below only illustrate the format, not a menu of choices: `✨ feat: add flue`, `📦 chore: update golang.org/x/sys`, `🐛 fix: handle EOF on the control channel`.
 - End commit messages with an `Assisted-by: <agent>:<model>` trailer, where `<agent>` is the coding agent doing the committing (no "generated with" line).
 
 ### Go Source (`cmd/flue-broker/main.go`)
