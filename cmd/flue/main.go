@@ -1,12 +1,13 @@
 // Command flue is the host-side half of the flue SSH agent bridge.
 //
-// It creates a Unix socketpair (SOCK_SEQPACKET), passes one end into the
-// container as fd 3 via `podman exec --preserve-fds 1`, and relays every
-// client connection the container forwards over that control channel to
-// the real host agent ($SSH_AUTH_SOCK) using
-// golang.org/x/crypto/ssh/agent with a filtering wrapper. Each client gets
-// a fresh upstream connection, so repeated ssh / ssh-add / git invocations
-// all work.
+// It creates a Unix socketpair (SOCK_SEQPACKET) and passes one end into the
+// container as fd 3 via `podman exec --preserve-fds 1`. The container-side
+// broker (flue-broker) listens on a Unix socket, then hands that listening
+// fd back to the host over the control channel. The host accepts client
+// connections directly on the received listener and proxies each one to the
+// real host agent ($SSH_AUTH_SOCK) using golang.org/x/crypto/ssh/agent with
+// a filtering wrapper. Each client gets a fresh upstream connection, so
+// repeated ssh / ssh-add / git invocations all work.
 //
 // The filter implements agent.ExtendedAgent:
 //   - List: forwarded, but only keys matching --allow-key are returned
@@ -328,75 +329,90 @@ func closeFile(f *os.File) {
 // serveControl reads client fds from the control socket and proxies each
 // one to the agent in its own goroutine. Returns when the control socket
 // is closed (host or container went away).
+// serveControl receives the single listening fd the broker hands over, then
+// accepts client connections on it for the life of the process, proxying each
+// to the agent in its own goroutine. It returns when the control channel
+// closes (the broker went away) or when the listener is closed.
 func serveControl(ctrl net.Conn, filter *agentFilter, wg *sync.WaitGroup) {
 	defer closeQuiet(ctrl)
 
 	buf := make([]byte, 4096)
 	oob := make([]byte, 4096)
 
-	for {
-		n, oobn, flags, _, err := ctrl.(*net.UnixConn).ReadMsgUnix(buf, oob)
-		if err != nil {
-			if err == io.EOF || err == unix.ECONNRESET {
-				log.Printf("flue: control channel closed")
-				break
-			}
+	// Read the one control message: the listening fd.
+	n, oobn, flags, _, err := ctrl.(*net.UnixConn).ReadMsgUnix(buf, oob)
+	_ = n
+	if err != nil {
+		if err == io.EOF || err == unix.ECONNRESET {
+			log.Printf("flue: control channel closed before listener received")
+		} else {
 			log.Printf("flue: control read: %v", err)
+		}
+		return
+	}
+	if flags&unix.MSG_CTRUNC != 0 {
+		log.Printf("flue: control message truncated; discarding")
+		return
+	}
+	cmsgs, err := unix.ParseSocketControlMessage(oob[:oobn])
+	if err != nil {
+		log.Printf("flue: parse cmsg: %v", err)
+		return
+	}
+	// Expect exactly one listener fd; use the first, close any extras.
+	var listenFd int = -1
+	for _, cmsg := range cmsgs {
+		rights, rerr := unix.ParseUnixRights(&cmsg)
+		if rerr != nil {
+			log.Printf("flue: parse rights: %v", rerr)
+			continue
+		}
+		for _, r := range rights {
+			if listenFd < 0 {
+				listenFd = r
+			} else {
+				closeFD(r)
+			}
+		}
+	}
+	if listenFd < 0 {
+		log.Printf("flue: no listener fd received")
+		return
+	}
+
+	// Wrap the received listener fd in a *net.UnixListener so Accept works.
+	listener, err := net.FileListener(os.NewFile(uintptr(listenFd), "flue-listener"))
+	if err != nil {
+		log.Printf("flue: listener fd: %v", err)
+		closeFD(listenFd)
+		return
+	}
+	defer listener.Close()
+	log.Printf("flue: accepting on handed-over listener")
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			// Accept fails once the listener is closed (broker gone) or the
+			// control channel died; both mean shutdown.
+			log.Printf("flue: accept: %v", err)
 			break
 		}
-		_ = n
-
-		if flags&unix.MSG_CTRUNC != 0 {
-			log.Printf("flue: control message truncated; discarding")
-			continue
-		}
-
-		cmsgs, err := unix.ParseSocketControlMessage(oob[:oobn])
-		if err != nil {
-			log.Printf("flue: parse cmsg: %v", err)
-			continue
-		}
-
-		var fds []int
-		for _, cmsg := range cmsgs {
-			rights, err := unix.ParseUnixRights(&cmsg)
-			if err != nil {
-				log.Printf("flue: parse rights: %v", err)
-				continue
-			}
-			fds = append(fds, rights...)
-		}
-
-		if len(fds) > 1 {
-			log.Printf("flue: expected 1 fd, got %d; closing all", len(fds))
-			for _, fd := range fds {
-				closeFD(fd)
-			}
-			continue
-		}
-		if len(fds) != 1 {
-			continue
-		}
-
-		clientFd := fds[0]
 		wg.Add(1)
-		go func(fd int) {
+		go func(c net.Conn) {
 			defer wg.Done()
-			defer closeFD(fd)
-			handleClient(fd, filter)
-		}(clientFd)
+			handleClient(c, filter)
+		}(conn)
 	}
 }
 
 // handleClient proxies a single client connection (fd) to the agent.
 // It dials a fresh upstream agent connection for this client, wraps it
 // with the filter, and runs agent.ServeAgent.
-func handleClient(fd int, filter *agentFilter) {
-	client, err := net.FileConn(os.NewFile(uintptr(fd), "flue-client"))
-	if err != nil {
-		log.Printf("flue: file conn: %v", err)
-		return
-	}
+// handleClient proxies a single client connection to the agent. It dials a
+// fresh upstream agent connection for this client, wraps it with the filter,
+// and runs agent.ServeAgent, which blocks until the client disconnects.
+func handleClient(client net.Conn, filter *agentFilter) {
 	defer closeQuiet(client)
 
 	// Dial a fresh upstream agent connection for this client.
@@ -408,15 +424,14 @@ func handleClient(fd int, filter *agentFilter) {
 	defer closeQuiet(upstream)
 
 	// Build a per-client filter wrapping this client's upstream.
-	upstreamExt := agent.NewClient(upstream)
 	clientFilter := &agentFilter{
-		upstream: upstreamExt,
+		upstream: agent.NewClient(upstream),
 		allow:    filter.allow,
 		verbose:  filter.verbose,
 	}
 
-	// ServeAgent returns when the client connection ends; I/O errors
-	// there are normal (peer closed), so the result is not checked.
+	// ServeAgent returns when the client connection ends; I/O errors there
+	// are normal (peer closed), so the result is not checked.
 	_ = agent.ServeAgent(clientFilter, client)
 }
 
