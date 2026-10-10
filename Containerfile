@@ -1,19 +1,18 @@
 # flue — a narrow channel from your host's SSH agent into a container
 #
-# Builds flue: a tiny Go daemon that listens on a Unix socket
-# inside a container and proxies every byte to/from a preserved file
-# descriptor pointing at the host's SSH authentication agent socket.
-# This enables `podman exec --preserve-fds` to share a forwarded SSH
-# agent into the container.
+# Builds flue (container-side) and fluehost (host-side): a filtered SSH
+# agent bridge. flue forwards client connection fds to the host over a
+# socketpair control channel; fluehost relays each to the real agent with
+# key-allowlist filtering.
 #
 # Build:
 #   ./build.sh                          # Build only
 #   ./build.sh push <registry>          # Build and push
 #
 # Usage:
-#   podman exec \
-#     -e SSH_AUTH_SOCK=/tmp/flue.sock \
+#   fluehost -- podman exec \
 #     --preserve-fds 1 \
+#     -e SSH_AUTH_SOCK=/tmp/flue.sock \
 #     <container> flue
 
 ARG BASE_IMAGE=ghcr.io/snugmo/cote:latest-base
@@ -43,7 +42,7 @@ ARG CREATED=
 ARG BASE_IMAGE=ghcr.io/snugmo/cote:latest-base
 
 LABEL org.opencontainers.image.title="flue" \
-      org.opencontainers.image.description="A narrow channel from your host's SSH agent into a container via podman exec --preserve-fds" \
+      org.opencontainers.image.description="Filtered SSH agent bridge from host to container via SCM_RIGHTS control channel" \
       org.opencontainers.image.authors="Joakim Nohlgård" \
       org.opencontainers.image.vendor="Snugmo" \
       org.opencontainers.image.licenses="AGPL-3.0" \

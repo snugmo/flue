@@ -1,15 +1,21 @@
 # flue
 
-A narrow channel from your host's SSH agent into a container.
+A narrow channel from your host's SSH agent into a container, with host-side
+key filtering.
 
-`flue` is a tiny Go daemon that listens on a Unix
-socket inside a container and proxies every byte to/from a preserved file
-descriptor pointing at the host's SSH authentication agent socket. This
-enables `podman exec --preserve-fds` to share a forwarded SSH agent into
-the container.
+Two small Go binaries:
 
-Built from source at `cmd/flue/` and installed as
-`/usr/local/bin/flue` (a fully static binary, no runtime deps).
+- **`flue`** (container-side) listens on a Unix socket inside the container
+  and forwards each client connection's file descriptor to the host over a
+  socketpair control channel (SCM_RIGHTS). No protocol parsing here.
+- **`fluehost`** (host-side) creates that socketpair, passes one end into
+  the container via `podman exec --preserve-fds 1`, and relays every
+  forwarded client to the real `$SSH_AUTH_SOCK` using
+  `golang.org/x/crypto/ssh/agent` with a filtering wrapper.
+
+Built from source at `cmd/flue/` and `cmd/fluehost/` and installed as
+`/usr/local/bin/flue` and `/usr/local/bin/fluehost` (fully static binaries,
+no runtime deps).
 
 ## Build
 
@@ -37,34 +43,14 @@ Built from source at `cmd/flue/` and installed as
 3. The container's image includes the `flue` binary (use this
    image, or build and install the binary into your own image).
 
-### One-liner
-
-```sh
-podman exec \
-  -e SSH_AUTH_SOCK=/tmp/flue.sock \
-  --preserve-fds 1 \
-  <container> flue
-```
-
-This runs the proxy as the container's foreground process. It listens on
-`/tmp/flue.sock` and proxies to FD 3 (the preserved host agent
-socket).
-
-> **Note:** `--preserve-fds` forwards *open file descriptors*, not socket
-> paths. FD 3 must already hold a connected handle to your agent socket in
-> the exec'ing process. The easiest way to do that reliably is the
-> companion `fluehost` binary (see below), which opens the agent socket
-> with a proper `socket()`+`connect(2)`, dups it onto FD 3, and then
-> `exec`s `podman` for you.
-
 ### With fluehost (recommended)
 
-`fluehost` is the host-side half. It removes the need for shell fd
-redirection, which can fail with `ENXIO` on Unix sockets because the shell
-uses `open(2)`'s implicit-connect path:
+`fluehost` is the host-side half. It creates a socketpair, passes one end
+into the container as fd 3, and proxies every client connection to the real
+agent with filtering:
 
 ```sh
-go run ./cmd/fluehost -- podman exec \
+fluehost -- podman exec \
   --preserve-fds 1 \
   -e SSH_AUTH_SOCK=/tmp/flue.sock \
   <container> flue
@@ -78,17 +64,15 @@ fluehost -- podman exec --preserve-fds 1 \
   -e SSH_AUTH_SOCK=/tmp/flue.sock <container> flue
 ```
 
-`fluehost` reads `$SSH_AUTH_SOCK` (or `-sock`), connects to it, places the
-connected socket on FD 3 (or `-fd N`), and `exec`s the given command, which
-inherits that FD. `podman --preserve-fds 1` then forwards it into the
-container.
+`fluehost` dials `$SSH_AUTH_SOCK` (or `-sock`) once per client connection,
+so repeated `ssh` / `ssh-add` / `git` invocations all work.
 
 ### In a shell (background the proxy, get a shell)
 
 ```sh
-podman exec \
-  -e SSH_AUTH_SOCK=/tmp/flue.sock \
+fluehost -- podman exec \
   --preserve-fds 1 \
+  -e SSH_AUTH_SOCK=/tmp/flue.sock \
   <container> sh -c '
     flue &
     exec bash
@@ -99,34 +83,105 @@ Then inside the container:
 
 ```sh
 $ ssh-add -l
-3072 SHA256:xxxx your-key (ED25519)
+256 SHA256:xxxx your-key (ED25519)
 $ git clone git@github.com:your/repo.git   # works
 ```
 
 ### Flags
 
-| Flag     | Default                      | Description                           |
-| -------- | ---------------------------- | ------------------------------------- |
-| `-sock`  | `/tmp/flue.sock`             | Unix socket path inside the container |
-| `-fd`    | `3`                          | Preserved FD number of the host agent |
+**flue** (container-side):
+
+| Flag      | Default          | Description                                    |
+| --------- | ---------------- | ---------------------------------------------- |
+| `-sock`   | `/tmp/flue.sock` | Unix socket path inside the container          |
+| `-fd`     | `3`              | File descriptor number of the preserved control socket |
+| `-verbose`| `false`          | Log each forwarded client connection           |
+
+**fluehost** (host-side):
+
+| Flag         | Default            | Description                                          |
+| ------------ | ------------------ | ---------------------------------------------------- |
+| `-sock`      | `$SSH_AUTH_SOCK`   | Agent socket path to proxy to                        |
+| `-allow-key` | (none = all keys)  | Repeatable. Only keys with this SHA256 fingerprint are listed and can sign |
+| `-verbose`   | `false`            | Log every agent request (operation, fingerprint, allowed/denied) |
 
 ## How it works
 
-1. You SSH to the host with agent forwarding enabled. SSH creates a Unix
-   socket at `$SSH_AUTH_SOCK` on the host and sets the env var in your
-   shell. That socket is an open file descriptor (say FD 3) in your shell
-   process.
-2. `podman exec --preserve-fds 1` copies FD 3 from the exec'd process into
-   the container as FD 3 of the exec'd command.
-3. `flue` opens a *new* Unix socket at `/tmp/flue.sock`
-   inside the container and shuttles bytes bidirectionally between it and
-   FD 3 using raw `unix.Read`/`unix.Write` syscalls.
-4. Inside the container, `ssh` / `ssh-add` / `git` see
-   `SSH_AUTH_SOCK=/tmp/flue.sock` and talk to the proxy, which
-   forwards to the real agent on the host (via the forwarded channel).
+1. `fluehost` creates a `SOCK_SEQPACKET` Unix socketpair.
+2. It passes one end into the container as fd 3 via `podman exec
+   --preserve-fds 1`, closes its copy, and keeps the other end as the
+   control channel.
+3. Inside the container, `flue` listens on `/tmp/flue.sock`. For each
+   client connection (ssh, ssh-add, git), it extracts the fd, sends it to
+   the host over the control socket (SCM_RIGHTS), and closes the local
+   copy.
+4. On the host, `fluehost` receives the fd, dials a fresh connection to
+   `$SSH_AUTH_SOCK`, and runs `agent.ServeAgent(filter, clientConn)` —
+   the filter wraps the upstream agent client and enforces the key
+   allowlist.
+5. When the podman exec exits, the control socket closes, `flue` exits,
+   and the listening socket is removed.
+
+### Filter policy
+
+| Operation       | Behavior                                              |
+| --------------- | ----------------------------------------------------- |
+| `List`          | Forwarded; only allowed keys returned if `-allow-key` is set |
+| `Sign`          | Forwarded only for allowed keys                       |
+| `SignWithFlags` | Forwarded only for allowed keys (needed for RSA rsa-sha2-256/512) |
+| `Add`           | Denied                                                |
+| `Remove`        | Denied                                                |
+| `RemoveAll`     | Denied                                                |
+| `Lock`          | Denied                                                |
+| `Unlock`        | Denied                                                |
+| `Signers`       | Denied                                                |
+| `Extension`     | Only `session-bind@openssh.com` is forwarded; all others return `ErrExtensionUnsupported` |
 
 ## Security
 
-Anyone inside the container can use your SSH keys. Only use this in
-trusted containers. The proxy adds no access control; it is a transparent
-byte pipe.
+The container only receives the control socket — never a path or fd to the
+host agent socket, its directory, or `$XDG_RUNTIME_DIR`. The filter
+restricts which keys can be listed and used for signing, but the key
+*material* (fingerprint, comment) of allowed keys is visible inside the
+container. Only use this in trusted containers.
+
+## Integration check (manual)
+
+Run these against a real container to verify the full path works:
+
+```sh
+# 1. ssh-add -l run twice in a row succeeds both times
+fluehost -- podman exec --preserve-fds 1 \
+  -e SSH_AUTH_SOCK=/tmp/flue.sock <container> sh -c '
+    flue & sleep 0.5
+    ssh-add -l && ssh-add -l
+  '
+
+# 2. A loop of ~20 concurrent ssh-add -l calls all succeed
+fluehost -- podman exec --preserve-fds 1 \
+  -e SSH_AUTH_SOCK=/tmp/flue.sock <container> sh -c '
+    flue & sleep 0.5
+    for i in $(seq 1 20); do ssh-add -l & done; wait
+  '
+
+# 3. ssh-add -D is refused
+fluehost -- podman exec --preserve-fds 1 \
+  -e SSH_AUTH_SOCK=/tmp/flue.sock <container> sh -c '
+    flue & sleep 0.5
+    ssh-add -D 2>&1  # expect an error
+  '
+
+# 4. ssh -T git@<forge> or git ls-remote over ssh works
+fluehost -- podman exec --preserve-fds 1 \
+  -e SSH_AUTH_SOCK=/tmp/flue.sock <container> sh -c '
+    flue & sleep 0.5
+    git ls-remote git@github.com:your/repo.git
+  '
+
+# 5. With --allow-key, only that key shows in ssh-add -l
+fluehost -allow-key SHA256:... -- podman exec --preserve-fds 1 \
+  -e SSH_AUTH_SOCK=/tmp/flue.sock <container> sh -c '
+    flue & sleep 0.5
+    ssh-add -l  # only the allowed key is listed
+  '
+```

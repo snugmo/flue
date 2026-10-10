@@ -302,7 +302,7 @@ func serveControl(ctrl net.Conn, filter *agentFilter, wg *sync.WaitGroup) {
 	oob := make([]byte, 4096)
 
 	for {
-		n, oobn, _, _, err := ctrl.(*net.UnixConn).ReadMsgUnix(buf, oob)
+		n, oobn, flags, _, err := ctrl.(*net.UnixConn).ReadMsgUnix(buf, oob)
 		if err != nil {
 			if err == io.EOF || err == unix.ECONNRESET {
 				log.Printf("fluehost: control channel closed")
@@ -312,6 +312,11 @@ func serveControl(ctrl net.Conn, filter *agentFilter, wg *sync.WaitGroup) {
 			break
 		}
 		_ = n
+
+		if flags&unix.MSG_CTRUNC != 0 {
+			log.Printf("fluehost: control message truncated; discarding")
+			continue
+		}
 
 		cmsgs, err := unix.ParseSocketControlMessage(oob[:oobn])
 		if err != nil {
@@ -381,10 +386,11 @@ func handleClient(fd int, filter *agentFilter) {
 }
 
 // dialAgent connects to the host's real SSH agent.
+// Prefers the -sock flag over $SSH_AUTH_SOCK.
 func dialAgent() (net.Conn, error) {
-	sockPath := os.Getenv("SSH_AUTH_SOCK")
+	sockPath := *sockArg
 	if sockPath == "" {
-		sockPath = *sockArg
+		sockPath = os.Getenv("SSH_AUTH_SOCK")
 	}
 	return net.Dial("unix", sockPath)
 }

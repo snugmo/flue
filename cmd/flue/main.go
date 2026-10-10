@@ -8,6 +8,9 @@
 // filtering happens here: the host side (fluehost) proxies each
 // connection to the real agent with filtering applied.
 //
+// flue exits when the control socket returns EOF (the host has gone away),
+// removing the listening socket.
+//
 // Usage (see fluehost on the host side):
 //
 //	fluehost -- podman exec \
@@ -19,6 +22,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -56,15 +60,35 @@ func main() {
 	if err != nil {
 		log.Fatalf("listen %s: %v", *sockPath, err)
 	}
-	os.Chmod(*sockPath, 0600)
+	if err := os.Chmod(*sockPath, 0600); err != nil {
+		log.Fatalf("chmod %s: %v", *sockPath, err)
+	}
 	log.Printf("flue: listening on %s, control fd %d", *sockPath, fdNum)
+
+	// Open the control socket once for a reader goroutine that detects
+	// EOF (host gone). Each forwarder opens its own copy for writing.
+	ctrl, err := net.FileConn(os.NewFile(uintptr(fdNum), "flue-control"))
+	if err != nil {
+		log.Fatalf("control fd: %v", err)
+	}
+	defer ctrl.Close()
+
+	done := make(chan struct{})
+	go watchControl(ctrl, done)
 
 	var wg sync.WaitGroup
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Printf("accept: %v", err)
+			select {
+			case <-done:
+				log.Printf("flue: host gone, shutting down")
+				wg.Wait()
+				return
+			default:
+			}
+			// Transient accept error; retry unless the host is gone.
 			continue
 		}
 		wg.Add(1)
@@ -76,6 +100,24 @@ func main() {
 				log.Printf("forwarded client")
 			}
 		}(conn)
+	}
+}
+
+// watchControl blocks on the control socket until the host closes it
+// (EOF or error), then closes done.
+func watchControl(ctrl net.Conn, done chan<- struct{}) {
+	defer close(done)
+	buf := make([]byte, 64)
+	for {
+		_, err := ctrl.Read(buf)
+		if err != nil {
+			if err != io.EOF && err != unix.ECONNRESET {
+				log.Printf("flue: control read: %v", err)
+			}
+			return
+		}
+		// A message arrived (shouldn't happen on this direction, but
+		// drain it so the buffer doesn't fill).
 	}
 }
 
