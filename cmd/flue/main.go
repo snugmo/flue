@@ -251,9 +251,10 @@ func (f *agentFilter) isAllowed(fp string) bool {
 }
 
 // logf traces one agent operation at debug level (enable with
-// -log-level=debug; the former -verbose flag).
-func (f *agentFilter) logf(op, fp string, allowed bool) {
-	log.Debug("flue: agent op", "op", op, "fp", fp, "allowed", allowed)
+// -log-level=debug; the former -verbose flag). The detail argument is a
+// key fingerprint for sign-style ops and a summary (or empty) otherwise.
+func (f *agentFilter) logf(op, detail string, allowed bool) {
+	log.Debug("flue: agent op", "op", op, "detail", detail, "allowed", allowed)
 }
 
 // keyFingerprint computes the SHA256: fingerprint of an ssh.PublicKey.
