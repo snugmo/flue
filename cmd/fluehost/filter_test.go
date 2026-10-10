@@ -1,17 +1,23 @@
 package main
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"net"
 	"os"
+	"sync"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+	"go.uber.org/goleak"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/sys/unix"
 )
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
 
 // testKeys holds the shared test key material (ed25519 private keys and
 // their SSH public key blobs + fingerprints).
@@ -63,6 +69,8 @@ func initTestKeys(t *testing.T) {
 }
 
 // startKeyringAgent starts a Unix socket agent server serving both test keys.
+// It tracks in-flight ServeAgent goroutines so goleak can verify they drain
+// after the listener closes.
 func startKeyringAgent(t *testing.T) string {
 	t.Helper()
 	initTestKeys(t)
@@ -85,20 +93,31 @@ func startKeyringAgent(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	t.Cleanup(func() { l.Close() })
+
+	var wg sync.WaitGroup
+	done := make(chan struct{})
 
 	go func() {
+		defer close(done)
 		for {
 			conn, err := l.Accept()
 			if err != nil {
 				return
 			}
+			wg.Add(1)
 			go func(c net.Conn) {
+				defer wg.Done()
 				defer c.Close()
 				_ = agent.ServeAgent(kr, c)
 			}(conn)
 		}
 	}()
+
+	t.Cleanup(func() {
+		l.Close()
+		<-done
+		wg.Wait()
+	})
 
 	return l.Addr().String()
 }
@@ -113,6 +132,8 @@ func newTestFilter(t *testing.T, allow map[string]struct{}) *agentFilter {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
+	// Close the client side first so the server's ServeAgent returns before
+	// the listener cleanup waits on in-flight goroutines.
 	t.Cleanup(func() { upstreamConn.Close() })
 
 	return &agentFilter{
@@ -144,8 +165,8 @@ func TestFilterListAllowlist(t *testing.T) {
 	if len(keys) != 1 {
 		t.Fatalf("expected 1 key, got %d", len(keys))
 	}
-	if !bytes.Equal(keys[0].Blob, testKeys.blob1) {
-		t.Fatalf("expected allowed key 1, got a different key")
+	if diff := cmp.Diff(testKeys.blob1, keys[0].Blob); diff != "" {
+		t.Fatalf("unexpected key blob (-want +got):\n%s", diff)
 	}
 }
 

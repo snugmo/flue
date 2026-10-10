@@ -13,7 +13,7 @@ cmd/
   fluehost/
     main.go            # Host-side: socketpair control channel, agent proxy with filtering
     filter_test.go     # Tests for the agent filter (list, sign, deny mutating ops)
-go.mod                 # Module github.com/snugmo/flue, depends on golang.org/x/sys + x/crypto
+go.mod                 # Module github.com/snugmo/flue; runtime deps: golang.org/x/sys + x/crypto; test deps: goleak + go-cmp
 go.sum
 Containerfile          # Two-stage: builds static binaries in go-build, copies to final image
 build.sh               # Buildah wrapper with registry/tag config
@@ -53,7 +53,7 @@ Build overrides: `DEV_VERSION=`, `DEV_IMAGE_NAME=`, `DEV_REGISTRY=`, `DEV_BASE_I
 - **Socketpair control channel**: `SOCK_SEQPACKET` socketpair; one end is passed to the container as fd 3 via `exec.Command.ExtraFiles`, the other end stays on the host.
 - **Per-client upstream**: each forwarded client gets a fresh `net.Dial("unix", SSH_AUTH_SOCK)` connection, wrapped in an `agentFilter` that implements `agent.ExtendedAgent`.
 - **Key allowlist**: `--allow-key` (repeatable) filters `List` and `Sign`/`SignWithFlags` by SHA256 fingerprint. `Add`, `Remove`, `RemoveAll`, `Lock`, `Unlock`, `Signers` are always denied. Only the `session-bind@openssh.com` extension is forwarded.
-- **Dependencies**: `golang.org/x/sys` (unix syscalls) + `golang.org/x/crypto` (ssh agent protocol).
+- **Runtime dependencies**: `golang.org/x/sys` (unix syscalls) + `golang.org/x/crypto` (ssh agent protocol). **Test-only dependencies**: `go.uber.org/goleak` (goroutine leak detection) + `github.com/google/go-cmp` (readable diffs in test failures).
 
 ### Containerfile
 
