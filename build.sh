@@ -76,6 +76,10 @@ buildah build \
     -f "${SCRIPT_DIR}/Containerfile" \
     "${SCRIPT_DIR}"
 
+# Also build the host-side helper binary for local use.
+printf '>> Building fluehost (host-side helper) ...\n'
+CGO_ENABLED=0 go build -ldflags="-s -w" -o "${PROJECT_ROOT}/fluehost" "${PROJECT_ROOT}/cmd/fluehost"
+
 printf '>> Build complete: %s\n' "${FULL_IMAGE}"
 
 # Push (optional)

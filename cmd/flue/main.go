@@ -4,10 +4,10 @@
 //
 // This enables "SSH agent forwarding through podman exec --preserve-fds":
 //
-//	podman exec \
-//  -e SSH_AUTH_SOCK=/tmp/flue.sock \
-//	  --preserve-fds 1 \
-//  <container> flue
+//		podman exec \
+//	 -e SSH_AUTH_SOCK=/tmp/flue.sock \
+//		  --preserve-fds 1 \
+//	 <container> flue
 //
 // The host passes the forwarded agent socket (FD 3 in the exec'd process) to
 // the container; the proxy opens /tmp/flue.sock and shuttles bytes
@@ -122,7 +122,7 @@ func handle(client net.Conn, fdNum int, wg *sync.WaitGroup) {
 			if err != nil {
 				// A 0-byte read with a nil errno is the normal EOF from
 				// the agent closing; only log if there was a real error.
-				if err != nil && err != io.EOF {
+				if err != io.EOF {
 					log.Printf("agent->client read: %v", err)
 				}
 				break

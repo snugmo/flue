@@ -50,6 +50,39 @@ This runs the proxy as the container's foreground process. It listens on
 `/tmp/flue.sock` and proxies to FD 3 (the preserved host agent
 socket).
 
+> **Note:** `--preserve-fds` forwards *open file descriptors*, not socket
+> paths. FD 3 must already hold a connected handle to your agent socket in
+> the exec'ing process. The easiest way to do that reliably is the
+> companion `fluehost` binary (see below), which opens the agent socket
+> with a proper `socket()`+`connect(2)`, dups it onto FD 3, and then
+> `exec`s `podman` for you.
+
+### With fluehost (recommended)
+
+`fluehost` is the host-side half. It removes the need for shell fd
+redirection, which can fail with `ENXIO` on Unix sockets because the shell
+uses `open(2)`'s implicit-connect path:
+
+```sh
+go run ./cmd/fluehost -- podman exec \
+  --preserve-fds 1 \
+  -e SSH_AUTH_SOCK=/tmp/flue.sock \
+  <container> flue
+```
+
+or build it once and keep it on your `PATH`:
+
+```sh
+go build -o ~/bin/fluehost ./cmd/fluehost
+fluehost -- podman exec --preserve-fds 1 \
+  -e SSH_AUTH_SOCK=/tmp/flue.sock <container> flue
+```
+
+`fluehost` reads `$SSH_AUTH_SOCK` (or `-sock`), connects to it, places the
+connected socket on FD 3 (or `-fd N`), and `exec`s the given command, which
+inherits that FD. `podman --preserve-fds 1` then forwards it into the
+container.
+
 ### In a shell (background the proxy, get a shell)
 
 ```sh

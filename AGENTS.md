@@ -2,17 +2,19 @@
 
 ## Project Overview
 
-**flue** — a narrow channel from your host's SSH agent into a container. A single Go binary (`flue`) that listens on a Unix socket inside a container and proxies every byte to/from a preserved file descriptor pointing at the host's SSH authentication agent socket, enabling `podman exec --preserve-fds` to share a forwarded SSH agent into the container. From the [Snugmo](https://github.com/snugmo) GitHub org.
+**flue** — a narrow channel from your host's SSH agent into a container. Two Go binaries: `flue` (container-side) listens on a Unix socket inside a container and proxies every byte to/from a preserved file descriptor pointing at the host's SSH authentication agent socket; `fluehost` (host-side) opens that agent socket with a proper `socket()`+`connect(2)`, dups it onto FD 3, and `exec`s `podman exec --preserve-fds` so the connected socket is forwarded into the container. From the [Snugmo](https://github.com/snugmo) GitHub org.
 
 ## Structure
 
 ```
 cmd/
   flue/
-    main.go            # The proxy: Unix socket listener -> raw unix.Read/Write to preserved FD
+    main.go            # Container-side proxy: Unix socket listener -> raw unix.Read/Write to preserved FD
+  fluehost/
+    main.go            # Host-side helper: connect() to agent socket, dup2 onto FD 3, exec command
 go.mod                 # Module github.com/snugmo/flue, depends on golang.org/x/sys
 go.sum
-Containerfile          # Two-stage: builds static binary in go-build, copies to final image
+Containerfile          # Two-stage: builds static binaries in go-build, copies to final image
 build.sh               # Buildah wrapper with registry/tag config
 README.md              # Usage, flags, how-it-works, security notes
 LICENSE                # AGPL-3.0
@@ -22,11 +24,12 @@ LICENSE                # AGPL-3.0
 
 | Task                  | Command                          |
 | --------------------- | -------------------------------- |
-| Build the binary      | `go build -o flue ./cmd/flue` |
+| Build the binaries    | `go build -o flue ./cmd/flue && go build -o fluehost ./cmd/fluehost` |
 | Build the image       | `./build.sh`                     |
 | Build + push          | `./build.sh push`                |
 | Build + push (custom) | `./build.sh push <registry>`     |
 | Run the proxy         | `podman exec -e SSH_AUTH_SOCK=/tmp/flue.sock --preserve-fds 1 <container> flue` |
+| Forward agent (via fluehost) | `fluehost -- podman exec -e SSH_AUTH_SOCK=/tmp/flue.sock --preserve-fds 1 <container> flue` |
 
 Build overrides: `DEV_VERSION=`, `DEV_IMAGE_NAME=`, `DEV_REGISTRY=`, `DEV_BASE_IMAGE=` (see `build.sh`).
 

@@ -29,11 +29,13 @@ WORKDIR /build/flue
 COPY go.mod go.sum ./
 COPY cmd/ cmd/
 
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/local/bin/flue ./cmd/flue
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/local/bin/flue ./cmd/flue \
+ && CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/local/bin/fluehost ./cmd/fluehost
 
 FROM ${BASE_IMAGE}
 
 COPY --from=go-build /usr/local/bin/flue /usr/local/bin/flue
+COPY --from=go-build /usr/local/bin/fluehost /usr/local/bin/fluehost
 
 ARG VERSION=latest
 ARG REVISION=unknown
