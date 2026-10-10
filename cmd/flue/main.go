@@ -61,8 +61,8 @@ import (
 )
 
 var (
-	sockArg  = flag.String("sock", "", "Agent socket path to use (default $SSH_AUTH_SOCK)")
-	logLevel = flag.String("log-level", "info", "log level: debug, info, warn, or error")
+	sockArg   = flag.String("sock", "", "Agent socket path to use (default $SSH_AUTH_SOCK)")
+	logLevel  = flag.String("log-level", "info", "log level: debug, info, warn, or error")
 	allowKeys = newAllowKeyFlag()
 )
 

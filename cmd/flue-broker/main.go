@@ -45,8 +45,9 @@ package main
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -62,7 +63,35 @@ var (
 		"Unix socket path to listen on inside the container")
 	fdArg = flag.String("fd", "3",
 		"File descriptor number of the preserved control socket (default 3)")
+	logLevel = flag.String("log-level", "info",
+		"log level: debug, info, warn, or error")
 )
+
+// log is the package-level slog logger. The default is rebuilt in main
+// from the -log-level flag; the declaration-time default keeps tests
+// (which never call main) working.
+var log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+// parseLevel maps a -log-level flag value to a slog.Level.
+func parseLevel(s string) (slog.Level, error) {
+	switch strings.ToLower(s) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info":
+		return slog.LevelInfo, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	}
+	return 0, fmt.Errorf("unknown log level %q (want debug, info, warn, or error)", s)
+}
+
+// fatalf logs at error level and exits 1, mirroring log.Fatalf.
+func fatalf(format string, args ...any) {
+	log.Error(format, args...)
+	os.Exit(1)
+}
 
 // heldControl keeps the preserved control fd open for the whole process
 // lifetime. net.FileConn wraps a file in a Conn and closes the underlying
@@ -76,28 +105,34 @@ var heldControl *os.File
 func main() {
 	flag.Parse()
 
+	if lvl, err := parseLevel(*logLevel); err != nil {
+		fatalf("flue-broker: %v", err)
+	} else {
+		log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
+	}
+
 	fdNum, err := strconv.Atoi(*fdArg)
 	if err != nil || fdNum < 3 {
-		log.Fatalf("invalid -fd %q: must be an integer >= 3", *fdArg)
+		fatalf("flue-broker: invalid -fd %q: must be an integer >= 3", *fdArg)
 	}
 
 	var st unix.Stat_t
 	if err := unix.Fstat(fdNum, &st); err != nil {
-		log.Fatalf("preserved fd %d is not usable: %v", fdNum, err)
+		fatalf("flue-broker: preserved fd %d is not usable: %v", fdNum, err)
 	}
 
 	if err := os.Remove(*sockPath); err != nil && !os.IsNotExist(err) {
-		log.Fatalf("remove stale socket %s: %v", *sockPath, err)
+		fatalf("flue-broker: remove stale socket %s: %v", *sockPath, err)
 	}
 
 	listener, err := net.Listen("unix", *sockPath)
 	if err != nil {
-		log.Fatalf("listen %s: %v", *sockPath, err)
+		fatalf("flue-broker: listen %s: %v", *sockPath, err)
 	}
 	if err := os.Chmod(*sockPath, 0600); err != nil {
-		log.Fatalf("chmod %s: %v", *sockPath, err)
+		fatalf("flue-broker: chmod %s: %v", *sockPath, err)
 	}
-	log.Printf("flue-broker: listening on %s, control fd %d", *sockPath, fdNum)
+	log.Info("flue-broker: listening", "sock", *sockPath, "control-fd", fdNum)
 	defer os.Remove(*sockPath)
 
 	// Keep the preserved control fd open for the whole process lifetime so
@@ -109,15 +144,15 @@ func main() {
 	// for the broker's lifetime so the socket path it owns remains in place
 	// for in-container clients to connect to.
 	if err := sendListener(listener); err != nil {
-		log.Fatalf("hand over listener: %v", err)
+		fatalf("flue-broker: hand over listener: %v", err)
 	}
-	log.Printf("flue-broker: handed listener to host")
+	log.Debug("flue-broker: handed listener to host")
 
 	// Open the control socket once for a reader that detects EOF (host
 	// gone). The write side is a separate dup created on demand.
 	ctrl, err := net.FileConn(os.NewFile(uintptr(fdNum), "flue-control"))
 	if err != nil {
-		log.Fatalf("control fd: %v", err)
+		fatalf("flue-broker: control fd: %v", err)
 	}
 	defer closeQuiet(ctrl)
 
@@ -146,9 +181,9 @@ func waitForHost(ctrl net.Conn) int {
 		_, err := ctrl.Read(buf)
 		if err != nil {
 			if err != io.EOF && err != unix.ECONNRESET {
-				log.Printf("flue-broker: control read: %v", err)
+				log.Warn("flue-broker: control read", "err", err)
 			}
-			log.Printf("flue-broker: host gone, shutting down")
+			log.Info("flue-broker: host gone, shutting down")
 			return 0
 		}
 		// A message arrived on the host->broker direction (should not in the
@@ -175,7 +210,7 @@ func runChild(args []string, sockPath string, ctrl net.Conn) int {
 	cmd.Stderr = os.Stderr
 	cmd.Env = withEnv(os.Environ(), "SSH_AUTH_SOCK", sockPath)
 
-	log.Printf("flue-broker: running %v (SSH_AUTH_SOCK=%s)", args, sockPath)
+	log.Info("flue-broker: running", "cmd", args, "sock", sockPath)
 
 	// Keep the broker's socket fds (the control socketpair and the listener)
 	// out of the child's fd table. CLOEXEC only affects the exec'd child;
@@ -185,7 +220,7 @@ func runChild(args []string, sockPath string, ctrl net.Conn) int {
 	markCloexecAll()
 
 	if err := cmd.Start(); err != nil {
-		log.Fatalf("start %s: %v", cmdPath, err)
+		fatalf("flue-broker: start %s: %v", cmdPath, err)
 	}
 
 	// Watch the control channel for the host going away. A reader goroutine
@@ -206,9 +241,9 @@ func runChild(args []string, sockPath string, ctrl net.Conn) int {
 					return
 				}
 				if err != io.EOF && err != unix.ECONNRESET {
-					log.Printf("flue-broker: control read: %v", err)
+					log.Warn("flue-broker: control read", "err", err)
 				}
-				log.Printf("flue-broker: host gone")
+				log.Warn("flue-broker: host gone")
 				close(hostGone)
 				return
 			}
@@ -225,14 +260,14 @@ func runChild(args []string, sockPath string, ctrl net.Conn) int {
 		_ = cmd.Process.Kill()
 		<-childDone
 		<-readerDone // reader already exited after closing hostGone
-		log.Printf("flue-broker: child killed after host departure")
+		log.Warn("flue-broker: child killed after host departure")
 		return 1
 	case err := <-childDone:
 		code := childExitCode(err)
 		shuttingDown.Store(true)
 		_ = ctrl.Close() // unblock the control reader
 		<-readerDone
-		log.Printf("flue-broker: child exited with code %d", code)
+		log.Debug("flue-broker: child exited", "code", code)
 		return code
 	}
 }
@@ -312,7 +347,7 @@ func sendListener(listener net.Listener) error {
 
 	// Close only the dup; keep ln (and thus the path) open.
 	if cerr := f.Close(); cerr != nil && !errors.Is(cerr, os.ErrClosed) {
-		log.Printf("close listener dup: %v", cerr)
+		log.Debug("flue-broker: close listener dup", "err", cerr)
 	}
 	return nil
 }
@@ -321,6 +356,6 @@ func sendListener(listener net.Listener) error {
 // "use of closed network connection".
 func closeQuiet(c net.Conn) {
 	if err := c.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-		log.Printf("flue-broker: close: %v", err)
+		log.Debug("flue-broker: close", "err", err)
 	}
 }
