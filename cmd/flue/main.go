@@ -24,21 +24,26 @@
 //   - Add, Remove, RemoveAll, Lock, Unlock, Signers: always denied.
 //   - Extension: only session-bind@openssh.com is forwarded.
 //
-// Typical use:
+// Two forms:
+//
+// Passthrough — run any command that receives the control socketpair
+// (typically flue-broker, or a wrapper that preserves fd 3) yourself:
 //
 //	flue -- podman exec \
 //	  --preserve-fds 1 \
 //	  -e SSH_AUTH_SOCK=/tmp/flue.sock \
 //	  <container> flue-broker
 //
-// Wrapper mode — hand the broker a command and get a shell (or any command)
-// inside the container with the agent available. The broker sets
-// SSH_AUTH_SOCK for the child, so -e is not required, and flue exits when
-// the child does, returning its exit code:
+//	flue -- podman exec --preserve-fds 1 <container> flue-broker bash
 //
-//	flue -- podman exec \
-//	  --preserve-fds 1 \
-//	  <container> flue-broker bash
+// Enter — sugar for the common case. It runs the podman exec for you,
+// in wrapper mode (so the broker sets SSH_AUTH_SOCK for the child):
+//
+//	flue enter <container> [command [args…]]
+//
+// with no command defaulting to /bin/sh, and a tty allocated when stdin
+// is a tty. flue exits when the container command does, returning its
+// exit code. The in-container socket path is fixed at /tmp/flue.sock.
 package main
 
 import (
@@ -65,6 +70,15 @@ var (
 	logLevel  = flag.String("log-level", "info", "log level: debug, info, warn, or error")
 	allowKeys = newAllowKeyFlag()
 )
+
+// enterSocket is the Unix socket path flue-broker listens on inside the
+// container in enter mode. It is fixed (not configurable) in this first
+// implementation and must match flue-broker's -sock default.
+const enterSocket = "/tmp/flue.sock"
+
+// defaultEnterCmd is the command run inside the container when `flue
+// enter` is given no explicit command.
+const defaultEnterCmd = "/bin/sh"
 
 // log is the package-level slog logger. The default is rebuilt in main
 // from the -log-level flag; the declaration-time default keeps tests (which
@@ -115,9 +129,94 @@ func main() {
 
 	args := flag.Args()
 	if len(args) == 0 {
-		fatalf("flue: usage: flue [-sock path] [-allow-key fp]... -- command [args...]")
+		fatalf(`flue: usage:
+  flue [-sock path] [-allow-key fp]... enter <container> [command [args…]]
+  flue [-sock path] [-allow-key fp]... -- command [args...]`)
 	}
 
+	// Subcommand dispatch. `enter` is sugar for a podman exec that runs
+	// flue-broker in the named container; anything else is the classic
+	// passthrough mode, where the caller supplies the whole command. Note
+	// a program literally named `enter` can only be run in passthrough
+	// mode by giving its path.
+	var code int
+	switch args[0] {
+	case "enter":
+		code = runEnter(args[1:], sockPath)
+	default:
+		code = runPassthrough(args, sockPath)
+	}
+
+	if code != 0 {
+		os.Exit(code)
+	}
+}
+
+// runEnter is the `flue enter` subcommand: it runs `podman exec` against
+// the named container with flue-broker wrapping the given command
+// (default /bin/sh), allocating a tty when stdin is a tty. The control
+// socketpair is preserved through podman exec as fd 3 (--preserve-fds 1)
+// and the agent is proxied exactly as in passthrough mode.
+func runEnter(args []string, sockPath string) int {
+	container, cmd, err := enterTarget(args)
+	if err != nil {
+		fatalf("flue: enter: %v\n  usage: flue enter <container> [command [args…]]", err)
+	}
+
+	tty := stdinIsTTY()
+	execArgs := enterExecArgs(container, cmd, tty)
+
+	podman, err := exec.LookPath("podman")
+	if err != nil {
+		fatalf("flue: enter: find podman: %v", err)
+	}
+
+	return runChildWithAgent(podman, execArgs, sockPath)
+}
+
+// enterTarget splits the `flue enter` arguments into the container name
+// and the command to run inside it (default /bin/sh).
+func enterTarget(args []string) (container string, cmd []string, err error) {
+	if len(args) == 0 {
+		return "", nil, errors.New("missing container name")
+	}
+	container = args[0]
+	if len(args) > 1 {
+		return container, args[1:], nil
+	}
+	return container, []string{defaultEnterCmd}, nil
+}
+
+// enterExecArgs builds the argument list for the `podman exec` that runs
+// flue-broker (wrapping cmd) inside the container. A tty is requested
+// only when the caller's stdin is a tty.
+func enterExecArgs(container string, cmd []string, tty bool) []string {
+	out := []string{"exec"}
+	if tty {
+		out = append(out, "-ti")
+	} else {
+		out = append(out, "-i")
+	}
+	out = append(out,
+		"--preserve-fds", "1",
+		"-e", "SSH_AUTH_SOCK="+enterSocket,
+		container,
+		"flue-broker",
+	)
+	return append(out, cmd...)
+}
+
+// stdinIsTTY reports whether stdin is a terminal, using the TCGETS ioctl
+// (which fails for pipes, regular files, and sockets).
+func stdinIsTTY() bool {
+	_, err := unix.IoctlGetTermios(int(os.Stdin.Fd()), unix.TCGETS)
+	return err == nil
+}
+
+// runPassthrough is the classic mode: the caller passes a command (after
+// `--`) that is expected to receive the control socketpair (flue-broker,
+// or a wrapper that preserves fd 3).
+func runPassthrough(args []string, sockPath string) int {
 	// Resolve the command to an absolute path.
 	cmdPath := args[0]
 	if !strings.Contains(cmdPath, "/") {
@@ -127,6 +226,25 @@ func main() {
 		}
 	}
 
+	return runChildWithAgent(cmdPath, args[1:], sockPath)
+}
+
+// runChildWithAgent starts a child (program plus args), hands one end of
+// a SOCK_SEQPACKET socketpair to it as fd 3, receives the broker's
+// listening fd over the other end, and proxies each accepted client
+// connection to the host agent with filtering applied. It blocks until
+// the child exits and returns the child's exit code (0 on success).
+//
+// Lifetime is driven by the process tree, not the control channel. The
+// control channel carries exactly one message (the listener fd); its
+// connection stays open until the broker is gone (so the broker never
+// sees a premature "host gone"), and this function blocks on the child
+// (the `podman exec` that runs the broker, or any other command) exiting.
+// In standalone mode the broker outlives the child, so this blocks until
+// flue itself is signalled; in wrapper mode the broker exits when the
+// wrapped command does, so this returns promptly carrying that command's
+// status.
+func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string) int {
 	// Create a socketpair for the control channel.
 	// The container receives end B (fd 3); the host keeps end A.
 	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
@@ -139,7 +257,7 @@ func main() {
 	childFd := os.NewFile(uintptr(b), "flue-control-child")
 	defer closeFile(childFd)
 
-	cmd := exec.Command(cmdPath, args[1:]...)
+	cmd := exec.Command(cmdPath, cmdArgs...)
 	cmd.ExtraFiles = []*os.File{childFd}
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -150,7 +268,7 @@ func main() {
 		fatalf("flue: start %s: %v", cmdPath, err)
 	}
 
-	// Close the host copy of end B; the container now owns it.
+	// Close the host copy of end B; the child now owns it.
 	if err := unix.Close(b); err != nil {
 		log.Debug("flue: close control end B", "err", err)
 	}
@@ -167,17 +285,11 @@ func main() {
 		allow:    allow,
 	}
 
-	log.Info("flue: agent", "sock", sockPath, "filter", allowKeys.describe(), "exec", args)
+	log.Info("flue: agent", "sock", sockPath, "filter", allowKeys.describe(), "exec", append([]string{cmdPath}, cmdArgs...))
 
 	var wg sync.WaitGroup
 	listener, acceptDone := receiveListener(ctrl, filter, &wg)
 
-	// Wait for the command (and thus the broker) to exit. This is the
-	// primary "broker gone" signal, and unlike control-channel EOF it does
-	// not depend on the netpoller reporting peer closure. In standalone mode
-	// the broker outlives the child, so this blocks until flue itself is
-	// signalled; in wrapper mode the broker exits when the wrapped command
-	// does, so this returns promptly carrying that command's status.
 	err = cmd.Wait()
 
 	// The broker is gone: close the one-shot control connection (kept open
@@ -190,14 +302,15 @@ func main() {
 	<-acceptDone
 	wg.Wait()
 
-	if err != nil {
-		code := 1
-		if ee, ok := err.(*exec.ExitError); ok {
-			code = ee.ExitCode()
-		}
-		log.Warn("flue: command exited", "err", err)
-		os.Exit(code)
+	if err == nil {
+		return 0
 	}
+	code := 1
+	if ee, ok := err.(*exec.ExitError); ok {
+		code = ee.ExitCode()
+	}
+	log.Warn("flue: command exited", "err", err)
+	return code
 }
 
 // --- allow-key repeatable flag ---
