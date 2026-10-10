@@ -6,12 +6,13 @@ key filtering.
 Two small Go binaries:
 
 - **`flue-broker`** (container-side) listens on a Unix socket inside the
-  container and forwards each client connection's file descriptor to the
-  host over a socketpair control channel (SCM_RIGHTS). No protocol parsing
-  here.
+  container and hands that listening socket's file descriptor to the host
+  once over a socketpair control channel (SCM_RIGHTS), then just watches
+  that channel for host shutdown. No protocol parsing here.
 - **`flue`** (host-side) creates that socketpair, passes one end into the
-  container via `podman exec --preserve-fds 1`, and relays every forwarded
-  client to the real `$SSH_AUTH_SOCK` using
+  container via `podman exec --preserve-fds 1`, receives the listener
+  fd, `accept()`s each client connection itself, and proxies it to the
+  real `$SSH_AUTH_SOCK` using
   `golang.org/x/crypto/ssh/agent` with a filtering wrapper.
 
 Built from source at `cmd/flue-broker/` and `cmd/flue/` and installed as
@@ -47,8 +48,8 @@ binaries, no runtime deps).
 ### With flue (recommended)
 
 `flue` is the host-side half. It creates a socketpair, passes one end into
-the container as fd 3, and proxies every client connection to the real
-agent with filtering:
+the container as fd 3, and proxies each accepted client connection to the
+real agent with filtering:
 
 ```sh
 flue -- podman exec \
@@ -92,11 +93,10 @@ $ git clone git@github.com:your/repo.git   # works
 
 **flue-broker** (container-side):
 
-| Flag      | Default          | Description                                    |
-| --------- | ---------------- | ---------------------------------------------- |
-| `-sock`   | `/tmp/flue.sock` | Unix socket path inside the container          |
-| `-fd`     | `3`              | File descriptor number of the preserved control socket |
-| `-verbose`| `false`          | Log each forwarded client connection           |
+| Flag     | Default          | Description                                          |
+| -------- | ---------------- | ---------------------------------------------------- |
+| `-sock`  | `/tmp/flue.sock` | Unix socket path inside the container                |
+| `-fd`    | `3`              | File descriptor number of the preserved control socket |
 
 **flue** (host-side):
 
@@ -112,12 +112,13 @@ $ git clone git@github.com:your/repo.git   # works
 2. It passes one end into the container as fd 3 via `podman exec
    --preserve-fds 1`, closes its copy, and keeps the other end as the
    control channel.
-3. Inside the container, `flue-broker` listens on `/tmp/flue.sock`. For
-   each client connection (ssh, ssh-add, git), it extracts the fd, sends
-   it to the host over the control socket (SCM_RIGHTS), and closes the
-   local copy.
-4. On the host, `flue` receives the fd, dials a fresh connection to
-   `$SSH_AUTH_SOCK`, and runs `agent.ServeAgent(filter, clientConn)` —
+3. Inside the container, `flue-broker` listens on `/tmp/flue.sock` and
+   sends that listening socket's fd to the host over the control socket
+   (SCM_RIGHTS) exactly once, then just watches the control channel for
+   EOF and keeps the socket path alive.
+4. On the host, `flue` receives the listener fd and `accept()`s client
+   connections directly; for each one it dials a fresh connection to
+   `$SSH_AUTH_SOCK` and runs `agent.ServeAgent(filter, clientConn)` —
    the filter wraps the upstream agent client and enforces the key
    allowlist.
 5. When the podman exec exits, the control socket closes, `flue-broker`

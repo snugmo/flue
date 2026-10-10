@@ -2,14 +2,14 @@
 
 ## Project Overview
 
-**flue** — a narrow channel from your host's SSH agent into a container. Two Go binaries: `flue-broker` (container-side) listens on a Unix socket inside the container and forwards each client connection to the host over a control socketpair (fd 3, passed via `podman exec --preserve-fds`); `flue` (host-side) creates that socketpair, execs the container command with one end preserved, and relays every forwarded client connection to the real host agent (`$SSH_AUTH_SOCK`) using `golang.org/x/crypto/ssh/agent` with a key-allowlist filter. From the [Snugmo](https://github.com/snugmo) GitHub org.
+**flue** — a narrow channel from your host's SSH agent into a container. Two Go binaries: `flue-broker` (container-side) listens on a Unix socket inside the container and hands that listening socket's file descriptor to the host once over a control socketpair (fd 3, passed via `podman exec --preserve-fds`); `flue` (host-side) creates that socketpair, execs the container command with one end preserved, receives the listener fd, and `accept()`s each client connection directly, proxying it to the real host agent (`$SSH_AUTH_SOCK`) using `golang.org/x/crypto/ssh/agent` with a key-allowlist filter. From the [Snugmo](https://github.com/snugmo) GitHub org.
 
 ## Structure
 
 ```
 cmd/
   flue-broker/
-    main.go            # Container-side: Unix socket listener -> SCM_RIGHTS fd pass to host
+    main.go            # Container-side: listen on socket, hand listener fd to host, watch control for EOF
   flue/
     main.go            # Host-side: socketpair control channel, agent proxy with filtering
     filter_test.go     # Tests for the agent filter (list, sign, deny mutating ops)
@@ -45,13 +45,13 @@ Build overrides: `DEV_VERSION=`, `DEV_IMAGE_NAME=`, `DEV_REGISTRY=`, `DEV_BASE_I
 ### Go Source (`cmd/flue-broker/main.go`)
 
 - **Static binary**: always build with `CGO_ENABLED=0` and `-ldflags="-s -w"` so the binary runs in any Linux container without glibc or shared libraries.
-- **SCM_RIGHTS fd pass**: the container-side proxy receives each client connection and sends its fd to the host over the control socketpair using `unix.UnixRights` + `WriteMsgUnix`. No protocol parsing happens here.
+- **SCM_RIGHTS listener-fd handoff**: the broker passes its listening socket's fd to the host over the control socketpair using `unix.UnixRights` + `WriteMsgUnix` exactly once at startup, then just watches the control channel for EOF (host gone) and exits. No per-client fd traffic, no protocol parsing.
 - **No external dependencies** beyond `golang.org/x/sys` (standard-library-adjacent, needed only for the raw socket syscalls).
 
 ### Go Source (`cmd/flue/main.go`)
 
 - **Socketpair control channel**: `SOCK_SEQPACKET` socketpair; one end is passed to the container as fd 3 via `exec.Command.ExtraFiles`, the other end stays on the host.
-- **Per-client upstream**: each forwarded client gets a fresh `net.Dial("unix", SSH_AUTH_SOCK)` connection, wrapped in an `agentFilter` that implements `agent.ExtendedAgent`.
+- **Per-client upstream**: each accepted client connection gets a fresh `net.Dial("unix", SSH_AUTH_SOCK)` connection, wrapped in an `agentFilter` that implements `agent.ExtendedAgent`.
 - **Key allowlist**: `--allow-key` (repeatable) filters `List` and `Sign`/`SignWithFlags` by SHA256 fingerprint. `Add`, `Remove`, `RemoveAll`, `Lock`, `Unlock`, `Signers` are always denied. Only the `session-bind@openssh.com` extension is forwarded.
 - **Runtime dependencies**: `golang.org/x/sys` (unix syscalls) + `golang.org/x/crypto` (ssh agent protocol). **Test-only dependencies**: `go.uber.org/goleak` (goroutine leak detection) + `github.com/google/go-cmp` (readable diffs in test failures).
 
