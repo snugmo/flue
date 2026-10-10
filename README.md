@@ -135,10 +135,10 @@ After the flags, an optional command starts wrapper mode: `flue-broker
    the filter wraps the upstream agent client and enforces the key
    allowlist.
 5. Lifetime is driven by the process tree, not the control channel (which
-   is one-shot). In wrapper mode, when the wrapped command exits,
-   `flue-broker` exits, the `podman exec` returns, and `flue` — which is
-   blocked on that child — tears down the listener and exits with the
-   command's exit status. In standalone mode `flue` runs until it is
+   carries a single listener-fd message). In wrapper mode, when the wrapped
+   command exits, `flue-broker` exits, the `podman exec` returns, and `flue`
+   — which is blocked on that child — tears down the listener and exits with
+   the command's exit status. In standalone mode `flue` runs until it is
    signalled.
 
 ### Filter policy

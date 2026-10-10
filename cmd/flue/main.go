@@ -9,12 +9,13 @@
 // a filtering wrapper. Each client gets a fresh upstream connection, so
 // repeated ssh / ssh-add / git invocations all work.
 //
-// Lifetime is driven by the process tree, not the control channel: the
-// control channel is one-shot (it carries the listener fd once), and flue
-// blocks on its child (the `podman exec` that runs the broker) exiting. In
-// standalone mode the broker runs until flue is signalled; in wrapper mode
-// the broker exits when the wrapped command does, so flue returns that
-// command's exit status.
+// Lifetime is driven by the process tree, not the control channel. The
+// control channel carries exactly one message (the listener fd); its
+// connection stays open until the broker is gone (so the broker never sees a
+// premature "host gone"), and flue blocks on its child (the `podman exec`
+// that runs the broker) exiting. In standalone mode the broker runs until
+// flue is signalled; in wrapper mode the broker exits when the wrapped
+// command does, so flue returns that command's exit status.
 //
 // The filter implements agent.ExtendedAgent:
 //   - List: forwarded, but only keys matching --allow-key are returned
@@ -149,7 +150,10 @@ func main() {
 	// does, so this returns promptly carrying that command's status.
 	err = cmd.Wait()
 
-	// Broker gone: stop the accept loop and let in-flight handlers drain.
+	// The broker is gone: close the one-shot control connection (kept open
+	// for the child's lifetime so the broker never sees a premature "host
+	// gone"), stop the accept loop, and let in-flight handlers drain.
+	closeQuiet(ctrl)
 	if listener != nil {
 		listener.Close()
 	}
@@ -361,11 +365,11 @@ func closeFile(f *os.File) {
 // fd) from the control channel, wraps it in a *net.UnixListener, and starts
 // a background accept loop that proxies each client connection to the agent.
 // It returns the listener (so the caller can close it to stop the loop) and
-// a channel that is closed when the accept loop exits. The control channel is
-// one-shot: it is closed here after the listener is received.
+// a channel that is closed when the accept loop exits. The control message is
+// one-shot, but the control connection is NOT closed here: the caller keeps
+// it open until the broker is gone, so the broker (which reads its own end)
+// does not observe a premature "host gone". The caller closes ctrl.
 func receiveListener(ctrl net.Conn, filter *agentFilter, wg *sync.WaitGroup) (net.Listener, <-chan struct{}) {
-	defer closeQuiet(ctrl)
-
 	buf := make([]byte, 4096)
 	oob := make([]byte, 4096)
 

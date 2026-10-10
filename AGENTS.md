@@ -53,7 +53,7 @@ Build overrides: `DEV_VERSION=`, `DEV_IMAGE_NAME=`, `DEV_REGISTRY=`, `DEV_BASE_I
 
 ### Go Source (`cmd/flue/main.go`)
 
-- **Socketpair control channel**: `SOCK_SEQPACKET` socketpair; one end is passed to the container as fd 3 via `exec.Command.ExtraFiles`, the other end stays on the host. It is **one-shot**: `receiveListener` reads the single listener-fd message and closes it.
+- **Socketpair control channel**: `SOCK_SEQPACKET` socketpair; one end is passed to the container as fd 3 via `exec.Command.ExtraFiles`, the other end stays on the host. It carries exactly one message (the listener fd), read by `receiveListener`; the connection itself stays open until the broker is gone (so the broker never sees a premature "host gone") and is closed in `main` after `cmd.Wait()`.
 - **Lifetime via the process tree**: flue blocks on `cmd.Wait()` of its child (the `podman exec` running the broker) rather than on control-channel EOF — the netpoller does not reliably deliver EOF for a closed socketpair end in all environments. In wrapper mode the broker exits when the wrapped command ends, so flue returns that command's exit status; in standalone mode it runs until signalled. The accept loop runs in a background goroutine and is stopped by closing the listener.
 - **Per-client upstream**: each accepted client connection gets a fresh `net.Dial("unix", SSH_AUTH_SOCK)` connection, wrapped in an `agentFilter` that implements `agent.ExtendedAgent`.
 - **Key allowlist**: `--allow-key` (repeatable) filters `List` and `Sign`/`SignWithFlags` by SHA256 fingerprint. `Add`, `Remove`, `RemoveAll`, `Lock`, `Unlock`, `Signers` are always denied. Only the `session-bind@openssh.com` extension is forwarded.
