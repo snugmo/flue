@@ -15,7 +15,8 @@ Two small Go binaries:
   container via `podman exec --preserve-fds 1`, receives the listener
   fd, `accept()`s each client connection itself, and proxies it to the
   real `$SSH_AUTH_SOCK` using
-  `golang.org/x/crypto/ssh/agent` with a filtering wrapper.
+  `golang.org/x/crypto/ssh/agent` with a filtering wrapper. It can run
+  that `podman exec` for you: `flue enter <container> [command…]`.
 
 Built from source at `cmd/flue-broker/` and `cmd/flue/` and installed as
 `/usr/local/bin/flue-broker` and `/usr/local/bin/flue` (fully static
@@ -53,11 +54,33 @@ binaries, no runtime deps).
 3. The container's image includes the `flue-broker` binary (use this
    image, or build and install the binary into your own image).
 
-### With flue (recommended)
+### With `flue enter` (recommended)
+
+If you want a shell (or any command) inside a running container with the
+agent available, `flue enter` runs the `podman exec` for you: it
+preserves the control socket as fd 3 (`--preserve-fds 1`), sets
+`SSH_AUTH_SOCK` for the container, and hands your command to
+`flue-broker` in wrapper mode. With no command it runs `/bin/sh`, and a
+tty is allocated when your stdin is a tty:
+
+```sh
+flue enter <container>              # /bin/sh inside the container
+flue enter <container> bash         # bash
+flue enter <container> git ls-remote git@github.com:you/repo.git
+```
+
+When the command exits, `flue enter` returns its exit code. Global flags
+work the same as with the plain form: `flue -allow-key SHA256:… enter
+<container>`. The in-container socket path is fixed at `/tmp/flue.sock`
+for now.
+
+### With flue (passthrough)
 
 `flue` is the host-side half. It creates a socketpair, passes one end into
 the container as fd 3, and proxies each accepted client connection to the
-real agent with filtering:
+real agent with filtering. If you prefer to assemble the `podman exec`
+yourself (or the target is not podman), pass the whole command after
+`--`:
 
 ```sh
 flue -- podman exec \

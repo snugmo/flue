@@ -40,6 +40,9 @@
 //	flue -- podman exec \
 //	  --preserve-fds 1 \
 //	  <container> flue-broker bash
+//
+// …or just `flue enter <container> [command…]`, which runs that wrapper-
+// mode podman exec for you (defaulting the command to /bin/sh).
 package main
 
 import (
