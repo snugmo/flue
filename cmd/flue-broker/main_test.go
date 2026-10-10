@@ -15,6 +15,31 @@ func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
 }
 
+// TestMarkCloexecAll verifies the invariant that runChild relies on: after
+// markCloexecAll, no fd above 2 survives into a wrapped child, so the control
+// socketpair and listener are never leaked to processes like bash.
+func TestMarkCloexecAll(t *testing.T) {
+	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("socketpair: %v", err)
+	}
+	a, b := pair[0], pair[1]
+	defer unix.Close(a)
+	defer unix.Close(b)
+
+	markCloexecAll()
+
+	for _, fd := range []int{a, b} {
+		flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
+		if err != nil {
+			t.Fatalf("F_GETFD(%d): %v", fd, err)
+		}
+		if flags&unix.FD_CLOEXEC == 0 {
+			t.Fatalf("fd %d: CLOEXEC not set after markCloexecAll", fd)
+		}
+	}
+}
+
 // newControlSocketpair creates a SOCK_SEQPACKET socketpair and returns the
 // two ends as net.Conn: the "host" end (held by the test) and the "broker"
 // end (handed to runChild). Both are closed via t.Cleanup.
