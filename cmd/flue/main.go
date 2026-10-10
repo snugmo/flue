@@ -76,15 +76,22 @@ func handle(client net.Conn, fdNum int, wg *sync.WaitGroup) {
 		}
 	}()
 
-	buf := make([]byte, 64*1024)
-	done := make(chan struct{})
+	// Each relay direction gets its own buffer so the two goroutines
+	// never share a slice they read and write concurrently.
+	clientToAgent := make([]byte, 64*1024)
+	agentToClient := make([]byte, 64*1024)
+
+	done := make(chan struct{}, 2)
+	relayWG := &sync.WaitGroup{}
 
 	// client -> agent: read from the client net.Conn, write raw to the agent fd
+	relayWG.Add(1)
 	go func() {
+		defer relayWG.Done()
 		for {
-			n, err := client.Read(buf)
+			n, err := client.Read(clientToAgent)
 			if n > 0 {
-				if _, werr := unix.Write(int(fdNum), buf[:n]); werr != nil {
+				if _, werr := unix.Write(int(fdNum), clientToAgent[:n]); werr != nil {
 					log.Printf("client->agent write: %v", werr)
 					break
 				}
@@ -98,11 +105,13 @@ func handle(client net.Conn, fdNum int, wg *sync.WaitGroup) {
 	}()
 
 	// agent -> client: read raw from the agent fd, write to the client net.Conn
+	relayWG.Add(1)
 	go func() {
+		defer relayWG.Done()
 		for {
-			n, err := unix.Read(int(fdNum), buf)
+			n, err := unix.Read(int(fdNum), agentToClient)
 			if n > 0 {
-				if _, werr := client.Write(buf[:n]); werr != nil {
+				if _, werr := client.Write(agentToClient[:n]); werr != nil {
 					log.Printf("agent->client write: %v", werr)
 					break
 				}
@@ -120,5 +129,6 @@ func handle(client net.Conn, fdNum int, wg *sync.WaitGroup) {
 	}()
 
 	<-done
+	relayWG.Wait()
 	fmt.Fprintf(os.Stderr, "flue: connection closed\n")
 }
