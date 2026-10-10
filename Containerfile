@@ -17,9 +17,7 @@
 
 ARG BASE_IMAGE=ghcr.io/snugmo/cote:latest-base
 FROM ${BASE_IMAGE} AS go-build
-ARG GO_VERSION
-ENV GO_VERSION=${GO_VERSION} \
-    GOPATH=/go \
+ENV GOPATH=/go \
     GOROOT=/opt/go \
     PATH=/go/bin:/opt/go/bin:$PATH
 
