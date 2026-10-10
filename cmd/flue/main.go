@@ -104,9 +104,11 @@ func parseLevel(s string) (slog.Level, error) {
 	return 0, fmt.Errorf("unknown log level %q (want debug, info, warn, or error)", s)
 }
 
-// fatalf logs at error level and exits 1, mirroring log.Fatalf.
+// fatalf logs at error level and exits 1, mirroring log.Fatalf. The
+// format string is printf-substituted before logging: slog's Error does
+// not interpret format verbs (it treats the args as key/value pairs).
 func fatalf(format string, args ...any) {
-	log.Error(format, args...)
+	log.Error(fmt.Sprintf(format, args...))
 	os.Exit(1)
 }
 
