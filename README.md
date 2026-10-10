@@ -185,3 +185,7 @@ fluehost -allow-key SHA256:... -- podman exec --preserve-fds 1 \
     ssh-add -l  # only the allowed key is listed
   '
 ```
+
+---
+
+*Yes, it's pronounced the same as the flu. No, we won't be making you soup.*
