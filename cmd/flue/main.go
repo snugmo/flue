@@ -20,6 +20,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -71,7 +72,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("control fd: %v", err)
 	}
-	defer ctrl.Close()
+	defer closeQuiet(ctrl)
 
 	done := make(chan struct{})
 	go watchControl(ctrl, done)
@@ -121,11 +122,19 @@ func watchControl(ctrl net.Conn, done chan<- struct{}) {
 	}
 }
 
+// closeQuiet closes a connection, logging the error unless it is a
+// benign "use of closed network connection".
+func closeQuiet(c net.Conn) {
+	if err := c.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		log.Printf("close: %v", err)
+	}
+}
+
 // sendToHost hands the client connection's fd to the host over the control
 // socket, then closes the local copy. The host proxies the connection to
 // the real agent.
 func sendToHost(conn net.Conn, fdNum int) error {
-	defer conn.Close()
+	defer closeQuiet(conn)
 
 	uc, ok := conn.(*net.UnixConn)
 	if !ok {
@@ -135,13 +144,15 @@ func sendToHost(conn net.Conn, fdNum int) error {
 	if err != nil {
 		return fmt.Errorf("get fd: %w", err)
 	}
-	defer f.Close()
+	if cerr := f.Close(); cerr != nil && !errors.Is(cerr, os.ErrClosed) {
+		log.Printf("close client fd: %v", cerr)
+	}
 
 	ctrl, err := net.FileConn(os.NewFile(uintptr(fdNum), "flue-control"))
 	if err != nil {
 		return fmt.Errorf("control fd: %w", err)
 	}
-	defer ctrl.Close()
+	defer closeQuiet(ctrl)
 
 	// One byte of payload; the fd travels in a SCM_RIGHTS control message.
 	oob := unix.UnixRights(int(f.Fd()))
