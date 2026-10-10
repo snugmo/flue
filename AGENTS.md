@@ -29,8 +29,7 @@ LICENSE                # AGPL-3.0
 | Build the image       | `./build.sh`                     |
 | Build + push          | `./build.sh push`                |
 | Build + push (custom) | `./build.sh push <registry>`     |
-| Run the proxy         | `podman exec -e SSH_AUTH_SOCK=/tmp/flue.sock --preserve-fds 1 <container> flue` |
-| Forward agent (via fluehost) | `fluehost -- podman exec -e SSH_AUTH_SOCK=/tmp/flue.sock --preserve-fds 1 <container> flue` |
+| Forward agent         | `fluehost -- podman exec -e SSH_AUTH_SOCK=/tmp/flue.sock --preserve-fds 1 <container> flue` |
 | Run tests             | `go test ./...`                  |
 
 Build overrides: `DEV_VERSION=`, `DEV_IMAGE_NAME=`, `DEV_REGISTRY=`, `DEV_BASE_IMAGE=` (see `build.sh`).
@@ -58,10 +57,10 @@ Build overrides: `DEV_VERSION=`, `DEV_IMAGE_NAME=`, `DEV_REGISTRY=`, `DEV_BASE_I
 
 ### Containerfile
 
-- **Two stages**: the `go-build` stage compiles the static binary using the Go toolchain from the cote base image (`/opt/go`). The final stage copies just the binary — the image adds ~2.3 MB over the base.
-- **Base image**: defaults to `ghcr.io/snugmo/cote:latest-base` (Fedora 44, non-root user `user` UID 1000). Override with `DEV_BASE_IMAGE`.
+- **Two stages**: the `go-build` stage compiles the static binaries using the Go toolchain from the cote base image (`/opt/go`). The final stage copies just the binaries — the image adds ~2.3 MB over the base.
+- **Base image**: `build.sh` defaults to `${REGISTRY}/cote:${TAG}-base` (the cote base image at the same git-describe tag). Override with `DEV_BASE_IMAGE`. The Containerfile ARG itself defaults to `ghcr.io/snugmo/cote:latest-base` if invoked standalone.
 - **OCI well-known labels**: `org.opencontainers.image.*` and `io.openshift.tags` are set via `--build-arg` from `build.sh`.
-- **Layer caching**: the `COPY go.mod go.sum` + `RUN go build` pattern is not used because the Go build is a single `RUN` that compiles from source; the base image layer is the only cached layer that matters.
+- **Layer caching**: `COPY go.mod go.sum` followed by `RUN go build` gives dependency-level caching; the base image layer is the only cached layer that matters in practice since the build is a single step.
 
 ### Build Script (`build.sh`)
 
