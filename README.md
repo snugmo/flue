@@ -178,7 +178,7 @@ fluehost -- podman exec --preserve-fds 1 \
     git ls-remote git@github.com:your/repo.git
   '
 
-# 5. With --allow-key, only that key shows in ssh-add -l
+# 5. With -allow-key, only that key shows in ssh-add -l
 fluehost -allow-key SHA256:... -- podman exec --preserve-fds 1 \
   -e SSH_AUTH_SOCK=/tmp/flue.sock <container> sh -c '
     flue & sleep 0.5
