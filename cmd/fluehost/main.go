@@ -26,6 +26,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -80,7 +81,7 @@ func main() {
 	// Pass end B as an extra file in the child; it will be fd 3
 	// (first extra file after stdin/stdout/stderr).
 	childFd := os.NewFile(uintptr(b), "flue-control-child")
-	defer childFd.Close()
+	defer closeFile(childFd)
 
 	cmd := exec.Command(cmdPath, args[1:]...)
 	cmd.ExtraFiles = []*os.File{childFd}
@@ -94,7 +95,9 @@ func main() {
 	}
 
 	// Close the host copy of end B; the container now owns it.
-	unix.Close(b)
+	if err := unix.Close(b); err != nil {
+		log.Printf("fluehost: close control end B: %v", err)
+	}
 
 	// The host's control socket is end A.
 	ctrl, err := net.FileConn(os.NewFile(uintptr(a), "flue-control-host"))
@@ -292,11 +295,35 @@ func (f *agentFilter) Extension(extensionType string, req []byte) (resp []byte, 
 
 // --- control channel ---
 
+// closeQuiet closes a connection, logging the error unless it is a
+// benign "use of closed network connection".
+func closeQuiet(c net.Conn) {
+	if err := c.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		log.Printf("fluehost: close: %v", err)
+	}
+}
+
+// closeFD closes a raw file descriptor, logging the error unless it is
+// already closed.
+func closeFD(fd int) {
+	if err := unix.Close(fd); err != nil && !errors.Is(err, unix.EBADF) {
+		log.Printf("fluehost: close fd %d: %v", fd, err)
+	}
+}
+
+// closeFile closes an os.File, logging the error unless it is already
+// closed.
+func closeFile(f *os.File) {
+	if err := f.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+		log.Printf("fluehost: close file: %v", err)
+	}
+}
+
 // serveControl reads client fds from the control socket and proxies each
 // one to the agent in its own goroutine. Returns when the control socket
 // is closed (host or container went away).
 func serveControl(ctrl net.Conn, filter *agentFilter, wg *sync.WaitGroup) {
-	defer ctrl.Close()
+	defer closeQuiet(ctrl)
 
 	buf := make([]byte, 4096)
 	oob := make([]byte, 4096)
@@ -337,7 +364,7 @@ func serveControl(ctrl net.Conn, filter *agentFilter, wg *sync.WaitGroup) {
 		if len(fds) > 1 {
 			log.Printf("fluehost: expected 1 fd, got %d; closing all", len(fds))
 			for _, fd := range fds {
-				unix.Close(fd)
+				closeFD(fd)
 			}
 			continue
 		}
@@ -349,7 +376,7 @@ func serveControl(ctrl net.Conn, filter *agentFilter, wg *sync.WaitGroup) {
 		wg.Add(1)
 		go func(fd int) {
 			defer wg.Done()
-			defer unix.Close(fd)
+			defer closeFD(fd)
 			handleClient(fd, filter)
 		}(clientFd)
 	}
@@ -364,7 +391,7 @@ func handleClient(fd int, filter *agentFilter) {
 		log.Printf("fluehost: file conn: %v", err)
 		return
 	}
-	defer client.Close()
+	defer closeQuiet(client)
 
 	// Dial a fresh upstream agent connection for this client.
 	upstream, err := dialAgent()
@@ -372,7 +399,7 @@ func handleClient(fd int, filter *agentFilter) {
 		log.Printf("fluehost: dial upstream: %v", err)
 		return
 	}
-	defer upstream.Close()
+	defer closeQuiet(upstream)
 
 	// Build a per-client filter wrapping this client's upstream.
 	upstreamExt := agent.NewClient(upstream)
@@ -382,7 +409,9 @@ func handleClient(fd int, filter *agentFilter) {
 		verbose:  filter.verbose,
 	}
 
-	agent.ServeAgent(clientFilter, client)
+	// ServeAgent returns when the client connection ends; I/O errors
+	// there are normal (peer closed), so the result is not checked.
+	_ = agent.ServeAgent(clientFilter, client)
 }
 
 // dialAgent connects to the host's real SSH agent.
