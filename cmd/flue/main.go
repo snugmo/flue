@@ -9,6 +9,13 @@
 // a filtering wrapper. Each client gets a fresh upstream connection, so
 // repeated ssh / ssh-add / git invocations all work.
 //
+// Lifetime is driven by the process tree, not the control channel: the
+// control channel is one-shot (it carries the listener fd once), and flue
+// blocks on its child (the `podman exec` that runs the broker) exiting. In
+// standalone mode the broker runs until flue is signalled; in wrapper mode
+// the broker exits when the wrapped command does, so flue returns that
+// command's exit status.
+//
 // The filter implements agent.ExtendedAgent:
 //   - List: forwarded, but only keys matching --allow-key are returned
 //     (all keys if no --allow-key flag is given).
@@ -22,6 +29,15 @@
 //	  --preserve-fds 1 \
 //	  -e SSH_AUTH_SOCK=/tmp/flue.sock \
 //	  <container> flue-broker
+//
+// Wrapper mode — hand the broker a command and get a shell (or any command)
+// inside the container with the agent available. The broker sets
+// SSH_AUTH_SOCK for the child, so -e is not required, and flue exits when
+// the child does, returning its exit code:
+//
+//	flue -- podman exec \
+//	  --preserve-fds 1 \
+//	  <container> flue-broker bash
 package main
 
 import (
@@ -123,14 +139,29 @@ func main() {
 		sockPath, allowKeys.describe(), args)
 
 	var wg sync.WaitGroup
-	serveControl(ctrl, filter, &wg)
+	listener, acceptDone := receiveListener(ctrl, filter, &wg)
+
+	// Wait for the command (and thus the broker) to exit. This is the
+	// primary "broker gone" signal, and unlike control-channel EOF it does
+	// not depend on the netpoller reporting peer closure. In standalone mode
+	// the broker outlives the child, so this blocks until flue itself is
+	// signalled; in wrapper mode the broker exits when the wrapped command
+	// does, so this returns promptly carrying that command's status.
+	err = cmd.Wait()
+
+	// Broker gone: stop the accept loop and let in-flight handlers drain.
+	if listener != nil {
+		listener.Close()
+	}
+	<-acceptDone
 	wg.Wait()
 
-	if err := cmd.Wait(); err != nil {
+	if err != nil {
 		code := 1
 		if ee, ok := err.(*exec.ExitError); ok {
 			code = ee.ExitCode()
 		}
+		log.Printf("flue: command exited: %v", err)
 		os.Exit(code)
 	}
 }
@@ -326,20 +357,18 @@ func closeFile(f *os.File) {
 	}
 }
 
-// serveControl reads client fds from the control socket and proxies each
-// one to the agent in its own goroutine. Returns when the control socket
-// is closed (host or container went away).
-// serveControl receives the single listening fd the broker hands over, then
-// accepts client connections on it for the life of the process, proxying each
-// to the agent in its own goroutine. It returns when the control channel
-// closes (the broker went away) or when the listener is closed.
-func serveControl(ctrl net.Conn, filter *agentFilter, wg *sync.WaitGroup) {
+// receiveListener reads the single control message (the broker's listening
+// fd) from the control channel, wraps it in a *net.UnixListener, and starts
+// a background accept loop that proxies each client connection to the agent.
+// It returns the listener (so the caller can close it to stop the loop) and
+// a channel that is closed when the accept loop exits. The control channel is
+// one-shot: it is closed here after the listener is received.
+func receiveListener(ctrl net.Conn, filter *agentFilter, wg *sync.WaitGroup) (net.Listener, <-chan struct{}) {
 	defer closeQuiet(ctrl)
 
 	buf := make([]byte, 4096)
 	oob := make([]byte, 4096)
 
-	// Read the one control message: the listening fd.
 	n, oobn, flags, _, err := ctrl.(*net.UnixConn).ReadMsgUnix(buf, oob)
 	_ = n
 	if err != nil {
@@ -348,16 +377,16 @@ func serveControl(ctrl net.Conn, filter *agentFilter, wg *sync.WaitGroup) {
 		} else {
 			log.Printf("flue: control read: %v", err)
 		}
-		return
+		return nil, closedChannel()
 	}
 	if flags&unix.MSG_CTRUNC != 0 {
 		log.Printf("flue: control message truncated; discarding")
-		return
+		return nil, closedChannel()
 	}
 	cmsgs, err := unix.ParseSocketControlMessage(oob[:oobn])
 	if err != nil {
 		log.Printf("flue: parse cmsg: %v", err)
-		return
+		return nil, closedChannel()
 	}
 	// Expect exactly one listener fd; use the first, close any extras.
 	var listenFd int = -1
@@ -377,7 +406,7 @@ func serveControl(ctrl net.Conn, filter *agentFilter, wg *sync.WaitGroup) {
 	}
 	if listenFd < 0 {
 		log.Printf("flue: no listener fd received")
-		return
+		return nil, closedChannel()
 	}
 
 	// Wrap the received listener fd in a *net.UnixListener so Accept works.
@@ -385,25 +414,38 @@ func serveControl(ctrl net.Conn, filter *agentFilter, wg *sync.WaitGroup) {
 	if err != nil {
 		log.Printf("flue: listener fd: %v", err)
 		closeFD(listenFd)
-		return
+		return nil, closedChannel()
 	}
-	defer listener.Close()
 	log.Printf("flue: accepting on handed-over listener")
 
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			// Accept fails once the listener is closed (broker gone) or the
-			// control channel died; both mean shutdown.
-			log.Printf("flue: accept: %v", err)
-			break
+	// Accept client connections in a background loop; it ends when the
+	// listener is closed by the caller.
+	acceptDone := make(chan struct{})
+	go func() {
+		defer close(acceptDone)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				log.Printf("flue: accept: %v", err)
+				return
+			}
+			wg.Add(1)
+			go func(c net.Conn) {
+				defer wg.Done()
+				handleClient(c, filter)
+			}(conn)
 		}
-		wg.Add(1)
-		go func(c net.Conn) {
-			defer wg.Done()
-			handleClient(c, filter)
-		}(conn)
-	}
+	}()
+
+	return listener, acceptDone
+}
+
+// closedChannel returns an already-closed channel, used as a sentinel
+// acceptDone when no listener was received.
+func closedChannel() <-chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
 }
 
 // handleClient proxies a single client connection (fd) to the agent.
