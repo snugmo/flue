@@ -49,7 +49,7 @@ Build overrides: `DEV_VERSION=`, `DEV_IMAGE_NAME=`, `DEV_REGISTRY=`, `DEV_BASE_I
 - **`flag.Parse()` is required**: it is called at the top of `main` (before reading `-sock`/`-fd` or `flag.Args()`). Without it the flags are silently ignored and `flag.Args()` is empty, so wrapper mode would never see a command.
 - **SCM_RIGHTS listener-fd handoff**: the broker passes its listening socket's fd to the host over the control socketpair using `unix.UnixRights` + `WriteMsgUnix` exactly once at startup. No per-client fd traffic, no protocol parsing. The control channel is one-shot.
 - **Two modes**: standalone (no args) blocks until the host goes away; wrapper (`flue-broker [cmd] [args…]`) runs the command as a child with `SSH_AUTH_SOCK` set to `-sock`, marks the broker's socket fds `CLOEXEC` (via `/proc/self/fd`) so the child doesn't inherit them, and exits with the child's exit status. Host departure is watched best-effort to kill a stray child.
-- **No external dependencies** beyond `golang.org/x/sys` (standard-library-adjacent, needed only for the raw socket syscalls).
+- **No external dependencies** beyond `golang.org/x/sys` (standard-library-adjacent, needed only for the raw socket syscalls). Logging is `log/slog` (stdlib) to stderr, configured by `-log-level` (debug|info|warn|error, default info).
 
 ### Go Source (`cmd/flue/main.go`)
 
@@ -57,7 +57,7 @@ Build overrides: `DEV_VERSION=`, `DEV_IMAGE_NAME=`, `DEV_REGISTRY=`, `DEV_BASE_I
 - **Lifetime via the process tree**: flue blocks on `cmd.Wait()` of its child (the `podman exec` running the broker) rather than on control-channel EOF — the netpoller does not reliably deliver EOF for a closed socketpair end in all environments. In wrapper mode the broker exits when the wrapped command ends, so flue returns that command's exit status; in standalone mode it runs until signalled. The accept loop runs in a background goroutine and is stopped by closing the listener.
 - **Per-client upstream**: each accepted client connection gets a fresh `net.Dial("unix", SSH_AUTH_SOCK)` connection, wrapped in an `agentFilter` that implements `agent.ExtendedAgent`.
 - **Key allowlist**: `--allow-key` (repeatable) filters `List` and `Sign`/`SignWithFlags` by SHA256 fingerprint. `Add`, `Remove`, `RemoveAll`, `Lock`, `Unlock`, `Signers` are always denied. Only the `session-bind@openssh.com` extension is forwarded.
-- **Runtime dependencies**: `golang.org/x/sys` (unix syscalls) + `golang.org/x/crypto` (ssh agent protocol). **Test-only dependencies**: `go.uber.org/goleak` (goroutine leak detection) + `github.com/google/go-cmp` (readable diffs in test failures).
+- **Runtime dependencies**: `golang.org/x/sys` (unix syscalls) + `golang.org/x/crypto` (ssh agent protocol). Logging is `log/slog` (stdlib) to stderr, configured by `-log-level` (debug|info|warn|error, default info); the per-request agent trace (formerly `-verbose`) is emitted at `debug`. **Test-only dependencies**: `go.uber.org/goleak` (goroutine leak detection) + `github.com/google/go-cmp` (readable diffs in test failures).
 
 ### Containerfile
 

@@ -101,10 +101,11 @@ still works, but wrapper mode replaces it.)
 
 **flue-broker** (container-side):
 
-| Flag     | Default          | Description                                          |
-| -------- | ---------------- | ---------------------------------------------------- |
-| `-sock`  | `/tmp/flue.sock` | Unix socket path inside the container                |
-| `-fd`    | `3`              | File descriptor number of the preserved control socket |
+| Flag         | Default          | Description                                          |
+| ------------ | ---------------- | ---------------------------------------------------- |
+| `-sock`      | `/tmp/flue.sock` | Unix socket path inside the container                |
+| `-fd`        | `3`              | File descriptor number of the preserved control socket |
+| `-log-level` | `info`           | Log level: `debug`, `info`, `warn`, or `error`       |
 
 After the flags, an optional command starts wrapper mode: `flue-broker
 [command] [args…]` runs that command as a child with `SSH_AUTH_SOCK` set to
@@ -116,7 +117,7 @@ After the flags, an optional command starts wrapper mode: `flue-broker
 | ------------ | ------------------ | ---------------------------------------------------- |
 | `-sock`      | `$SSH_AUTH_SOCK`   | Agent socket path to proxy to                        |
 | `-allow-key` | (none = all keys)  | Repeatable. Only keys with this SHA256 fingerprint are listed and can sign |
-| `-verbose`   | `false`            | Log every agent request (operation, fingerprint, allowed/denied) |
+| `-log-level` | `info`             | Log level: `debug`, `info`, `warn`, or `error`. `debug` logs every agent request (operation, fingerprint, allowed/denied) |
 
 ## How it works
 
