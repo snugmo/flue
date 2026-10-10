@@ -74,6 +74,8 @@ var (
 var heldControl *os.File
 
 func main() {
+	flag.Parse()
+
 	fdNum, err := strconv.Atoi(*fdArg)
 	if err != nil || fdNum < 3 {
 		log.Fatalf("invalid -fd %q: must be an integer >= 3", *fdArg)
