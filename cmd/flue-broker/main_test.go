@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/goleak"
 	"golang.org/x/sys/unix"
@@ -198,4 +199,39 @@ func TestCheckControlFD(t *testing.T) {
 			t.Fatal("checkControlFD(closed fd) = nil, want an error")
 		}
 	})
+}
+
+// TestRunChildForwardsSIGTERM verifies that SIGTERM delivered to the broker
+// reaches the child, and that the child's exit status is still returned
+// (so the caller's cleanup runs).
+func TestRunChildForwardsSIGTERM(t *testing.T) {
+	_, broker := newControlSocketpair(t)
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		_ = unix.Kill(os.Getpid(), unix.SIGTERM)
+	}()
+	script := `trap 'exit 9' TERM; while :; do sleep 0.05; done`
+	if got := runChild([]string{"sh", "-c", script}, t.TempDir()+"/s.sock", broker); got != 9 {
+		t.Fatalf("runChild: got exit code %d, want 9", got)
+	}
+}
+
+// TestWaitForHostSIGTERM verifies that standalone mode returns cleanly on
+// SIGTERM instead of dying with the socket left behind.
+func TestWaitForHostSIGTERM(t *testing.T) {
+	_, broker := newControlSocketpair(t)
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		_ = unix.Kill(os.Getpid(), unix.SIGTERM)
+	}()
+	done := make(chan int, 1)
+	go func() { done <- waitForHost(broker) }()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("waitForHost: got %d, want 0", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("waitForHost did not return after SIGTERM")
+	}
 }

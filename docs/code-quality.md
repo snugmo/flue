@@ -46,7 +46,11 @@ subject that fixed it). Update this file when an item is addressed.
 10. **Socket created with umask permissions before chmod 0600** —
     **fixed** (`listenPrivate` binds under umask 0177; the chmod is gone).
 11. **Broker does not handle signals; only the direct child is killed** —
-    **open**.
+    **fixed** for signals (SIGTERM/SIGHUP are forwarded to the child,
+    SIGINT swallowed, standalone mode shuts down cleanly; the socket is
+    removed in all cases). Killing the whole process group on host
+    departure is deliberately *not* done: a separate process group would
+    break tty job control for the wrapped shell.
 
 ## Low
 

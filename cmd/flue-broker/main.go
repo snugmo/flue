@@ -54,6 +54,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -246,9 +247,25 @@ func listenPrivate(path string) (net.Listener, error) {
 // (EOF / reset) and returns 0 for a clean shutdown. This is the standalone
 // (no-argument) mode.
 func waitForHost(ctrl net.Conn) int {
-	<-watchHostGone(ctrl, nil)
-	log.Info("flue-broker: host gone, shutting down")
+	sigc := notifySignals()
+	defer signal.Stop(sigc)
+	select {
+	case <-watchHostGone(ctrl, nil):
+		log.Info("flue-broker: host gone, shutting down")
+	case sig := <-sigc:
+		// Return (rather than die) so run's defers remove the socket.
+		log.Info("flue-broker: signalled, shutting down", "signal", sig)
+	}
 	return 0
+}
+
+// notifySignals subscribes to the termination signals the broker handles
+// itself, so that it unwinds (removing its socket) instead of dying with
+// the file left behind.
+func notifySignals() chan os.Signal {
+	c := make(chan os.Signal, 4)
+	signal.Notify(c, unix.SIGTERM, unix.SIGHUP, unix.SIGINT)
+	return c
 }
 
 // watchHostGone starts a goroutine that reads the control channel and
@@ -327,6 +344,28 @@ func runChild(args []string, sockPath string, ctrl net.Conn) int {
 
 	childDone := make(chan error, 1)
 	go func() { childDone <- cmd.Wait() }()
+
+	// SIGTERM and SIGHUP aimed at the broker are forwarded to the child,
+	// which decides how to react; the broker keeps running until the child
+	// exits and then cleans up as usual. SIGINT is swallowed: on a tty the
+	// child already receives its own copy via the foreground process group,
+	// and the broker must outlive it to remove the socket.
+	sigc := notifySignals()
+	defer signal.Stop(sigc)
+	stopFwd := make(chan struct{})
+	defer close(stopFwd)
+	go func() {
+		for {
+			select {
+			case sig := <-sigc:
+				if sig != unix.SIGINT {
+					_ = cmd.Process.Signal(sig)
+				}
+			case <-stopFwd:
+				return
+			}
+		}
+	}()
 
 	select {
 	case <-hostGone:
