@@ -69,21 +69,23 @@ flue enter <container> bash         # bash
 flue enter <container> git ls-remote git@github.com:you/repo.git
 ```
 
-When the command exits, `flue enter` returns its exit code. Global flags
-work the same as with the plain form: `flue -allow-key SHA256:… enter
-<container>`. The in-container socket path is fixed at `/tmp/flue.sock`
-for now.
+When the command exits, `flue enter` returns its exit code. The global
+flags (`--sock`, `--allow-key`, `--log-level`) go before the subcommand:
+`flue --allow-key SHA256:… enter <container>`. If the command has its own
+flags, separate them with `--`: `flue enter <container> -- bash -l`. The
+in-container socket path is fixed at `/tmp/flue.sock` for now.
 
-### With flue (passthrough)
+### With `flue exec` (passthrough)
 
 `flue` is the host-side half. It creates a socketpair, passes one end into
 the container as fd 3, and proxies each accepted client connection to the
-real agent with filtering. If you prefer to assemble the `podman exec`
-yourself (or the target is not podman), pass the whole command after
-`--`:
+real agent with filtering. The `exec` subcommand runs any command that
+receives the control socketpair; if you prefer to assemble the `podman
+exec` yourself (or the target is not podman), pass the whole command after
+the subcommand's `--`:
 
 ```sh
-flue -- podman exec \
+flue exec -- podman exec \
   --preserve-fds 1 \
   -e SSH_AUTH_SOCK=/tmp/flue.sock \
   <container> flue-broker
@@ -93,11 +95,11 @@ or build it once and keep it on your `PATH`:
 
 ```sh
 go build -o ~/bin/flue ./cmd/flue
-flue -- podman exec --preserve-fds 1 \
+flue exec -- podman exec --preserve-fds 1 \
   -e SSH_AUTH_SOCK=/tmp/flue.sock <container> flue-broker
 ```
 
-`flue` dials `$SSH_AUTH_SOCK` (or `-sock`) once per client connection, so
+`flue` dials `$SSH_AUTH_SOCK` (or `--sock`) once per client connection, so
 repeated `ssh` / `ssh-add` / `git` invocations all work.
 
 ### In a shell (wrapper mode)
@@ -108,7 +110,7 @@ it as a child with `SSH_AUTH_SOCK` set for you. When the command exits,
 `flue` returns its exit code.
 
 ```sh
-flue -- podman exec --preserve-fds 1 <container> flue-broker bash
+flue exec -- podman exec --preserve-fds 1 <container> flue-broker bash
 ```
 
 Then inside the container:
@@ -140,13 +142,19 @@ After the flags, an optional command starts wrapper mode: `flue-broker
 [command] [args…]` runs that command as a child with `SSH_AUTH_SOCK` set to
 `-sock` (see wrapper mode above). No command = standalone mode.
 
-**flue** (host-side):
+**flue** (host-side; cobra persistent flags, placed before the subcommand):
 
-| Flag         | Default            | Description                                          |
-| ------------ | ------------------ | ---------------------------------------------------- |
-| `-sock`      | `$SSH_AUTH_SOCK`   | Agent socket path to proxy to                        |
-| `-allow-key` | (none = all keys)  | Repeatable. Only keys with this SHA256 fingerprint are listed and can sign |
-| `-log-level` | `info`             | Log level: `debug`, `info`, `warn`, or `error`. `debug` logs every agent request (operation, fingerprint, allowed/denied) |
+| Flag          | Default            | Description                                          |
+| ------------- | ------------------ | ---------------------------------------------------- |
+| `--sock`      | `$SSH_AUTH_SOCK`   | Agent socket path to proxy to                        |
+| `--allow-key` | (none = all keys)  | Repeatable. Only keys with this SHA256 fingerprint are listed and can sign |
+| `--log-level` | `info`             | Log level: `debug`, `info`, `warn`, or `error`. `debug` logs every agent request (operation, fingerprint, allowed/denied) |
+
+These are [cobra](https://github.com/spf13/cobra) persistent flags, so they
+accept the `--flag value` or `--flag=value` forms and go before the
+subcommand (`flue --sock /path exec -- …`). The subcommand's own arguments
+follow the subcommand name; a `--` separates them from the target command
+so the target's flags pass through verbatim.
 
 ## How it works
 
@@ -175,7 +183,7 @@ After the flags, an optional command starts wrapper mode: `flue-broker
 
 | Operation       | Behavior                                              |
 | --------------- | ----------------------------------------------------- |
-| `List`          | Forwarded; only allowed keys returned if `-allow-key` is set |
+| `List`          | Forwarded; only allowed keys returned if `--allow-key` is set |
 | `Sign`          | Forwarded only for allowed keys                       |
 | `SignWithFlags` | Forwarded only for allowed keys (needed for RSA rsa-sha2-256/512) |
 | `Add`           | Denied                                                |
@@ -200,35 +208,35 @@ Run these against a real container to verify the full path works:
 
 ```sh
 # 1. ssh-add -l run twice in a row succeeds both times
-flue -- podman exec --preserve-fds 1 \
+flue exec -- podman exec --preserve-fds 1 \
   -e SSH_AUTH_SOCK=/tmp/flue.sock <container> sh -c '
     flue-broker & sleep 0.5
     ssh-add -l && ssh-add -l
   '
 
 # 2. A loop of ~20 concurrent ssh-add -l calls all succeed
-flue -- podman exec --preserve-fds 1 \
+flue exec -- podman exec --preserve-fds 1 \
   -e SSH_AUTH_SOCK=/tmp/flue.sock <container> sh -c '
     flue-broker & sleep 0.5
     for i in $(seq 1 20); do ssh-add -l & done; wait
   '
 
 # 3. ssh-add -D is refused
-flue -- podman exec --preserve-fds 1 \
+flue exec -- podman exec --preserve-fds 1 \
   -e SSH_AUTH_SOCK=/tmp/flue.sock <container> sh -c '
     flue-broker & sleep 0.5
     ssh-add -D 2>&1  # expect an error
   '
 
 # 4. ssh -T git@<forge> or git ls-remote over ssh works
-flue -- podman exec --preserve-fds 1 \
+flue exec -- podman exec --preserve-fds 1 \
   -e SSH_AUTH_SOCK=/tmp/flue.sock <container> sh -c '
     flue-broker & sleep 0.5
     git ls-remote git@github.com:your/repo.git
   '
 
-# 5. With -allow-key, only that key shows in ssh-add -l
-flue -allow-key SHA256:... -- podman exec --preserve-fds 1 \
+# 5. With --allow-key, only that key shows in ssh-add -l
+flue --allow-key SHA256:... exec -- podman exec --preserve-fds 1 \
   -e SSH_AUTH_SOCK=/tmp/flue.sock <container> sh -c '
     flue-broker & sleep 0.5
     ssh-add -l  # only the allowed key is listed

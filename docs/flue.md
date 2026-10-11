@@ -6,13 +6,17 @@ agent needs when changing the code.
 
 ## Modes
 
-The first argument after the flags selects the mode:
+flue is a cobra CLI with two subcommands. The global flags (`--sock`,
+`--allow-key`, `--log-level`) are persistent on the root and go before the
+subcommand; a subcommand's arguments follow the subcommand name, and a `--`
+separates them from the target command so the target's own flags pass
+through verbatim (pflag, unlike stdlib flag, keeps scanning for flags after
+positionals — which is why the `--` is needed for commands with flags).
 
-- **Passthrough** — `flue -- <command...>`: run any command that receives
+- **exec** — `flue exec [--] <command...>`: run any command that receives
   the control socketpair (typically `podman exec --preserve-fds 1 ...
-  flue-broker`). A program literally named `enter` can only be run this
-  way, by giving its path.
-- **Enter** — `flue enter <container> [command...]`: builds and runs
+  flue-broker`, or a wrapper that preserves fd 3).
+- **enter** — `flue enter <container> [--] [command...]`: builds and runs
   `podman exec [-ti] --preserve-fds 1 -e SSH_AUTH_SOCK=/tmp/flue.sock
   <container> flue-broker [command...]`.
   - The in-container socket path is the const `enterSocket`
@@ -22,8 +26,10 @@ The first argument after the flags selects the mode:
   - A tty is allocated only when stdin is a tty (`stdinIsTTY`, via the
     TCGETS ioctl — x/sys v0.49.0 has no `unix.IsTerminal`).
 
-Both modes share the socketpair machinery in `runChildWithAgent`, which
-returns the child's exit code.
+Both subcommands share the socketpair machinery in `runChildWithAgent`,
+which returns the child's exit code. The root `PersistentPreRun` parses the
+log level and resolves the agent socket path once, for whichever subcommand
+runs; a bare `flue` (no subcommand) is a usage error.
 
 ## Control channel
 
@@ -59,14 +65,17 @@ listener.
   - `Add`, `Remove`, `RemoveAll`, `Lock`, `Unlock`, `Signers`: always
     denied.
   - `Extension`: only `session-bind@openssh.com` is forwarded.
-- Per-request agent trace is emitted at `debug` (`-log-level debug`).
+- Per-request agent trace is emitted at `debug` (`--log-level debug`).
 
 ## Dependencies
 
 Runtime: `golang.org/x/sys` (unix syscalls) + `golang.org/x/crypto` (ssh
-agent protocol). Test-only: `go.uber.org/goleak` (goroutine leak
+agent protocol) + `github.com/spf13/cobra` (CLI: flags, subcommands,
+help/completion). Test-only: `go.uber.org/goleak` (goroutine leak
 detection) + `github.com/google/go-cmp` (readable test diffs).
 
-Logging is `log/slog` (stdlib) to stderr, set by `-log-level`. Fatal
-errors (usage, invalid flags, unrecoverable setup) are plain text on
-stderr and exit 1, via `fatalf` — not slog records.
+Logging is `log/slog` (stdlib) to stderr, set by `--log-level` (parsed in
+the root `PersistentPreRun`). Fatal setup errors (no agent socket, bad log
+level, socketpair/control-fd/child-start failures) are plain text on
+stderr and exit 1, via `fatalf` — not slog records. Flag and argument
+errors are reported by cobra and exit 1 from `main`.

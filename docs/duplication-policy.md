@@ -6,7 +6,8 @@ keep each binary a self-contained static main (the broker is
 shared `internal/` package:
 
 - **Between the two binaries**: `parseLevel`, `fatalf`, `closeQuiet`, and
-  the `log` variable plus its `-log-level` re-initialization in `main`
+  the `log` variable plus its re-initialization from the log-level flag
+  (the root `PersistentPreRun` in flue, `main` in flue-broker)
   are duplicated in both. They are small and stable; a shared package
   would need to parameterize the program-name log prefixes and fatalf
   semantics for ~25 saved lines. **If one changes, apply the paired edit

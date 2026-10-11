@@ -91,9 +91,9 @@ const enterSocket = "/tmp/flue.sock"
 // enter` is given no explicit command.
 const defaultEnterCmd = "/bin/sh"
 
-// log is the package-level slog logger. The default is rebuilt in main
-// from the -log-level flag; the declaration-time default keeps tests (which
-// never call main) working.
+// log is the package-level slog logger. The default is rebuilt by the root
+// PersistentPreRun from the --log-level flag; the declaration-time default
+// keeps tests (which never call main) working.
 var log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 // rootCmd is the top-level `flue` command. It carries the persistent
@@ -195,7 +195,7 @@ func init() {
 	rootCmd.AddCommand(execCmd, enterCmd)
 }
 
-// parseLevel maps a -log-level flag value to a slog.Level.
+// parseLevel maps a --log-level flag value to a slog.Level.
 func parseLevel(s string) (slog.Level, error) {
 	switch strings.ToLower(s) {
 	case "debug":
@@ -449,7 +449,7 @@ func (f *agentFilter) isAllowed(fp string) bool {
 }
 
 // logf traces one agent operation at debug level (enable with
-// -log-level=debug; the former -verbose flag). The detail argument is a
+// --log-level=debug; the former -verbose flag). The detail argument is a
 // key fingerprint for sign-style ops and a summary (or empty) otherwise.
 func (f *agentFilter) logf(op, detail string, allowed bool) {
 	log.Debug("flue: agent op", "op", op, "detail", detail, "allowed", allowed)

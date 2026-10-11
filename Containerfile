@@ -10,7 +10,7 @@
 #   ./build.sh push <registry>          # Build and push
 #
 # Usage:
-#   flue -- podman exec \
+#   flue exec -- podman exec \
 #     --preserve-fds 1 \
 #     -e SSH_AUTH_SOCK=/tmp/flue.sock \
 #     <container> flue-broker
