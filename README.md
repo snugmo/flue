@@ -243,11 +243,13 @@ identical to the image's own.
 
 ## Security
 
-The container only receives the control socket — never a path or fd to the
-host agent socket, its directory, or `$XDG_RUNTIME_DIR`. The filter
-restricts which keys can be listed and used for signing, but the key
-*material* (fingerprint, comment) of allowed keys is visible inside the
-container. Only use this in trusted containers.
+While a session is open, a process in the container can (a) list the
+allowlisted keys — fingerprint and comment are visible — and (b) get
+signatures from them. It cannot add, remove, lock, or unlock keys, nor use
+any key outside the `--allow-key` list (the filter policy table above
+carries the per-operation detail), and it never sees a path or fd to the
+host agent socket, its directory, or `$XDG_RUNTIME_DIR`. The trust boundary
+is the allowlist, not the container.
 
 ## Integration check (manual)
 
