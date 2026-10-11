@@ -119,7 +119,7 @@ subcommand: `flue --allow-key SHA256:… enter <container>`. (The subcommand
 
 | Flag         | Default                               | Description                                                                                                                                                                                                                      |
 | ------------ | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `-sock`      | unique per session (`flue-<8hex>.sock`) | Unix socket path to listen on. When unset, a unique path is generated in the first writable of `$XDG_RUNTIME_DIR`, `/run/user/<uid>`, `/run`, `/tmp`; set it (e.g. to `/tmp/flue.sock`) to pin a fixed path |
+| `-sock`      | unique per session (`flue-<8hex>.sock`) | Unix socket path to listen on. When unset (or empty), a unique path is generated in the first writable of `$XDG_RUNTIME_DIR`, `/run/user/<uid>`, `/run`, `/tmp`; set it (e.g. to `/tmp/flue.sock`) to pin a fixed path |
 | `-fd`        | `3`                                   | File descriptor number of the preserved control socket                                                                                                                                                                           |
 | `-log-level` | `info`                                | Log level: `debug`, `info`, `warn`, or `error`                                                                                                                                                                                   |
 

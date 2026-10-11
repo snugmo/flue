@@ -206,7 +206,11 @@ The command and its arguments follow the subcommand name; separate them from
 flue's own flags with -- so the command's own flags are passed through:
 
     flue exec -- podman exec --preserve-fds 1 \
-      -e SSH_AUTH_SOCK=/tmp/flue.sock <container> flue-broker
+      -e SSH_AUTH_SOCK=/tmp/flue.sock <container> \
+      flue-broker -sock /tmp/flue.sock
+
+(the broker generates a unique per-session socket path unless -sock pins a
+fixed one, so standalone mode must name the same path in both places).
 
 flue blocks on the command exiting and returns its exit code.`,
 	Args: cobra.MinimumNArgs(1),

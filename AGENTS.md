@@ -27,7 +27,7 @@ README.md           usage, flags, how-it-works, security
 | Build binaries | `go build -o cmd/flue/flue-broker.bin ./cmd/flue-broker && go build -o flue ./cmd/flue && cp cmd/flue/flue-broker.bin flue-broker` |
 | Test           | `go build -o cmd/flue/flue-broker.bin ./cmd/flue-broker && go test ./...` |
 | Build image    | `./build.sh` · `./build.sh push [registry]` · overrides `DEV_VERSION`, `DEV_IMAGE_NAME`, `DEV_REGISTRY`, `DEV_BASE_IMAGE` |
-| Forward agent  | `flue exec -- podman exec -e SSH_AUTH_SOCK=/tmp/flue.sock --preserve-fds 1 <container> flue-broker` |
+| Forward agent  | `flue exec -- podman exec --preserve-fds 1 -e SSH_AUTH_SOCK=/tmp/flue.sock <container> flue-broker -sock /tmp/flue.sock` |
 | Enter a shell  | `flue enter [container] [command…]` (defaults: snugmo, `$FLUE_ENTER_CMD` else `/bin/sh`; `-ti` when stdin is a tty) |
 
 ## Repo-wide rules
@@ -72,9 +72,11 @@ README.md           usage, flags, how-it-works, security
 
 - **New flag**: add to the `flag` block in `main.go`; document in the
   README `### Flags` table.
-- **Socket path coupling**: the in-container path is fixed —
-  `enterSocket` in `cmd/flue` must match the broker's `-sock` default
-  (guarded by `TestEnterSocketMatchesBrokerDefault`).
+- **Socket path coupling**: the broker generates a unique per-session
+  path (XDG_RUNTIME_DIR → /run/user/\<uid\> → /run → /tmp) and exports it
+  as `SSH_AUTH_SOCK`; standalone mode must pin `-sock` to a fixed path.
+  The standalone examples in AGENTS.md, the Containerfile header, and the
+  `flue exec` help text must stay in sync with that rule.
 - **New protocol support** (e.g. GPG agent): extend `agentFilter` or add
   a new command under `cmd/`.
 - **New image variant**: add a Containerfile stage or a `build.sh`

@@ -65,8 +65,8 @@ import (
 )
 
 var (
-	sockPath = flag.String("sock", "/tmp/flue.sock",
-		"Unix socket path to listen on inside the container")
+	sockPath = flag.String("sock", "",
+		"Unix socket path to listen on inside the container (a unique per-session path is generated when unset; set it to pin a fixed path, e.g. for standalone mode)")
 	fdArg = flag.String("fd", "3",
 		"File descriptor number of the preserved control socket (default 3)")
 	logLevel = flag.String("log-level", "info",
@@ -173,10 +173,11 @@ func run() int {
 		return failf("flue-broker: %v", err)
 	}
 
-	// When -sock is not given explicitly, generate a per-session socket path
-	// (random name in the best available runtime directory) so concurrent
-	// `flue enter` sessions don't collide on a single fixed path.
-	if !sockFlagSet() {
+	// When -sock is empty (unset, or set to the empty value), generate a
+	// per-session socket path (random name in the best available runtime
+	// directory) so concurrent `flue enter` sessions don't collide on a
+	// single fixed path.
+	if *sockPath == "" {
 		*sockPath = generateSocketPath()
 		log.Debug("flue-broker: generated socket path", "sock", *sockPath)
 	}
@@ -416,17 +417,6 @@ func withEnv(env []string, key, val string) []string {
 	return append(out, prefix+val)
 }
 
-// sockFlagSet reports whether the -sock flag was given on the command line.
-func sockFlagSet() bool {
-	set := false
-	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "sock" {
-			set = true
-		}
-	})
-	return set
-}
-
 // generateSocketPath returns a per-session Unix socket path: a random name
 // under the best available runtime directory.
 func generateSocketPath() string {
@@ -499,7 +489,7 @@ func markCloexecAll() {
 // sendListener passes the listening socket's fd to the host over the control
 // channel using SCM_RIGHTS. It closes only the dup returned by File(); it
 // deliberately keeps the *net.UnixListener open because that object owns the
-// filesystem path (/tmp/flue.sock) and in-container clients connect to it by
+// socket path it is listening on and in-container clients connect to it by
 // name. Closing it here would remove the path even though the host still
 // holds a live fd to the same socket. The listener is left open for the
 // broker's lifetime (closed only at process exit, by then redundant).

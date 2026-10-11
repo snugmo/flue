@@ -13,7 +13,7 @@
 #   flue exec -- podman exec \
 #     --preserve-fds 1 \
 #     -e SSH_AUTH_SOCK=/tmp/flue.sock \
-#     <container> flue-broker
+#     <container> flue-broker -sock /tmp/flue.sock
 
 ARG BASE_IMAGE=ghcr.io/snugmo/cote:latest-base
 FROM ${BASE_IMAGE} AS go-build
