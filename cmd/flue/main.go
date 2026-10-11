@@ -24,7 +24,7 @@
 //   - Add, Remove, RemoveAll, Lock, Unlock, Signers: always denied.
 //   - Extension: only session-bind@openssh.com is forwarded.
 //
-// flue is a cobra CLI with two subcommands. The global flags (--sock,
+// flue is a cobra CLI with three subcommands. The global flags (--sock,
 // --allow-key, --log-level) are persistent: place them before the
 // subcommand. The subcommand's arguments follow the subcommand name; a --
 // separates them from the target command so the target's own flags are
@@ -49,6 +49,14 @@
 // with no command defaulting to /bin/sh, and a tty allocated when stdin
 // is a tty. flue exits when the container command does, returning its
 // exit code. The in-container socket path is fixed at /tmp/flue.sock.
+//
+// extract-broker — writes the embedded broker back out:
+//
+//	flue extract-broker <filename>
+//
+// The result is a byte-identical copy of the built flue-broker (mode
+// 0755). It needs no agent socket: the root PersistentPreRun resolves
+// the agent socket only for the subcommands that proxy it (exec, enter).
 //
 // flue also embeds a complete copy of the flue-broker built at the same
 // time: go:embed reads it from cmd/flue/flue-broker.bin, which the build
@@ -122,18 +130,25 @@ separates them from the target command, so the target command's own flags
 are passed through verbatim.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// No subcommand given: the classic usage-error case.
-		fmt.Fprintln(os.Stderr, `flue: missing subcommand (want "exec" or "enter")`)
+		fmt.Fprintln(os.Stderr, `flue: missing subcommand (want "exec", "enter", or "extract-broker")`)
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, cmd.Root().UsageString())
 		os.Exit(1)
 	},
 }
 
+// needsAgentAnnotation marks the subcommands that proxy the host agent.
+// The root PersistentPreRun resolves the agent socket only for annotated
+// commands, so a subcommand that does not need an agent (extract-broker)
+// runs without SSH_AUTH_SOCK being set.
+const needsAgentAnnotation = "flue/needs-agent"
+
 // execCmd is the passthrough form: it runs the given command (after --),
 // which is expected to receive the control socketpair as fd 3.
 var execCmd = &cobra.Command{
-	Use:   "exec [command [args...]]",
-	Short: "Run a command that receives the control socketpair",
+	Use:         "exec [command [args...]]",
+	Short:       "Run a command that receives the control socketpair",
+	Annotations: map[string]string{needsAgentAnnotation: "1"},
 	Long: `exec runs any command that receives the control socketpair (fd 3)
 itself — typically flue-broker, or a wrapper that preserves fd 3.
 
@@ -156,8 +171,9 @@ flue blocks on the command exiting and returns its exit code.`,
 // the named container, wrapping it with flue-broker so the broker sets
 // SSH_AUTH_SOCK for the child.
 var enterCmd = &cobra.Command{
-	Use:   "enter <container> [command [args...]]",
-	Short: "Run a command (default /bin/sh) in a container with the agent",
+	Use:         "enter <container> [command [args...]]",
+	Short:       "Run a command (default /bin/sh) in a container with the agent",
+	Annotations: map[string]string{needsAgentAnnotation: "1"},
 	Long: `enter runs a podman exec against the named container with flue-broker
 wrapping the given command (default /bin/sh), allocating a tty when stdin is
 a tty:
@@ -191,6 +207,9 @@ func init() {
 		} else {
 			log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
 		}
+		if cmd.Annotations[needsAgentAnnotation] == "" {
+			return // this subcommand does not proxy the agent socket
+		}
 		sockPath = sockArg
 		if sockPath == "" {
 			sockPath = os.Getenv("SSH_AUTH_SOCK")
@@ -199,7 +218,7 @@ func init() {
 			}
 		}
 	}
-	rootCmd.AddCommand(execCmd, enterCmd)
+	rootCmd.AddCommand(execCmd, enterCmd, extractCmd)
 }
 
 // parseLevel maps a --log-level flag value to a slog.Level.
