@@ -24,9 +24,11 @@ subject that fixed it). Update this file when an item is addressed.
    deferred `closeFile`; the `os.File`s given to `net.FileConn` (control
    end `a`) and `net.FileListener` (received listener) are never closed, so
    closing the conn/listener does not release the socket.
-4. **Accept loop dies on any error** — **open**. Transient errors
+4. **Accept loop dies on any error** — **fixed** (only `net.ErrClosed`
+   ends it; other errors warn and retry with backoff). Transient errors
    (`EMFILE`, `ECONNABORTED`) end the loop silently.
-5. **Shutdown can hang on a lingering client** — **open**. `wg.Wait()`
+5. **Shutdown can hang on a lingering client** — **fixed** (`clientSet`
+   closes live client conns once the command exits). `wg.Wait()`
    waits for clients that outlive the container command.
 
 ## Medium

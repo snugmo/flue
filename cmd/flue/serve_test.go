@@ -3,7 +3,6 @@ package main
 import (
 	"net"
 	"os"
-	"sync"
 	"testing"
 	"time"
 
@@ -62,7 +61,7 @@ func TestReceiveListener(t *testing.T) {
 	lf.Close() // close only the dup; l keeps the path
 	broker.Close()
 
-	var wg sync.WaitGroup
+	var wg clientSet
 	filter := &agentFilter{allow: map[string]struct{}{}}
 	listener, acceptDone := receiveListener(host, filter, &wg)
 
@@ -79,4 +78,32 @@ func TestReceiveListener(t *testing.T) {
 		t.Fatal("accept loop did not stop after the listener was closed")
 	}
 	wg.Wait()
+}
+
+// TestClientSetCloseAll verifies that closeAll unblocks a handler stuck on
+// a lingering client and that later connections are refused.
+func TestClientSetCloseAll(t *testing.T) {
+	var cs clientSet
+	srv, cli := net.Pipe()
+	defer cli.Close()
+	if !cs.add(srv) {
+		t.Fatal("add before closeAll refused")
+	}
+	finished := make(chan struct{})
+	go func() {
+		defer cs.done(srv)
+		_, _ = srv.Read(make([]byte, 1)) // blocks until srv is closed
+		close(finished)
+	}()
+
+	cs.closeAll()
+	cs.Wait()
+	<-finished
+
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	if cs.add(a) {
+		t.Fatal("add after closeAll accepted")
+	}
 }

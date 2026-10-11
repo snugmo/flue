@@ -100,6 +100,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
@@ -567,20 +568,24 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preser
 
 	log.Info("flue: agent", "sock", sockPath, "filter", allowKeys.describe(), "exec", append([]string{cmdPath}, cmdArgs...))
 
-	var wg sync.WaitGroup
-	listener, acceptDone := receiveListener(ctrl, filter, &wg)
+	var clients clientSet
+	listener, acceptDone := receiveListener(ctrl, filter, &clients)
 
 	err = cmd.Wait()
 
 	// The broker is gone: close the one-shot control connection (kept open
 	// for the child's lifetime so the broker never sees a premature "host
-	// gone"), stop the accept loop, and let in-flight handlers drain.
+	// gone"), stop the accept loop, and close the remaining client
+	// connections. The command is gone, so nothing legitimate is left to
+	// serve, and a lingering container process holding a connection open
+	// would otherwise block the wait below forever.
 	closeQuiet(ctrl)
 	if listener != nil {
 		closeListener(listener)
 	}
 	<-acceptDone
-	wg.Wait()
+	clients.closeAll()
+	clients.Wait()
 
 	if err == nil {
 		return 0
@@ -799,7 +804,7 @@ func closeFile(f *os.File) {
 // one-shot, but the control connection is NOT closed here: the caller keeps
 // it open until the broker is gone, so the broker (which reads its own end)
 // does not observe a premature "host gone". The caller closes ctrl.
-func receiveListener(ctrl net.Conn, filter *agentFilter, wg *sync.WaitGroup) (net.Listener, <-chan struct{}) {
+func receiveListener(ctrl net.Conn, filter *agentFilter, clients *clientSet) (net.Listener, <-chan struct{}) {
 	buf := make([]byte, 4096)
 	oob := make([]byte, 4096)
 
@@ -861,21 +866,83 @@ func receiveListener(ctrl net.Conn, filter *agentFilter, wg *sync.WaitGroup) (ne
 	acceptDone := make(chan struct{})
 	go func() {
 		defer close(acceptDone)
+		delay := time.Duration(0)
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
-				log.Debug("flue: accept", "err", err)
-				return
+				if errors.Is(err, net.ErrClosed) {
+					log.Debug("flue: accept loop done", "err", err)
+					return
+				}
+				// Transient failures (EMFILE, ECONNABORTED, ...) must not
+				// end the loop: the command keeps running and would
+				// silently lose its agent. Back off and retry.
+				if delay == 0 {
+					delay = 5 * time.Millisecond
+				} else if delay *= 2; delay > time.Second {
+					delay = time.Second
+				}
+				log.Warn("flue: accept", "err", err, "retry-in", delay)
+				time.Sleep(delay)
+				continue
 			}
-			wg.Add(1)
+			delay = 0
+			if !clients.add(conn) {
+				closeQuiet(conn)
+				continue
+			}
 			go func(c net.Conn) {
-				defer wg.Done()
+				defer clients.done(c)
 				handleClient(c, filter)
 			}(conn)
 		}
 	}()
 
 	return listener, acceptDone
+}
+
+// clientSet tracks the live client connections so shutdown can close them
+// and wait for their handlers. The embedded WaitGroup counts handlers.
+type clientSet struct {
+	sync.WaitGroup
+	mu     sync.Mutex
+	conns  map[net.Conn]struct{}
+	closed bool
+}
+
+// add registers c and counts its handler; it reports false (and registers
+// nothing) once closeAll has run.
+func (s *clientSet) add(c net.Conn) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
+	if s.conns == nil {
+		s.conns = make(map[net.Conn]struct{})
+	}
+	s.conns[c] = struct{}{}
+	s.Add(1)
+	return true
+}
+
+// done unregisters c and marks its handler finished.
+func (s *clientSet) done(c net.Conn) {
+	s.mu.Lock()
+	delete(s.conns, c)
+	s.mu.Unlock()
+	s.Done()
+}
+
+// closeAll closes every live client connection, which unblocks their
+// handlers, and refuses new ones.
+func (s *clientSet) closeAll() {
+	s.mu.Lock()
+	s.closed = true
+	for c := range s.conns {
+		closeQuiet(c)
+	}
+	s.mu.Unlock()
 }
 
 // closedChannel returns an already-closed channel, used as a sentinel
