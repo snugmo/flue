@@ -102,6 +102,47 @@ func fatalf(format string, args ...any) {
 	os.Exit(1)
 }
 
+// checkControlFD validates that fdNum is the control socketpair end that
+// flue hands to the command. A plain fstat cannot catch the common
+// mistake of running the exec without `--preserve-fds 1`: the fd number
+// is open in that case too (the runtime or the exec allocated it to
+// something else, e.g. a pipe), so the failure would surface only later
+// and deep inside sendListener as an opaque "socket operation on
+// non-socket". Getting the socket type up front turns that into an
+// actionable message.
+func checkControlFD(fdNum int) error {
+	var st unix.Stat_t
+	if err := unix.Fstat(fdNum, &st); err != nil {
+		return fmt.Errorf("preserved fd %d is not open: %v (run the exec with --preserve-fds 1 and make sure -fd matches the fd that flue passes, default 3)", fdNum, err)
+	}
+	typ, err := unix.GetsockoptInt(fdNum, unix.SOL_SOCKET, unix.SO_TYPE)
+	if err != nil {
+		return fmt.Errorf("preserved fd %d is open but is not a socket: %v (want the SOCK_SEQPACKET control socketpair from flue — run the exec with --preserve-fds 1 and make sure -fd matches the fd that flue passes, default 3)", fdNum, err)
+	}
+	if typ != unix.SOCK_SEQPACKET {
+		return fmt.Errorf("preserved fd %d is a SOCK_%s socket, but flue passes a SOCK_SEQPACKET control socketpair: check the --preserve-fds count and the -fd value", fdNum, sockTypeName(typ))
+	}
+	return nil
+}
+
+// sockTypeName gives a short name for the socket types that a preserved
+// fd is realistically mistaken for; anything else prints the raw number.
+func sockTypeName(typ int) string {
+	switch typ {
+	case unix.SOCK_STREAM:
+		return "STREAM"
+	case unix.SOCK_DGRAM:
+		return "DGRAM"
+	case unix.SOCK_SEQPACKET:
+		return "SEQPACKET"
+	case unix.SOCK_RAW:
+		return "RAW"
+	case unix.SOCK_PACKET:
+		return "PACKET"
+	}
+	return fmt.Sprintf("%d", typ)
+}
+
 // heldControl keeps the preserved control fd open for the whole process
 // lifetime. net.FileConn wraps a file in a Conn and closes the underlying
 // fd when the Conn is garbage-collected; if that happened to the preserved
@@ -125,9 +166,8 @@ func main() {
 		fatalf("flue-broker: invalid -fd %q: must be an integer >= 3", *fdArg)
 	}
 
-	var st unix.Stat_t
-	if err := unix.Fstat(fdNum, &st); err != nil {
-		fatalf("flue-broker: preserved fd %d is not usable: %v", fdNum, err)
+	if err := checkControlFD(fdNum); err != nil {
+		fatalf("flue-broker: %v", err)
 	}
 
 	if err := os.Remove(*sockPath); err != nil && !os.IsNotExist(err) {

@@ -22,8 +22,13 @@ connections. The file header in `main.go` is the authoritative overview.
 - Listens on `-sock` (default `/tmp/flue.sock`), removing a stale socket
   first.
 - The preserved control fd comes from `-fd` (default `3` — the first fd
-  after stdin/stdout/stderr; must be ≥ 3, validated at startup). If the
-  calling shell holds other open fds, use `-fd` to target the right one.
+  after stdin/stdout/stderr; must be ≥ 3). At startup the broker verifies
+  the fd is open and a `SOCK_SEQPACKET` socket, and exits with a
+  diagnostic otherwise: running the exec without `--preserve-fds 1`
+  leaves fd 3 open as *something else* (a pipe, a file, …), and without
+  the check that would fail only later, deep in the SCM_RIGHTS handoff,
+  as an opaque "socket operation on non-socket". If the calling shell
+  holds other open fds, use `-fd` to target the right one.
 - **SCM_RIGHTS listener-fd handoff**: the broker's listening fd is passed
   to the host over the control socketpair using `unix.UnixRights` +
   `WriteMsgUnix` exactly once at startup. The control channel is one-shot;

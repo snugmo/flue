@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	"go.uber.org/goleak"
@@ -117,4 +118,84 @@ func TestChildExitCode(t *testing.T) {
 	if got := childExitCode(errors.New("boom")); got != 1 {
 		t.Fatalf("non-exit err: got %d, want 1", got)
 	}
+}
+
+// TestCheckControlFD verifies the pre-handoff validation accepts the
+// SOCK_SEQPACKET control socketpair and rejects the failure modes that
+// would otherwise surface only deep inside sendListener as an opaque
+// "socket operation on non-socket": an fd that is open but not a
+// socket (e.g. an exec run without --preserve-fds), and a socket of the
+// wrong type.
+func TestCheckControlFD(t *testing.T) {
+	t.Run("seqpacket socketpair is accepted", func(t *testing.T) {
+		pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET, 0)
+		if err != nil {
+			t.Fatalf("socketpair: %v", err)
+		}
+		defer unix.Close(pair[0])
+		defer unix.Close(pair[1])
+		if err := checkControlFD(pair[0]); err != nil {
+			t.Fatalf("checkControlFD(%d) = %v, want nil", pair[0], err)
+		}
+	})
+
+	t.Run("stream socket is rejected", func(t *testing.T) {
+		fd, err := unix.Socket(unix.AF_UNIX, unix.SOCK_STREAM, 0)
+		if err != nil {
+			t.Fatalf("socket: %v", err)
+		}
+		defer unix.Close(fd)
+		err = checkControlFD(fd)
+		if err == nil {
+			t.Fatal("checkControlFD(stream fd) = nil, want an error")
+		}
+		if !strings.Contains(err.Error(), "SOCK_STREAM") {
+			t.Errorf("error %q does not name SOCK_STREAM", err)
+		}
+	})
+
+	t.Run("dgram socket is rejected", func(t *testing.T) {
+		fd, err := unix.Socket(unix.AF_UNIX, unix.SOCK_DGRAM, 0)
+		if err != nil {
+			t.Fatalf("socket: %v", err)
+		}
+		defer unix.Close(fd)
+		err = checkControlFD(fd)
+		if err == nil {
+			t.Fatal("checkControlFD(dgram fd) = nil, want an error")
+		}
+		if !strings.Contains(err.Error(), "SOCK_DGRAM") {
+			t.Errorf("error %q does not name SOCK_DGRAM", err)
+		}
+	})
+
+	t.Run("regular file is rejected", func(t *testing.T) {
+		f, err := os.CreateTemp(t.TempDir(), "fd")
+		if err != nil {
+			t.Fatalf("createtemp: %v", err)
+		}
+		defer f.Close()
+		fd := int(f.Fd())
+		err = checkControlFD(fd)
+		if err == nil {
+			t.Fatal("checkControlFD(file fd) = nil, want an error")
+		}
+		if !strings.Contains(err.Error(), "not a socket") {
+			t.Errorf("error %q does not say the fd is not a socket", err)
+		}
+	})
+
+	t.Run("closed fd is rejected", func(t *testing.T) {
+		f, err := os.CreateTemp(t.TempDir(), "fd")
+		if err != nil {
+			t.Fatalf("createtemp: %v", err)
+		}
+		fd := int(f.Fd())
+		if err := f.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		if err := checkControlFD(fd); err == nil {
+			t.Fatal("checkControlFD(closed fd) = nil, want an error")
+		}
+	})
 }
