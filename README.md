@@ -155,6 +155,18 @@ binary (a `flue` from the flue image extracts a broker identical to the
 image's own `/usr/local/bin/flue-broker`). Unlike `exec` and `enter`,
 `extract-broker` needs no agent socket and takes no flags.
 
+If the container has **no writable filesystem** (or you simply do not want to
+install the broker), skip the file entirely with `enter --inject-broker`:
+`flue` writes the embedded broker into an in-memory `memfd` and the container
+execs it via `/proc/self/fd/4`, so the broker never touches disk:
+
+```sh
+flue enter --inject-broker <container> [command [args…]]
+```
+
+The control socketpair stays on fd 3 (`--preserve-fds 2`), so everything else
+is identical to a normal `enter`.
+
 ### Flags
 
 **flue-broker** (container-side):
@@ -182,6 +194,11 @@ accept the `--flag value` or `--flag=value` forms and go before the
 subcommand (`flue --sock /path exec -- …`). The subcommand's own arguments
 follow the subcommand name; a `--` separates them from the target command
 so the target's flags pass through verbatim.
+
+`enter` also has one non-persistent flag of its own:
+`--inject-broker` (see above) runs the broker from an in-memory `memfd`
+instead of the image's `flue-broker`, for containers with no writable
+filesystem.
 
 ## How it works
 

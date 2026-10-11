@@ -25,6 +25,10 @@ positionals — which is why the `--` is needed for commands with flags).
   - The command defaults to `defaultEnterCmd` (`/bin/sh`).
   - A tty is allocated only when stdin is a tty (`stdinIsTTY`, via the
     TCGETS ioctl — x/sys v0.49.0 has no `unix.IsTerminal`).
+  - `--inject-broker` (enter-scoped, non-persistent): instead of the
+    image's `flue-broker`, flue hands the broker in a `memfd` and the
+    container execs it via `/proc/self/fd/4` — see the memfd injection
+    bullet under **Embedded broker**.
 - **extract-broker** — `flue extract-broker <filename>`: writes the
   embedded `flue-broker` (see Embedded broker below) to `<filename>`,
   mode 0755, byte-identical to the built broker. It takes no flags.
@@ -79,8 +83,20 @@ listener.
   `flue-broker` binary built when flue was built. go:embed stores the
   file's bytes verbatim, so the embedded copy is 100% identical to the
   build source, and `flue extract-broker` (below) is how that file comes
-  back out. A later step uses this to inject the broker into a container
-  without a writable filesystem.
+  back out as a file; `flue enter --inject-broker` uses the same bytes to
+  run the broker entirely in memory (see the memfd injection bullet below).
+- **Memfd injection** (`cmd/flue/inject.go`): `flue enter --inject-broker`
+  runs the broker entirely in memory. `injectBrokerMemfd` creates a memfd
+  named `flue-broker` with `MFD_EXEC | MFD_CLOEXEC` and writes the
+  embedded bytes into it; the memfd is passed to the container as fd 4
+  (`--preserve-fds 2`, control socketpair stays on fd 3) and the container
+  execs `/proc/self/fd/4`, so the broker never touches the container's
+  filesystem — it works in a container with no writable filesystem and no
+  `flue-broker` in the image. `MFD_EXEC` (Linux ≥ 5.17) makes the memfd
+  executable via `/proc/self/fd/<n>` even in MDWE-hardened processes; if
+  the kernel lacks it, flue falls back to a plain memfd, which ordinary
+  (non-MDWE) processes can still exec. In `/proc/self/fd` the injected
+  broker shows up as `memfd:flue-broker (deleted)`.
 - **Build order**: the embed file must exist before flue is compiled —
   build `flue-broker` first, to `cmd/flue/flue-broker.bin` (the AGENTS.md
   Build/Test commands, `build.sh`, and the Containerfile all do this).
