@@ -36,9 +36,32 @@ func TestPickSocketDir(t *testing.T) {
 			return
 		}
 	}
-	// XDG_RUNTIME_DIR case (custom prefix) — just assert it is a dir.
-	if !isDir(d) {
-		t.Errorf("pickSocketDir = %q is not a directory", d)
+	// XDG_RUNTIME_DIR case (custom prefix) — must be writable.
+	if !writableDir(d) {
+		t.Errorf("pickSocketDir = %q is not writable", d)
+	}
+}
+
+// TestPickSocketDirXDGReadOnly verifies that a set-but-not-writable
+// XDG_RUNTIME_DIR is skipped, not fatal: pickSocketDir falls through to
+// the next candidate instead of failing at listen.
+func TestPickSocketDirXDGReadOnly(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root can write into any directory; cannot simulate read-only")
+	}
+	ro := t.TempDir()
+	if err := os.Chmod(ro, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(ro, 0o755) })
+
+	t.Setenv("XDG_RUNTIME_DIR", ro)
+	d := pickSocketDir()
+	if d == ro {
+		t.Fatalf("pickSocketDir used the read-only XDG_RUNTIME_DIR %q", d)
+	}
+	if !writableDir(d) {
+		t.Fatalf("pickSocketDir = %q is not writable", d)
 	}
 }
 

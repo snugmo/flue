@@ -27,10 +27,11 @@ connections. The file header in `main.go` is the authoritative overview.
   broker, exec'd from the memfd as `/proc/self/fd/4`, readable in `ps`.
 - **Socket path**: when `-sock` is unset (or empty), the broker
   generates `flue-<8hex>.sock` under the best available runtime
-  directory (`$XDG_RUNTIME_DIR` if set, else `/run/user/<uid>`, else
-  `/run`, else `/tmp`) and — in wrapper mode — exports it to the
-  wrapped command as `SSH_AUTH_SOCK`. Standalone mode exports nothing,
-  so the caller must pin `-sock` and set `SSH_AUTH_SOCK` itself.
+  directory (`$XDG_RUNTIME_DIR` if set and writable, else
+  `/run/user/<uid>`, else `/run`, else `/tmp` — first writable wins)
+  and — in wrapper mode — exports it to the wrapped command as
+  `SSH_AUTH_SOCK`. Standalone mode exports nothing, so the caller must
+  pin `-sock` and set `SSH_AUTH_SOCK` itself.
 - The preserved control fd comes from `-fd` (default `3` — the first fd
   after stdin/stdout/stderr; must be ≥ 3). At startup the broker verifies
   the fd is open and a `SOCK_SEQPACKET` socket, and exits with a

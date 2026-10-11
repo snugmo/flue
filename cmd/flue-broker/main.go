@@ -445,10 +445,10 @@ func generateSocketPath() string {
 }
 
 // pickSocketDir chooses the directory for the generated socket: XDG_RUNTIME_DIR
-// (if set and present), else /run/user/<uid>, else /run, else /tmp — first
+// (if set and writable), else /run/user/<uid>, else /run, else /tmp — first
 // that is writable wins.
 func pickSocketDir() string {
-	if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" && isDir(d) {
+	if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" && writableDir(d) {
 		return d
 	}
 	if d := filepath.Join("/run/user", strconv.Itoa(os.Getuid())); writableDir(d) {
@@ -458,12 +458,6 @@ func pickSocketDir() string {
 		return "/run"
 	}
 	return "/tmp"
-}
-
-// isDir reports whether path exists and is a directory.
-func isDir(path string) bool {
-	st, err := os.Stat(path)
-	return err == nil && st.IsDir()
 }
 
 // writableDir reports whether a file can be created in dir.
