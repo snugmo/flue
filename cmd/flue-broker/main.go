@@ -29,7 +29,7 @@
 //
 // Usage (see flue on the host side):
 //
-//	flue -- podman exec \
+//	flue exec -- podman exec \
 //	  --preserve-fds 1 \
 //	  -e SSH_AUTH_SOCK=/tmp/flue.sock \
 //	  <container> flue-broker
@@ -37,7 +37,7 @@
 // Wrapper mode — get a shell inside the container with the agent available
 // (the broker sets SSH_AUTH_SOCK for the child, so -e is not required):
 //
-//	flue -- podman exec \
+//	flue exec -- podman exec \
 //	  --preserve-fds 1 \
 //	  <container> flue-broker bash
 //
