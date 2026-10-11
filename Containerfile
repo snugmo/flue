@@ -21,6 +21,13 @@ ENV GOPATH=/go \
     GOROOT=/opt/go \
     PATH=/go/bin:/opt/go/bin:$PATH
 
+# The cote base image's default user is a non-root account that can only
+# write to /tmp; the build must place files in root-owned directories
+# (/build/flue/..., /usr/local/bin), so the build stage runs as root.
+# The final stage keeps the base image's non-root user, so the shipped
+# container still runs unprivileged.
+USER root
+
 WORKDIR /build/flue
 
 COPY go.mod go.sum ./
