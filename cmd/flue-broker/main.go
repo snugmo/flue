@@ -138,7 +138,7 @@ func main() {
 		fatalf("flue-broker: chmod %s: %v", *sockPath, err)
 	}
 	log.Info("flue-broker: listening", "sock", *sockPath, "control-fd", fdNum)
-	defer os.Remove(*sockPath)
+	defer removeQuiet(*sockPath)
 
 	// Keep the preserved control fd open for the whole process lifetime so
 	// sendListener can build a write conn from it at any point.
@@ -355,6 +355,15 @@ func sendListener(listener net.Listener) error {
 		log.Debug("flue-broker: close listener dup", "err", cerr)
 	}
 	return nil
+}
+
+// removeQuiet removes a file, logging the error unless it is a benign
+// "file does not exist" (the socket was already gone). Used for
+// best-effort cleanup of the broker's own socket path.
+func removeQuiet(path string) {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		log.Debug("flue-broker: remove", "path", path, "err", err)
+	}
 }
 
 // closeQuiet closes a connection, logging the error unless it is a benign

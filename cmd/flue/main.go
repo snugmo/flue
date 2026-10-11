@@ -299,7 +299,7 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string) int {
 	// gone"), stop the accept loop, and let in-flight handlers drain.
 	closeQuiet(ctrl)
 	if listener != nil {
-		listener.Close()
+		closeListener(listener)
 	}
 	<-acceptDone
 	wg.Wait()
@@ -485,6 +485,14 @@ func closeQuiet(c net.Conn) {
 	}
 }
 
+// closeListener closes a listener, logging the error unless it is a
+// benign "use of closed network connection".
+func closeListener(l net.Listener) {
+	if err := l.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		log.Debug("flue: close listener", "err", err)
+	}
+}
+
 // closeFD closes a raw file descriptor, logging the error unless it is
 // already closed.
 func closeFD(fd int) {
@@ -533,7 +541,7 @@ func receiveListener(ctrl net.Conn, filter *agentFilter, wg *sync.WaitGroup) (ne
 		return nil, closedChannel()
 	}
 	// Expect exactly one listener fd; use the first, close any extras.
-	var listenFd int = -1
+	listenFd := -1
 	for _, cmsg := range cmsgs {
 		rights, rerr := unix.ParseUnixRights(&cmsg)
 		if rerr != nil {
