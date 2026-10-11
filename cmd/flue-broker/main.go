@@ -188,16 +188,13 @@ func run() int {
 		return failf("flue-broker: remove stale socket %s: %v", *sockPath, err)
 	}
 
-	listener, err := net.Listen("unix", *sockPath)
+	listener, err := listenPrivate(*sockPath)
 	if err != nil {
 		return failf("flue-broker: listen %s: %v", *sockPath, err)
 	}
 	// Registered before any later step can fail, so every return path
 	// removes the socket file.
 	defer removeQuiet(*sockPath)
-	if err := os.Chmod(*sockPath, 0600); err != nil {
-		return failf("flue-broker: chmod %s: %v", *sockPath, err)
-	}
 	log.Info("flue-broker: listening", "sock", *sockPath, "control-fd", fdNum)
 
 	// Wrap the preserved fd in a conn exactly once. net.FileConn dups the
@@ -231,6 +228,18 @@ func run() int {
 		return runChild(args, *sockPath, ctrl)
 	}
 	return waitForHost(ctrl)
+}
+
+// listenPrivate listens on a Unix socket at path with mode 0600 from the
+// moment it exists. A chmod after Listen would leave a window in which the
+// socket carries the umask-derived mode (typically world-connectable);
+// tightening the umask around the bind closes it. The broker is still
+// single-threaded here, so the process-wide umask change is not observable
+// by anything else.
+func listenPrivate(path string) (net.Listener, error) {
+	old := unix.Umask(0o177)
+	defer unix.Umask(old)
+	return net.Listen("unix", path)
 }
 
 // waitForHost blocks until the control channel reports the host going away

@@ -1,8 +1,11 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // TestGenerateSocketPathUnique checks that per-session socket paths carry the
@@ -36,5 +39,29 @@ func TestPickSocketDir(t *testing.T) {
 	// XDG_RUNTIME_DIR case (custom prefix) — just assert it is a dir.
 	if !isDir(d) {
 		t.Errorf("pickSocketDir = %q is not a directory", d)
+	}
+}
+
+// TestListenPrivateMode verifies the socket is created 0600 even under a
+// permissive umask, and that the umask is restored afterwards.
+func TestListenPrivateMode(t *testing.T) {
+	old := unix.Umask(0)
+	defer unix.Umask(old)
+
+	path := filepath.Join(t.TempDir(), "s.sock")
+	l, err := listenPrivate(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := st.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("socket mode %o, want 600", perm)
+	}
+	if got := unix.Umask(0); got != 0 {
+		t.Fatalf("umask not restored: %o", got)
 	}
 }

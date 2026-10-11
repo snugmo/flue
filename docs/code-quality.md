@@ -43,7 +43,8 @@ subject that fixed it). Update this file when an item is addressed.
    `maxClients`, `dialTimeout`, `idleTimeout`).
 9. **Injected memfd is writable and unsealed** — **fixed** (sealed with
    `F_SEAL_{SEAL,SHRINK,GROW,WRITE}` after the write; still executable).
-10. **Socket created with umask permissions before chmod 0600** — **open**.
+10. **Socket created with umask permissions before chmod 0600** —
+    **fixed** (`listenPrivate` binds under umask 0177; the chmod is gone).
 11. **Broker does not handle signals; only the direct child is killed** —
     **open**.
 
