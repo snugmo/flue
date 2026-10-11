@@ -3,11 +3,12 @@
 // It creates a Unix socketpair (SOCK_SEQPACKET) and passes one end into the
 // container as fd 3 via `podman exec --preserve-fds 1`. The container-side
 // broker (flue-broker) listens on a Unix socket, then hands that listening
-// fd back to the host over the control channel. The host accepts client
-// connections directly on the received listener and proxies each one to the
-// real host agent ($SSH_AUTH_SOCK) using golang.org/x/crypto/ssh/agent with
-// a filtering wrapper. Each client gets a fresh upstream connection, so
-// repeated ssh / ssh-add / git invocations all work.
+// fd back to the host over the control channel. The host validates the
+// received fd (a listening Unix stream socket) and accepts client
+// connections directly on it, proxying each one to the real host agent
+// ($SSH_AUTH_SOCK) using golang.org/x/crypto/ssh/agent with a filtering
+// wrapper. Each client gets a fresh upstream connection, so repeated
+// ssh / ssh-add / git invocations all work.
 //
 // Lifetime is driven by the process tree, not the control channel. The
 // control channel carries exactly one message (the listener fd); its
@@ -882,15 +883,40 @@ func receiveListener(ctrl net.Conn, filter *agentFilter, clients *clientSet) (ne
 		return nil, closedChannel()
 	}
 
+	// The received fd must be what the broker hands over: a listening Unix
+	// stream socket. FileListener alone accepts any listening socket (a
+	// compromised container could hand over a TCP listener), so validate
+	// with getsockopt on the raw fd — the same pattern the broker uses for
+	// its control fd (checkControlFD). On any mismatch: log, close, reject.
+	domain, eDomain := unix.GetsockoptInt(listenFd, unix.SOL_SOCKET, unix.SO_DOMAIN)
+	typ, eType := unix.GetsockoptInt(listenFd, unix.SOL_SOCKET, unix.SO_TYPE)
+	acceptConn, eAccept := unix.GetsockoptInt(listenFd, unix.SOL_SOCKET, unix.SO_ACCEPTCONN)
+	if eDomain != nil || eType != nil || eAccept != nil ||
+		domain != unix.AF_UNIX || typ != unix.SOCK_STREAM || acceptConn != 1 {
+		log.Warn("flue: received fd is not a listening Unix stream socket",
+			"domain", domain, "type", typ, "acceptconn", acceptConn,
+			"err", errors.Join(eDomain, eType, eAccept))
+		closeFD(listenFd)
+		return nil, closedChannel()
+	}
+
 	// Wrap the received listener fd in a *net.UnixListener so Accept works.
 	// FileListener dups the fd, so close the os.File right away: otherwise
 	// the original stays open and the socket keeps listening even after the
-	// caller closes the returned listener.
+	// caller closes the returned listener. The type assertion rejects
+	// anything that is not a Unix listener, even though the getsockopt
+	// check above should already have excluded it.
 	lf := os.NewFile(uintptr(listenFd), "flue-listener")
-	listener, err := net.FileListener(lf)
+	fileListener, err := net.FileListener(lf)
 	closeFile(lf)
 	if err != nil {
 		log.Warn("flue: listener fd", "err", err)
+		return nil, closedChannel()
+	}
+	listener, ok := fileListener.(*net.UnixListener)
+	if !ok {
+		closeListener(fileListener)
+		log.Warn("flue: listener fd did not wrap as a Unix listener")
 		return nil, closedChannel()
 	}
 	log.Debug("flue: accepting on handed-over listener")

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"net"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,6 +80,109 @@ func TestReceiveListener(t *testing.T) {
 		t.Fatal("accept loop did not stop after the listener was closed")
 	}
 	wg.Wait()
+}
+
+// socketInodeOf returns the kernel socket inode behind fd (from the
+// /proc/self/fd/<fd> symlink "socket:[inode]"), or "" if fd is not a socket.
+func socketInodeOf(t *testing.T, fd int) string {
+	t.Helper()
+	link, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd))
+	if err != nil {
+		t.Fatalf("readlink /proc/self/fd/%d: %v", fd, err)
+	}
+	i := strings.Index(link, "socket:[")
+	if i < 0 {
+		return ""
+	}
+	rest := link[i+len("socket:["):]
+	if j := strings.IndexByte(rest, ']'); j > 0 {
+		return rest[:j]
+	}
+	return ""
+}
+
+// openSocketsContains reports whether any fd in this process still
+// references the socket with the given inode.
+func openSocketsContains(inode string) bool {
+	ents, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		return false
+	}
+	for _, e := range ents {
+		link, err := os.Readlink("/proc/self/fd/" + e.Name())
+		if err == nil && strings.Contains(link, "socket:["+inode+"]") {
+			return true
+		}
+	}
+	return false
+}
+
+// TestReceiveListenerRejectsWrongFds verifies that receiveListener rejects
+// an fd that is not a listening Unix stream socket: a SOCK_SEQPACKET
+// socket (right domain, wrong type), an un-listened stream socket
+// (SO_ACCEPTCONN 0), and a TCP listener (wrong domain). Each rejection
+// must return no listener and close the received copy of the fd (the
+// last condition checked via the socket inode: the test closes its own
+// reference first, so a live socket in the fd table is flue's copy).
+func TestReceiveListenerRejectsWrongFds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mk   func(t *testing.T) (fd int, inode string, closeRef func())
+	}{
+		{"seqpacket socket (wrong type)", func(t *testing.T) (int, string, func()) {
+			t.Helper()
+			fd, err := unix.Socket(unix.AF_UNIX, unix.SOCK_SEQPACKET, 0)
+			if err != nil {
+				t.Fatalf("socket: %v", err)
+			}
+			return fd, socketInodeOf(t, fd), func() { _ = unix.Close(fd) }
+		}},
+		{"unlistened stream socket (SO_ACCEPTCONN 0)", func(t *testing.T) (int, string, func()) {
+			t.Helper()
+			fd, err := unix.Socket(unix.AF_UNIX, unix.SOCK_STREAM, 0)
+			if err != nil {
+				t.Fatalf("socket: %v", err)
+			}
+			return fd, socketInodeOf(t, fd), func() { _ = unix.Close(fd) }
+		}},
+		{"tcp listener (wrong domain)", func(t *testing.T) (int, string, func()) {
+			t.Helper()
+			l, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Skipf("cannot listen on TCP in this environment: %v", err)
+			}
+			rc, err := l.(*net.TCPListener).SyscallConn()
+			if err != nil {
+				l.Close()
+				t.Fatalf("syscall conn: %v", err)
+			}
+			var fd int
+			_ = rc.Control(func(rawFD uintptr) { fd = int(rawFD) })
+			return fd, socketInodeOf(t, fd), func() { _ = l.Close() }
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fd, inode, closeRef := tc.mk(t)
+			t.Cleanup(closeRef)
+
+			host, broker := makeControlPair(t)
+			oob := unix.UnixRights(fd)
+			if _, _, err := broker.(*net.UnixConn).WriteMsgUnix([]byte{0}, oob, nil); err != nil {
+				t.Fatalf("write msg: %v", err)
+			}
+			closeRef() // drop the test's reference before the leak check
+
+			var cs clientSet
+			listener, acceptDone := receiveListener(host, &agentFilter{}, &cs)
+			if listener != nil {
+				t.Fatalf("receiveListener accepted a %s fd", tc.name)
+			}
+			<-acceptDone // a rejected handover returns a closed channel
+			if inode != "" && openSocketsContains(inode) {
+				t.Error("received fd copy is still open after rejection")
+			}
+		})
+	}
 }
 
 // TestClientSetCloseAll verifies that closeAll unblocks a handler stuck on

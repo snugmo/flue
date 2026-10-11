@@ -60,6 +60,11 @@ usage error.
   (`exec.Command.ExtraFiles`), end A stays on the host.
 - It carries exactly one message: the broker's listener fd (SCM_RIGHTS),
   read by `receiveListener`.
+- The received fd is validated before use: `getsockopt` on the raw fd must
+  report `AF_UNIX` / `SOCK_STREAM` / `SO_ACCEPTCONN=1`, and the wrapped
+  result must be a `*net.UnixListener`. Anything else (e.g. a TCP listener
+  from a host-networked container) is logged, closed, and rejected — the
+  accept loop only ever runs on a Unix listener.
 - The connection stays open until the broker is gone (so the broker never
   sees a premature "host gone") and is closed after `cmd.Wait()`.
 
