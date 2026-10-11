@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -10,6 +11,10 @@ import (
 // container name and the in-container command, including the snugmo
 // container and /bin/sh defaults when no arguments are given.
 func TestEnterTarget(t *testing.T) {
+	// Keep the default-command resolution deterministic regardless of the
+	// test environment (enterTarget consults $FLUE_ENTER_CMD).
+	t.Setenv("FLUE_ENTER_CMD", "")
+
 	tests := []struct {
 		name          string
 		args          []string
@@ -43,6 +48,44 @@ func TestEnterTarget(t *testing.T) {
 			}
 			if diff := cmp.Diff(tt.wantCmd, cmd); diff != "" {
 				t.Errorf("cmd mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestEnterDefaultCmd verifies the default command resolution: /bin/sh
+// when $FLUE_ENTER_CMD is unset, blank, or whitespace-only, and the
+// whitespace-split value of the variable otherwise.
+func TestEnterDefaultCmd(t *testing.T) {
+	t.Run("unset", func(t *testing.T) {
+		prev, had := os.LookupEnv("FLUE_ENTER_CMD")
+		os.Unsetenv("FLUE_ENTER_CMD")
+		defer func() {
+			if had {
+				os.Setenv("FLUE_ENTER_CMD", prev)
+			} else {
+				os.Unsetenv("FLUE_ENTER_CMD")
+			}
+		}()
+		if got := enterDefaultCmd(); !cmp.Equal(got, []string{"/bin/sh"}) {
+			t.Errorf("enterDefaultCmd() = %v, want [/bin/sh]", got)
+		}
+	})
+
+	for _, tt := range []struct {
+		name string
+		env  string
+		want []string
+	}{
+		{"blank", "", []string{"/bin/sh"}},
+		{"whitespace only", "   ", []string{"/bin/sh"}},
+		{"single word", "bash", []string{"bash"}},
+		{"word and args", "bash -l", []string{"bash", "-l"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("FLUE_ENTER_CMD", tt.env)
+			if got := enterDefaultCmd(); !cmp.Equal(got, tt.want) {
+				t.Errorf("enterDefaultCmd() = %v, want %v", got, tt.want)
 			}
 		})
 	}
