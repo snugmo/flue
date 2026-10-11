@@ -156,10 +156,10 @@ func newCertKey(t *testing.T, comment string) (agent.AddedKey, []byte, string) {
 		t.Fatalf("user pub: %v", err)
 	}
 	cert := &ssh.Certificate{
-		Key:         userPub,
-		CertType:    ssh.UserCert,
-		ValidAfter:  uint64(time.Now().Add(-time.Hour).Unix()),
-		ValidBefore: uint64(time.Now().Add(time.Hour).Unix()),
+		Key:          userPub,
+		CertType:     ssh.UserCert,
+		ValidAfter:   uint64(time.Now().Add(-time.Hour).Unix()),
+		ValidBefore:  uint64(time.Now().Add(time.Hour).Unix()),
 		SignatureKey: caPub,
 	}
 	if err := cert.SignCert(rand.Reader, caSigner); err != nil {
