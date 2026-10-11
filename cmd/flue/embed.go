@@ -4,10 +4,10 @@ import (
 	_ "embed"
 )
 
-// flueBrokerBin is the full flue-broker binary, embedded verbatim with
-// go:embed from the build-time file cmd/flue/flue-broker.bin. It lets flue
-// hand a container-side broker to a container whose image does not provide
-// one (extract-broker, see extract.go).
+// flueBrokerBin is the full flue-broker binary, embedded verbatim (by the
+// embed directive below) from the build-time file cmd/flue/flue-broker.bin.
+// It lets flue hand a container-side broker to a container whose image does
+// not provide one (extract-broker, see extract.go).
 //
 // Identity: go:embed stores the file's bytes untransformed, so the embedded
 // copy is 100% identical to the flue-broker that was built as its source.

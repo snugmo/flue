@@ -5,7 +5,8 @@ keep each binary a self-contained static main (the broker is
 "deliberately thin" — see its header). Do not "fix" any of it into a
 shared `internal/` package:
 
-- **Between the two binaries**: `parseLevel`, `fatalf`, `closeQuiet`, and
+- **Between the two binaries**: `parseLevel`, `fatalf` (flue-broker's counterpart is `failf`, which
+  returns the exit code so `run`'s defers still execute), `closeQuiet`, and
   the `log` variable plus its re-initialization from the log-level flag
   (the root `PersistentPreRun` in flue, `main` in flue-broker)
   are duplicated in both. They are small and stable; a shared package

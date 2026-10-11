@@ -49,7 +49,7 @@ func injectBrokerMemfd() (*os.File, error) {
 	}
 	f := os.NewFile(uintptr(fd), "flue-broker-memfd")
 	if _, err := f.Write(flueBrokerBin); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, fmt.Errorf("write broker to memfd: %w", err)
 	}
 	// The container side receives this fd writable. Without seals, any
@@ -58,7 +58,7 @@ func injectBrokerMemfd() (*os.File, error) {
 	// fixed-size, and refuse further seal changes.
 	const seals = unix.F_SEAL_SEAL | unix.F_SEAL_SHRINK | unix.F_SEAL_GROW | unix.F_SEAL_WRITE
 	if _, err := unix.FcntlInt(f.Fd(), unix.F_ADD_SEALS, seals); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, fmt.Errorf("seal broker memfd: %w", err)
 	}
 	log.Debug("flue: created broker memfd", "bytes", len(flueBrokerBin))

@@ -45,10 +45,7 @@ func writeEmbeddedBroker(path string) error {
 		return errors.New("embedded flue-broker is not a Linux ELF binary: build flue-broker (to cmd/flue/flue-broker.bin) before building flue, then rebuild")
 	}
 
-	dir := filepath.Dir(path)
-	if dir == "" {
-		dir = "."
-	}
+	dir := filepath.Dir(path) // "." for a bare filename, never ""
 	st, err := os.Stat(dir)
 	if err != nil {
 		return fmt.Errorf("directory %s: %v", dir, err)
@@ -68,15 +65,21 @@ func writeEmbeddedBroker(path string) error {
 		return fmt.Errorf("create temp file in %s: %v", dir, err)
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op after a successful rename
+	defer func() { _ = os.Remove(tmpName) }() // no-op after a successful rename
 
 	if _, err := tmp.Write(flueBrokerBin); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("write %s: %v", path, err)
 	}
 	if err := tmp.Chmod(0o755); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("chmod %s: %v", path, err)
+	}
+	// Flush to disk before the rename, so a crash cannot leave the target
+	// name pointing at an empty or partial file.
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync %s: %v", path, err)
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close %s: %v", path, err)

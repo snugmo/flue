@@ -60,9 +60,11 @@ subject that fixed it). Update this file when an item is addressed.
 14. `sendListener` leaks the listener dup on early-error returns —
     **fixed** (dup closed by defer, in the same commit as item 2).
 15. Redundant code: second `<-hostGone`, `_ = n`, dead `dir == ""`,
-    `cmd.Env = os.Environ()` — **open**.
-16. `extract-broker` does not `fsync` before rename — **open**.
+    `cmd.Env = os.Environ()` — **fixed**. (`keyFingerprintFromBlob` stays:
+    it works on a raw blob without parsing a key.)
+16. `extract-broker` does not `fsync` before rename — **fixed**.
 17. `dialAgent` reads the global `sockPath` — **open**.
 18. `golangci-lint` findings (unchecked `Close`/`Remove` in
     `writableDir`, `extract.go`, `inject.go`; SA9009 in `embed.go`) —
-    **open**.
+    **fixed**; `golangci-lint run ./...` reports 0 issues. The broker's
+    `fatalf` became unused and was folded into `failf`.

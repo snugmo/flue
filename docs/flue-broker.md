@@ -44,4 +44,5 @@ Only `golang.org/x/sys` (stdlib-adjacent, needed for the raw socket
 syscalls). No `x/crypto` — the broker never speaks the agent protocol.
 Logging is `log/slog` (stdlib) to stderr, set by `-log-level`. Fatal
 errors (invalid flags, unrecoverable setup) are plain text on stderr and
-exit 1, via `fatalf` — not slog records.
+exit 1, via `failf` (which returns the code so the deferred socket
+removal runs) — not slog records.

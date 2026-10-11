@@ -93,20 +93,14 @@ func parseLevel(s string) (slog.Level, error) {
 	return 0, fmt.Errorf("unknown log level %q (want debug, info, warn, or error)", s)
 }
 
-// fatalf prints the formatted message to stderr and exits 1, keeping the
-// traditional CLI fatal behavior (a plain-text line, as log.Fatalf used
-// to produce) rather than a slog record — usage and flag errors in
-// particular must read as ordinary text. The format string is
-// printf-substituted; note that slog does not interpret format verbs (it
-// treats the args as key/value pairs). slog is used for the non-fatal,
-// leveled operational logging.
-func fatalf(format string, args ...any) {
-	os.Exit(failf(format, args...))
-}
-
-// failf prints the formatted message to stderr like fatalf but returns the
-// exit code (1) instead of exiting, so callers with deferred cleanup can
-// return it.
+// failf prints the formatted message to stderr and returns the exit code
+// (1), keeping the traditional CLI fatal behavior (a plain-text line, as
+// log.Fatalf used to produce) rather than a slog record — usage and flag
+// errors in particular must read as ordinary text. Unlike flue's fatalf it
+// returns instead of exiting, so run's deferred cleanup (socket removal)
+// still happens. The format string is printf-substituted; note that slog
+// does not interpret format verbs (it treats the args as key/value pairs).
+// slog is used for the non-fatal, leveled operational logging.
 func failf(format string, args ...any) int {
 	fmt.Fprintln(os.Stderr, fmt.Sprintf(format, args...))
 	return 1
