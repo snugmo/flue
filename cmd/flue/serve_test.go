@@ -64,8 +64,8 @@ func TestReceiveListener(t *testing.T) {
 	broker.Close()
 
 	var wg clientSet
-	filter := &agentFilter{allow: map[string]struct{}{}}
-	listener, acceptDone := receiveListener(host, filter, &wg)
+	pol := &policy{}
+	listener, acceptDone := receiveListener(host, pol, &wg)
 
 	if listener == nil {
 		t.Fatal("receiveListener returned a nil listener")
@@ -173,7 +173,7 @@ func TestReceiveListenerRejectsWrongFds(t *testing.T) {
 			closeRef() // drop the test's reference before the leak check
 
 			var cs clientSet
-			listener, acceptDone := receiveListener(host, &agentFilter{}, &cs)
+			listener, acceptDone := receiveListener(host, &policy{}, &cs)
 			if listener != nil {
 				t.Fatalf("receiveListener accepted a %s fd", tc.name)
 			}
@@ -224,7 +224,7 @@ func TestReceiveListenerTimeout(t *testing.T) {
 	var cs clientSet
 	done := make(chan net.Listener, 1)
 	go func() {
-		l, _ := receiveListener(host, &agentFilter{}, &cs)
+		l, _ := receiveListener(host, &policy{}, &cs)
 		done <- l
 	}()
 	select {

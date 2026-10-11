@@ -579,17 +579,15 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preser
 		fatalf("flue: control fd: %v", err)
 	}
 
-	allow := allowKeys.toSet()
-	filter := &agentFilter{
-		upstream: nil, // set per-client in handleClient
-		allow:    allow,
-		sock:     sockPath,
+	pol := &policy{
+		allow: allowKeys.toSet(),
+		sock:  sockPath,
 	}
 
 	log.Info("flue: agent", "sock", sockPath, "filter", allowKeys.describe(), "exec", append([]string{cmdPath}, cmdArgs...))
 
 	clients := clientSet{max: maxClients}
-	listener, acceptDone := receiveListener(ctrl, filter, &clients)
+	listener, acceptDone := receiveListener(ctrl, pol, &clients)
 
 	err = cmd.Wait()
 
@@ -666,20 +664,29 @@ func (a *allowKeyFlag) describe() string {
 
 // --- agent filter ---
 
-// agentFilter wraps an upstream ssh agent client and implements
-// agent.ExtendedAgent with a key allowlist policy.
+// policy is the session-wide agent policy: the --allow-key set (empty
+// means allow all) and the path of the host agent socket that each
+// client dials. It is built once in runChildWithAgent and shared
+// read-only across all per-client agentFilter values.
+type policy struct {
+	allow map[string]struct{} // empty = allow all
+	sock  string              // host agent socket to dial per client
+}
+
+// agentFilter wraps one upstream ssh agent client (one per client
+// connection) and implements agent.ExtendedAgent with the session's key
+// allowlist policy.
 type agentFilter struct {
 	upstream agent.ExtendedAgent
-	allow    map[string]struct{} // empty = allow all
-	sock     string              // host agent socket to dial per client
+	pol      *policy
 }
 
 // isAllowed checks whether a key's fingerprint is in the allowlist.
 func (f *agentFilter) isAllowed(fp string) bool {
-	if len(f.allow) == 0 {
+	if len(f.pol.allow) == 0 {
 		return true
 	}
-	_, ok := f.allow[fp]
+	_, ok := f.pol.allow[fp]
 	return ok
 }
 
@@ -722,7 +729,7 @@ func (f *agentFilter) List() ([]*agent.Key, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(f.allow) == 0 {
+	if len(f.pol.allow) == 0 {
 		f.logf("list", fmt.Sprintf("%d keys", len(keys)), true)
 		return keys, nil
 	}
@@ -848,7 +855,7 @@ func closeFile(f *os.File) {
 // one-shot, but the control connection is NOT closed here: the caller keeps
 // it open until the broker is gone, so the broker (which reads its own end)
 // does not observe a premature "host gone". The caller closes ctrl.
-func receiveListener(ctrl net.Conn, filter *agentFilter, clients *clientSet) (net.Listener, <-chan struct{}) {
+func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listener, <-chan struct{}) {
 	buf := make([]byte, 4096)
 	oob := make([]byte, 4096)
 
@@ -971,7 +978,7 @@ func receiveListener(ctrl net.Conn, filter *agentFilter, clients *clientSet) (ne
 			}
 			go func(c net.Conn) {
 				defer clients.done(c)
-				handleClient(c, filter)
+				handleClient(c, pol)
 			}(conn)
 		}
 	}()
@@ -1057,30 +1064,26 @@ func closedChannel() <-chan struct{} {
 
 // handleClient proxies a single client connection (fd) to the agent. It
 // dials a fresh upstream agent connection for this client, wraps it with
-// the filter, and runs agent.ServeAgent, which blocks until the client
-// disconnects.
-func handleClient(client net.Conn, filter *agentFilter) {
+// a filter carrying the session's policy, and runs agent.ServeAgent,
+// which blocks until the client disconnects.
+func handleClient(client net.Conn, pol *policy) {
 	defer closeQuiet(client)
 	client = &idleConn{Conn: client, timeout: idleTimeout}
 
 	// Dial a fresh upstream agent connection for this client.
-	upstream, err := dialAgent(filter.sock)
+	upstream, err := dialAgent(pol.sock)
 	if err != nil {
 		log.Warn("flue: dial upstream", "err", err)
 		return
 	}
 	defer closeQuiet(upstream)
 
-	// Build a per-client filter wrapping this client's upstream.
-	clientFilter := &agentFilter{
-		upstream: agent.NewClient(upstream),
-		allow:    filter.allow,
-		sock:     filter.sock,
-	}
-
 	// ServeAgent returns when the client connection ends; I/O errors there
 	// are normal (peer closed), so the result is not checked.
-	_ = agent.ServeAgent(clientFilter, client)
+	_ = agent.ServeAgent(&agentFilter{
+		upstream: agent.NewClient(upstream),
+		pol:      pol,
+	}, client)
 }
 
 // idleConn re-arms a deadline before every Read and Write, so a connection

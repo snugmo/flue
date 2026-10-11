@@ -199,7 +199,7 @@ func TestFilterListCertificate(t *testing.T) {
 		}
 		t.Cleanup(func() { conn.Close() })
 
-		f := &agentFilter{upstream: agent.NewClient(conn), allow: allow}
+		f := &agentFilter{upstream: agent.NewClient(conn), pol: &policy{allow: allow}}
 		keys, err := f.List()
 		if err != nil {
 			t.Fatalf("List: %v", err)
@@ -236,7 +236,7 @@ func newTestFilter(t *testing.T, allow map[string]struct{}) *agentFilter {
 
 	return &agentFilter{
 		upstream: agent.NewClient(upstreamConn),
-		allow:    allow,
+		pol:      &policy{allow: allow},
 	}
 }
 

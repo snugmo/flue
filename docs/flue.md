@@ -86,6 +86,9 @@ listener.
 - Each accepted client connection gets a fresh `net.Dial("unix",
   SSH_AUTH_SOCK)` upstream connection, wrapped in an `agentFilter` that
   implements `agent.ExtendedAgent`.
+- The session's policy (allowlist + socket path) is a single `policy`
+  value built once in `runChildWithAgent`; each per-client `agentFilter`
+  shares it read-only.
 - Policy (mirrors the per-operation table in the README):
   - `List`: forwarded, but only keys matching `--allow-key` (repeatable,
     SHA256 fingerprint) are returned; all keys when the flag is absent.
