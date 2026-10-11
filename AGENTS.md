@@ -44,6 +44,15 @@ Build overrides: `DEV_VERSION=`, `DEV_IMAGE_NAME=`, `DEV_REGISTRY=`, `DEV_BASE_I
 - Prefix every commit subject with a single emoji, followed by the conventional type prefix (`feat:`, `chore:`, `docs:`, `fix:`, …); keep subjects under 72 characters. Choose whichever single emoji best represents the actual change — there is no fixed set of allowed emojis, and it should vary from commit to commit. Pick an emoji that captures the essence of what changed, not just a stand-in for the type prefix (e.g. `🏷️` for a rename, `🧪` for new tests, `📝` for prose edits — the past history shows a wide range in use). The examples below only illustrate the format, not a menu of choices: `✨ feat: add flue`, `📦 chore: update golang.org/x/sys`, `🐛 fix: handle EOF on the control channel`.
 - End commit messages with an `Assisted-by: <agent>:<model>` trailer, where `<agent>` is the coding agent doing the committing (no "generated with" line).
 
+### Duplication policy
+
+Some code is deliberately duplicated rather than shared, to keep each binary a self-contained static main (the broker is "deliberately thin" — see its header). Do not "fix" these into a shared `internal/` package:
+
+- **Between the two binaries**: `parseLevel`, `fatalf`, `closeQuiet`, and the `log` variable plus its `-log-level` re-initialization in `main` are duplicated in both. They are small and stable; a shared package would need to parameterize the program-name log prefixes and fatalf semantics for ~25 saved lines. If one changes, apply the paired edit to the other (the slog switch and the fatalf format fix both did this).
+- **Within `cmd/flue`**: `closeQuiet` (net.Conn) and `closeListener` (net.Listener) are near-identical but stay as separate per-type helpers; a unified helper would need an interface and name plumbing that hurts readability.
+- **The `agentFilter` deny methods** (Add/Remove/RemoveAll/Lock/Unlock/Signers) look similar but each implements a distinct protocol operation with a distinct error message, matching the per-operation README policy table. Keep them explicit — do not collapse into a table-driven helper.
+- **Test helpers**: `makeControlPair` (flue) and `newControlSocketpair` (broker) are per-package; a shared testutil package for a ~15-line helper is not worth it.
+
 ### Go Source (`cmd/flue-broker/main.go`)
 
 - **Static binary**: always build with `CGO_ENABLED=0` and `-ldflags="-s -w"` so the binary runs in any Linux container without glibc or shared libraries.
