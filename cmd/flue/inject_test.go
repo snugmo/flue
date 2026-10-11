@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"golang.org/x/sys/unix"
 )
 
 // TestInjectBrokerMemfdContent verifies that injectBrokerMemfd produces a memfd
@@ -190,4 +191,73 @@ func TestInjectBrokerMemfdExecutable(t *testing.T) {
 	if !errors.As(err, &ee) || !strings.Contains(string(out), "unknown log level") {
 		t.Fatalf("exec of memfd broker: err=%v out=%q (want the broker's own flag error)", err, out)
 	}
+}
+
+// TestMemfdCreateWithFallback pins the MFD_EXEC fallback policy: EINVAL
+// (kernel older than 6.3, the flag unknown) triggers exactly one retry
+// without MFD_EXEC; any other failure — in particular EACCES from
+// vm.memfd_noexec=2, which refuses executable memfds — is not retried and
+// yields an actionable error. The create call is a closure so the test
+// simulates both failures without a specially configured kernel.
+func TestMemfdCreateWithFallback(t *testing.T) {
+	t.Run("EINVAL falls back once, without MFD_EXEC", func(t *testing.T) {
+		var calls []int
+		create := func(flags int) (int, error) {
+			calls = append(calls, flags)
+			if flags&unix.MFD_EXEC != 0 {
+				return 0, unix.EINVAL
+			}
+			return 7, nil
+		}
+		fd, err := memfdCreateWithFallback(create)
+		if err != nil {
+			t.Fatalf("memfdCreateWithFallback: %v", err)
+		}
+		if fd != 7 {
+			t.Fatalf("fd = %d, want 7", fd)
+		}
+		want := []int{brokerMemfdFlags, unix.MFD_CLOEXEC | unix.MFD_ALLOW_SEALING}
+		if diff := cmp.Diff(want, calls); diff != "" {
+			t.Fatalf("create calls (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("EACCES is not retried and names the fix", func(t *testing.T) {
+		var calls int
+		create := func(flags int) (int, error) {
+			calls++
+			return 0, unix.EACCES
+		}
+		_, err := memfdCreateWithFallback(create)
+		if err == nil {
+			t.Fatal("want error, got nil")
+		}
+		if calls != 1 {
+			t.Fatalf("create called %d times, want 1 (no fallback retry on EACCES)", calls)
+		}
+		msg := err.Error()
+		for _, want := range []string{"vm.memfd_noexec", "--no-inject-broker"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("error %q does not mention %q", msg, want)
+			}
+		}
+		if !errors.Is(err, unix.EACCES) {
+			t.Errorf("error %v does not wrap EACCES", err)
+		}
+	})
+
+	t.Run("first success is used as-is", func(t *testing.T) {
+		var calls int
+		create := func(flags int) (int, error) {
+			calls++
+			return 3, nil
+		}
+		fd, err := memfdCreateWithFallback(create)
+		if err != nil {
+			t.Fatalf("memfdCreateWithFallback: %v", err)
+		}
+		if fd != 3 || calls != 1 {
+			t.Fatalf("fd = %d, calls = %d, want fd 3 and one call", fd, calls)
+		}
+	})
 }

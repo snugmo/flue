@@ -106,16 +106,19 @@ listener.
 - **Memfd injection** (`cmd/flue/inject.go`): `flue enter` runs the broker
   entirely in memory by default (`--no-inject-broker` falls back to the
   image's `flue-broker`). `injectBrokerMemfd` creates a memfd
-  named `flue-broker` with `MFD_EXEC | MFD_CLOEXEC` and writes the
-  embedded bytes into it; the memfd is passed to the container as fd 4
-  (`--preserve-fds 2`, control socketpair stays on fd 3) and the container
-  execs `/proc/self/fd/4`, so the broker never touches the container's
-  filesystem — it works in a container with no writable filesystem and no
-  `flue-broker` in the image. `MFD_EXEC` (Linux ≥ 5.17) makes the memfd
-  executable via `/proc/self/fd/<n>` even in MDWE-hardened processes; if
-  the kernel lacks it, flue falls back to a plain memfd, which ordinary
-  (non-MDWE) processes can still exec. In `/proc/self/fd` the injected
-  broker shows up as `memfd:flue-broker (deleted)`.
+  named `flue-broker` with `MFD_EXEC | MFD_CLOEXEC | MFD_ALLOW_SEALING`
+  and writes the embedded bytes into it; the memfd is passed to the
+  container as fd 4 (`--preserve-fds 2`, control socketpair stays on fd 3)
+  and the container execs `/proc/self/fd/4`, so the broker never touches
+  the container's filesystem — it works in a container with no writable
+  filesystem and no `flue-broker` in the image. `MFD_EXEC` (Linux ≥ 6.3)
+  opts the memfd into execution against the `vm.memfd_noexec` sysctl,
+  which otherwise refuses to exec memfd-backed files; on a kernel that
+  does not know the flag (older than 6.3, `EINVAL`) flue falls back to a
+  plain memfd, which such kernels still let processes exec. A system-level
+  refusal — `EACCES`, e.g. `vm.memfd_noexec=2` — is a hard error pointing
+  at `--no-inject-broker` or changing the sysctl. In `/proc/self/fd` the
+  injected broker shows up as `memfd:flue-broker (deleted)`.
 - **Build order**: the embed file must exist before flue is compiled —
   build `flue-broker` first, to `cmd/flue/flue-broker.bin` (the AGENTS.md
   Build/Test commands, `build.sh`, and the Containerfile all do this).
