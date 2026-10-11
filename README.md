@@ -5,20 +5,28 @@ key filtering.
 
 Two small Go binaries:
 
+- **`flue`** (host-side) creates a Unix socketpair, passes one end into the
+  container, receives the broker's listening fd, and proxies each client
+  connection to the real `$SSH_AUTH_SOCK` with a key-allowlist filter. Its
+  **`flue enter`** subcommand is the usual way in: it runs the `podman exec`
+  for you and hands your command to the broker in wrapper mode. `flue` also
+  **embeds** the `flue-broker` built at the same time (`go:embed`) and, by
+  default, hands it to the container in memory.
 - **`flue-broker`** (container-side) listens on a Unix socket inside the
   container and hands that listening socket's file descriptor to the host
-  once over a socketpair control channel (SCM_RIGHTS). It can run standalone
-  (then just watches for host shutdown) or in wrapper mode, where it
-  launches a child command (e.g. a shell) with `SSH_AUTH_SOCK` pointed at its
-  socket. No protocol parsing here.
-- **`flue`** (host-side) creates that socketpair, passes one end into the
-  container via `podman exec --preserve-fds 1`, receives the listener
-  fd, `accept()`s each client connection itself, and proxies it to the
-  real `$SSH_AUTH_SOCK` using
-  `golang.org/x/crypto/ssh/agent` with a filtering wrapper. It can run
-  that `podman exec` for you: `flue enter <container> [command…]`. It
-  also **embeds** the `flue-broker` built at the same time (`go:embed`),
-  which `flue extract-broker <filename>` writes out byte-identical.
+  once over a socketpair control channel (SCM_RIGHTS). In wrapper mode it
+  launches your command with `SSH_AUTH_SOCK` pointed at its socket; in
+  standalone mode it just watches for the host to go away. No protocol
+  parsing.
+
+The usual flow, in one line:
+
+```sh
+flue enter <container>
+```
+
+…and you are in a shell where `ssh-add -l`, `git push`, and friends use the
+host's agent — with only the keys you allowlisted visible.
 
 Built from source at `cmd/flue-broker/` and `cmd/flue/` and installed as
 `/usr/local/bin/flue-broker` and `/usr/local/bin/flue` (fully static
@@ -29,6 +37,135 @@ binaries, no runtime deps).
 > `git push` over SSH ran with the askpass prompt surfacing on the laptop's
 > Wayland desktop. Signing round-trips (not just `ssh-add -l`) work across
 > podman, with only the allowlisted key visible in the container.
+
+## Usage
+
+### Prerequisites
+
+1. SSH agent forwarding is active in your session on the host
+   (`SSH_AUTH_SOCK` is set, `ssh-add -l` lists keys).
+2. The container is running.
+
+That is all for the usual flow: by default `flue enter` injects the broker
+into the container in memory, so the container needs neither a writable
+filesystem nor a `flue-broker` in its image. (If you disable injection —
+see [Flags](#flags) — the image must provide `flue-broker`; see
+[Getting a broker into a container](#getting-a-broker-into-a-container).)
+
+### Getting in: `flue enter`
+
+`flue enter` runs the `podman exec` for you: it preserves the control
+socket as fd 3, hands your command to `flue-broker` in wrapper mode, runs
+`/bin/sh` when you give no command, and allocates a tty when your stdin is
+a tty:
+
+```sh
+flue enter <container>                      # /bin/sh inside the container
+flue enter <container> bash                 # bash
+flue enter <container> git ls-remote git@github.com:you/repo.git
+flue enter <container> -- bash -l           # command with its own flags
+```
+
+Inside the session, the agent just works: the broker listens on a socket
+that is unique per session (several `flue enter`s can run at once without
+colliding) and exports that path to your command as `SSH_AUTH_SOCK`, so
+`ssh-add -l`, `git push`, and the like reach the host agent through the
+filter. When your command exits, `flue enter` returns its exit code.
+
+The broker is **not taken from the image by default**: `flue` writes the
+embedded `flue-broker` into an in-memory `memfd` (fd 4, `--preserve-fds 2`)
+and the container execs it via `/proc/self/fd/4`, so the broker never
+touches the container's filesystem. It works in a container with no
+writable filesystem and no `flue-broker` in the image at all. Disable
+injection to use the image's `flue-broker` instead:
+
+```sh
+flue enter --no-inject-broker <container>       # or --inject-broker=false
+FLUE_INJECT_BROKER=0 flue enter <container>     # via the environment
+```
+
+Global flags (`--sock`, `--allow-key`, `--log-level`) go before the
+subcommand: `flue --allow-key SHA256:… enter <container>`. (The subcommand
+`--` separator above is for your *target command's* flags.)
+
+### Flags
+
+**flue** (host-side; persistent flags, placed before the subcommand):
+
+| Flag          | Default                    | Description                                                                                                             |
+| ------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `--sock`      | `$SSH_AUTH_SOCK`           | Agent socket path to proxy to                                                                                           |
+| `--allow-key` | (none = all keys)          | Repeatable. Only keys with this SHA256 fingerprint are listed and can sign                                              |
+| `--log-level` | `$FLUE_LOG_LEVEL`, else `info` | Log level: `debug`, `info`, `warn`, or `error`. `debug` logs every agent request (operation, fingerprint, allowed/denied). When the flag is unset, `$FLUE_LOG_LEVEL` is read; a set flag wins |
+
+**enter** (enter-scoped flag):
+
+| Flag              | Default | Description                                                                                                                                                                                                                                             |
+| ----------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--inject-broker` | `true`  | Run the broker from an in-memory `memfd` (exec'd via `/proc/self/fd/4`) instead of the image's `flue-broker`; no writable filesystem needed. Disable with `--no-inject-broker`, `--inject-broker=false`, or `FLUE_INJECT_BROKER=0` (a set flag wins over the variable) |
+
+**flue-broker** (container-side):
+
+| Flag         | Default                               | Description                                                                                                                                                                                                                      |
+| ------------ | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-sock`      | unique per session (`flue-<8hex>.sock`) | Unix socket path to listen on. When unset, a unique path is generated in the first writable of `$XDG_RUNTIME_DIR`, `/run/user/<uid>`, `/run`, `/tmp`; set it (e.g. to `/tmp/flue.sock`) to pin a fixed path |
+| `-fd`        | `3`                                   | File descriptor number of the preserved control socket                                                                                                                                                                           |
+| `-log-level` | `info`                                | Log level: `debug`, `info`, `warn`, or `error`                                                                                                                                                                                   |
+
+After the flags, an optional command starts wrapper mode: `flue-broker
+[command] [args…]` runs that command as a child with `SSH_AUTH_SOCK` set to
+the broker's socket. No command = standalone mode, which blocks until the
+host goes away.
+
+These are [cobra](https://github.com/spf13/cobra) persistent flags, so they
+accept the `--flag value` or `--flag=value` forms and go before the
+subcommand (`flue --sock /path exec -- …`). A subcommand's arguments follow
+the subcommand name; a `--` separates them from the target command so the
+target's flags pass through verbatim.
+
+### Manual: `flue exec` (passthrough)
+
+If you prefer to assemble the `podman exec` yourself, or the target is not
+podman, `flue exec` runs any command that receives the control socketpair
+(over fd 3). Wrapper mode is the normal shape — the broker sets
+`SSH_AUTH_SOCK` for its child, so no `-e` is needed:
+
+```sh
+flue exec -- podman exec --preserve-fds 1 <container> flue-broker bash
+```
+
+In standalone mode (no command after `flue-broker`) nothing sets
+`SSH_AUTH_SOCK` for you, so pin `-sock` to a fixed path and export the same
+one:
+
+```sh
+flue exec -- podman exec --preserve-fds 1 \
+  -e SSH_AUTH_SOCK=/tmp/flue.sock <container> \
+  flue-broker -sock /tmp/flue.sock
+```
+
+`flue` dials `$SSH_AUTH_SOCK` (or `--sock`) once per client connection, so
+repeated `ssh` / `ssh-add` / `git` invocations all work. (The older
+`sh -c 'flue-broker & exec bash'` form still works but is superseded by
+wrapper mode.)
+
+### Getting a broker into a container
+
+Only relevant when you disable injection (`--no-inject-broker`): the
+container then needs the `flue-broker` binary — either from an image that
+has it (the image built by this repo installs it at
+`/usr/local/bin/flue-broker`) or by installing a copy:
+
+```sh
+flue extract-broker /tmp/flue-broker
+podman cp /tmp/flue-broker <container>:/usr/local/bin/flue-broker
+```
+
+`flue` embeds the `flue-broker` built at the same time (`go:embed`), so
+`extract-broker` writes out a byte-identical copy (mode 0755) — built for
+the same architecture as your `flue`, and identical to the image's own
+broker when `flue` comes from the flue image. Unlike `exec` and `enter`,
+`extract-broker` needs no agent socket and takes no flags.
 
 ## Build
 
@@ -54,165 +191,18 @@ identical to the image's own.
 | `DEV_VERSION`    | git tag                  | Image tag            |
 | `DEV_BASE_IMAGE` | auto                     | Base image reference |
 
-## Usage
-
-### Prerequisites
-
-1. SSH agent forwarding is active in your session on the host
-   (`SSH_AUTH_SOCK` is set, `ssh-add -l` lists keys).
-2. The container is running.
-3. The container's image includes the `flue-broker` binary (use this
-   image, or build and install the binary into your own image, or
-   extract a copy from `flue` with `flue extract-broker` — see below).
-
-### With `flue enter` (recommended)
-
-If you want a shell (or any command) inside a running container with the
-agent available, `flue enter` runs the `podman exec` for you: it
-preserves the control socket as fd 3 (`--preserve-fds 1`), sets
-`SSH_AUTH_SOCK` for the container, and hands your command to
-`flue-broker` in wrapper mode. With no command it runs `/bin/sh`, and a
-tty is allocated when your stdin is a tty:
-
-```sh
-flue enter <container>              # /bin/sh inside the container
-flue enter <container> bash         # bash
-flue enter <container> git ls-remote git@github.com:you/repo.git
-```
-
-When the command exits, `flue enter` returns its exit code. The global
-flags (`--sock`, `--allow-key`, `--log-level`) go before the subcommand:
-`flue --allow-key SHA256:… enter <container>`. If the command has its own
-flags, separate them with `--`: `flue enter <container> -- bash -l`. The
-in-container socket path is fixed at `/tmp/flue.sock` for now.
-
-### With `flue exec` (passthrough)
-
-`flue` is the host-side half. It creates a socketpair, passes one end into
-the container as fd 3, and proxies each accepted client connection to the
-real agent with filtering. The `exec` subcommand runs any command that
-receives the control socketpair; if you prefer to assemble the `podman
-exec` yourself (or the target is not podman), pass the whole command after
-the subcommand's `--`:
-
-```sh
-flue exec -- podman exec \
-  --preserve-fds 1 \
-  -e SSH_AUTH_SOCK=/tmp/flue.sock \
-  <container> flue-broker
-```
-
-or build it once and keep it on your `PATH`:
-
-```sh
-go build -o ~/bin/flue ./cmd/flue
-flue exec -- podman exec --preserve-fds 1 \
-  -e SSH_AUTH_SOCK=/tmp/flue.sock <container> flue-broker
-```
-
-`flue` dials `$SSH_AUTH_SOCK` (or `--sock`) once per client connection, so
-repeated `ssh` / `ssh-add` / `git` invocations all work.
-
-### In a shell (wrapper mode)
-
-The cleanest way to get a shell (or any command) inside the container with
-the agent available is wrapper mode: hand `flue-broker` a command and it runs
-it as a child with `SSH_AUTH_SOCK` set for you. When the command exits,
-`flue` returns its exit code.
-
-```sh
-flue exec -- podman exec --preserve-fds 1 <container> flue-broker bash
-```
-
-Then inside the container:
-
-```sh
-$ ssh-add -l
-256 SHA256:xxxx your-key (ED25519)
-$ git clone git@github.com:your/repo.git   # works
-$ exit
-# your host prompt returns, with the shell's exit code
-```
-
-Any command works, not just a shell — e.g. `flue-broker git ls-remote
-git@github.com:you/repo.git`. `-e SSH_AUTH_SOCK=…` is not needed: the broker
-sets it for the child. (The older `sh -c 'flue-broker & exec bash'` form
-still works, but wrapper mode replaces it.)
-
-### Getting a broker into a container without a flue image
-
-`flue` embeds the `flue-broker` binary built at the same time
-(`go:embed`), and `extract-broker` writes it out again — byte-identical
-to that built `flue-broker`, mode 0755:
-
-```sh
-flue extract-broker /tmp/flue-broker
-podman cp /tmp/flue-broker <container>:/usr/local/bin/flue-broker
-```
-
-The embedded broker was built for the same architecture as your `flue`
-binary (a `flue` from the flue image extracts a broker identical to the
-image's own `/usr/local/bin/flue-broker`). Unlike `exec` and `enter`,
-`extract-broker` needs no agent socket and takes no flags.
-
-If the container has **no writable filesystem** (or you simply do not want to
-install the broker), skip the file entirely with `enter --inject-broker`:
-`flue` writes the embedded broker into an in-memory `memfd` and the container
-execs it via `/proc/self/fd/4`, so the broker never touches disk:
-
-```sh
-flue enter --inject-broker <container> [command [args…]]
-```
-
-The control socketpair stays on fd 3 (`--preserve-fds 2`), so everything else
-is identical to a normal `enter`.
-
-### Flags
-
-**flue-broker** (container-side):
-
-| Flag         | Default          | Description                                          |
-| ------------ | ---------------- | ---------------------------------------------------- |
-| `-sock`      | `/tmp/flue.sock` | Unix socket path inside the container                |
-| `-fd`        | `3`              | File descriptor number of the preserved control socket |
-| `-log-level` | `info`           | Log level: `debug`, `info`, `warn`, or `error`       |
-
-After the flags, an optional command starts wrapper mode: `flue-broker
-[command] [args…]` runs that command as a child with `SSH_AUTH_SOCK` set to
-`-sock` (see wrapper mode above). No command = standalone mode.
-
-**flue** (host-side; cobra persistent flags, placed before the subcommand):
-
-| Flag          | Default            | Description                                          |
-| ------------- | ------------------ | ---------------------------------------------------- |
-| `--sock`      | `$SSH_AUTH_SOCK`   | Agent socket path to proxy to                        |
-| `--allow-key` | (none = all keys)  | Repeatable. Only keys with this SHA256 fingerprint are listed and can sign |
-| `--log-level` | `$FLUE_LOG_LEVEL`, else `info` | Log level: `debug`, `info`, `warn`, or `error`. `debug` logs every agent request (operation, fingerprint, allowed/denied). When the flag is unset, `$FLUE_LOG_LEVEL` is read; a set flag wins |
-
-These are [cobra](https://github.com/spf13/cobra) persistent flags, so they
-accept the `--flag value` or `--flag=value` forms and go before the
-subcommand (`flue --sock /path exec -- …`). The subcommand's own arguments
-follow the subcommand name; a `--` separates them from the target command
-so the target's flags pass through verbatim.
-
-`enter` also has one non-persistent flag of its own:
-`--inject-broker` (see above) runs the broker from an in-memory `memfd`
-instead of the image's `flue-broker`, for containers with no writable
-filesystem. It can also be turned on with the `FLUE_INJECT_BROKER`
-environment variable (any truthy value: `1`, `true`, `yes`, `on`); an
-explicit `--inject-broker=false` still wins over the variable.
-
 ## How it works
 
 1. `flue` creates a `SOCK_SEQPACKET` Unix socketpair.
 2. It passes one end into the container as fd 3 via `podman exec
-   --preserve-fds 1`, closes its copy, and keeps the other end as the
-   control channel.
-3. Inside the container, `flue-broker` listens on `/tmp/flue.sock` and
-   sends that listening socket's fd to the host over the control socket
-   (SCM_RIGHTS) exactly once. It then either (standalone) blocks watching
-   for the host to go away, or (wrapper mode) launches the wrapped command
-   as a child with `SSH_AUTH_SOCK` pointed at its socket and waits for it.
+   --preserve-fds` (2 when the broker memfd is also passed as fd 4), closes
+   its copy, and keeps the other end as the control channel.
+3. Inside the container, `flue-broker` listens on a socket — a unique
+   per-session path unless `-sock` pins one — and sends that listening
+   socket's fd to the host over the control socket (SCM_RIGHTS) exactly
+   once. It then either (standalone) blocks watching for the host to go
+   away, or (wrapper mode) launches the wrapped command as a child with
+   `SSH_AUTH_SOCK` pointed at its socket and waits for it.
 4. On the host, `flue` receives the listener fd and `accept()`s client
    connections directly; for each one it dials a fresh connection to
    `$SSH_AUTH_SOCK` and runs `agent.ServeAgent(filter, clientConn)` —
@@ -220,10 +210,10 @@ explicit `--inject-broker=false` still wins over the variable.
    allowlist.
 5. Lifetime is driven by the process tree, not the control channel (which
    carries a single listener-fd message). In wrapper mode, when the wrapped
-   command exits, `flue-broker` exits, the `podman exec` returns, and `flue`
-   — which is blocked on that child — tears down the listener and exits with
-   the command's exit status. In standalone mode `flue` runs until it is
-   signalled.
+   command exits, `flue-broker` exits, the `podman exec` returns, and
+   `flue` — which is blocked on that child — tears down the listener and
+   exits with the command's exit status. In standalone mode `flue` runs
+   until it is signalled.
 
 ### Filter policy
 
@@ -250,43 +240,28 @@ container. Only use this in trusted containers.
 
 ## Integration check (manual)
 
-Run these against a real container to verify the full path works:
+Run these against a real container to verify the full path works. They all
+use `flue enter`, which injects the broker in memory — so any running
+container works, with no writable filesystem or image-side broker needed:
 
 ```sh
 # 1. ssh-add -l run twice in a row succeeds both times
-flue exec -- podman exec --preserve-fds 1 \
-  -e SSH_AUTH_SOCK=/tmp/flue.sock <container> sh -c '
-    flue-broker & sleep 0.5
-    ssh-add -l && ssh-add -l
-  '
+flue enter <container> -- sh -c 'ssh-add -l && ssh-add -l'
 
 # 2. A loop of ~20 concurrent ssh-add -l calls all succeed
-flue exec -- podman exec --preserve-fds 1 \
-  -e SSH_AUTH_SOCK=/tmp/flue.sock <container> sh -c '
-    flue-broker & sleep 0.5
-    for i in $(seq 1 20); do ssh-add -l & done; wait
-  '
+flue enter <container> -- sh -c 'for i in $(seq 1 20); do ssh-add -l & done; wait'
 
 # 3. ssh-add -D is refused
-flue exec -- podman exec --preserve-fds 1 \
-  -e SSH_AUTH_SOCK=/tmp/flue.sock <container> sh -c '
-    flue-broker & sleep 0.5
-    ssh-add -D 2>&1  # expect an error
-  '
+flue enter <container> -- sh -c 'ssh-add -D 2>&1'  # expect an error
 
-# 4. ssh -T git@<forge> or git ls-remote over ssh works
-flue exec -- podman exec --preserve-fds 1 \
-  -e SSH_AUTH_SOCK=/tmp/flue.sock <container> sh -c '
-    flue-broker & sleep 0.5
-    git ls-remote git@github.com:your/repo.git
-  '
+# 4. git over ssh works
+flue enter <container> git ls-remote git@github.com:your/repo.git
 
 # 5. With --allow-key, only that key shows in ssh-add -l
-flue --allow-key SHA256:... exec -- podman exec --preserve-fds 1 \
-  -e SSH_AUTH_SOCK=/tmp/flue.sock <container> sh -c '
-    flue-broker & sleep 0.5
-    ssh-add -l  # only the allowed key is listed
-  '
+flue --allow-key SHA256:... enter <container> ssh-add -l
+
+# 6. Two concurrent sessions get distinct sockets and both work
+flue enter <container> -- sh -c 'ssh-add -l' & flue enter <container> -- sh -c 'ssh-add -l'; wait
 ```
 
 ---
