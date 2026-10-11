@@ -37,4 +37,6 @@ connections. The file header in `main.go` is the authoritative overview.
 
 Only `golang.org/x/sys` (stdlib-adjacent, needed for the raw socket
 syscalls). No `x/crypto` — the broker never speaks the agent protocol.
-Logging is `log/slog` (stdlib) to stderr, set by `-log-level`.
+Logging is `log/slog` (stdlib) to stderr, set by `-log-level`. Fatal
+errors (invalid flags, unrecoverable setup) are plain text on stderr and
+exit 1, via `fatalf` — not slog records.

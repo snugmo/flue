@@ -66,3 +66,7 @@ listener.
 Runtime: `golang.org/x/sys` (unix syscalls) + `golang.org/x/crypto` (ssh
 agent protocol). Test-only: `go.uber.org/goleak` (goroutine leak
 detection) + `github.com/google/go-cmp` (readable test diffs).
+
+Logging is `log/slog` (stdlib) to stderr, set by `-log-level`. Fatal
+errors (usage, invalid flags, unrecoverable setup) are plain text on
+stderr and exit 1, via `fatalf` — not slog records.
