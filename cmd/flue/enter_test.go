@@ -64,7 +64,7 @@ func TestEnterTarget(t *testing.T) {
 // flue-broker wrapper with the command appended.
 func TestEnterExecArgs(t *testing.T) {
 	t.Run("tty", func(t *testing.T) {
-		got := enterExecArgs("c", []string{"/bin/sh"}, true)
+		got := enterExecArgs("c", []string{"/bin/sh"}, true, false)
 		want := []string{
 			"exec", "-ti",
 			"--preserve-fds", "1",
@@ -77,7 +77,7 @@ func TestEnterExecArgs(t *testing.T) {
 	})
 
 	t.Run("non-tty", func(t *testing.T) {
-		got := enterExecArgs("c", []string{"bash", "-c", "echo hi"}, false)
+		got := enterExecArgs("c", []string{"bash", "-c", "echo hi"}, false, false)
 		want := []string{
 			"exec", "-i",
 			"--preserve-fds", "1",

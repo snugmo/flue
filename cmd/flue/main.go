@@ -95,6 +95,10 @@ var (
 	logLevel  = "info"
 	allowKeys = newAllowKeyFlag()
 	sockPath  string
+	// enterInjectBroker holds the --inject-broker flag value for `enter`
+	// (bound in init); it switches the in-container command from the image's
+	// flue-broker to a broker exec'd from an in-memory memfd.
+	enterInjectBroker bool
 )
 
 // enterSocket is the Unix socket path flue-broker listens on inside the
@@ -182,6 +186,14 @@ a tty:
     flue enter <container> bash       # bash
     flue enter <container> -- bash -l # command with its own flags
 
+With --inject-broker the broker is not taken from the image: flue writes the
+embedded flue-broker to an in-memory memfd (fd 4) and the container execs it
+via /proc/self/fd/4, so a container with no writable filesystem — and no
+flue-broker in its image — still gets the agent. The control socketpair
+stays on fd 3 either way:
+
+    flue enter --inject-broker <container> [command [args…]]
+
 When the command exits, enter returns its exit code. The in-container socket
 path is fixed at /tmp/flue.sock.`,
 	Args: cobra.MinimumNArgs(1),
@@ -201,6 +213,8 @@ func init() {
 		"log level: debug, info, warn, or error")
 	rootCmd.PersistentFlags().Var(allowKeys, "allow-key",
 		"SHA256 fingerprint to allow (repeatable)")
+	enterCmd.Flags().BoolVar(&enterInjectBroker, "inject-broker", false,
+		"run the broker from an in-memory memfd (exec'd via /proc/self/fd/4) instead of the image's flue-broker; no writable filesystem needed")
 	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
 		if lvl, err := parseLevel(logLevel); err != nil {
 			fatalf("flue: %v", err)
@@ -271,14 +285,27 @@ func runEnter(args []string, sockPath string) int {
 	}
 
 	tty := stdinIsTTY()
-	execArgs := enterExecArgs(container, cmd, tty)
+
+	// --inject-broker: carry the embedded broker in a memfd (fd 4) instead of
+	// relying on the image's flue-broker, so no writable filesystem is needed.
+	var preserved []*os.File
+	if enterInjectBroker {
+		mf, err := injectBrokerMemfd()
+		if err != nil {
+			fatalf("flue: enter: %v", err)
+		}
+		defer closeFile(mf)
+		preserved = []*os.File{mf}
+	}
+
+	execArgs := enterExecArgs(container, cmd, tty, enterInjectBroker)
 
 	podman, err := exec.LookPath("podman")
 	if err != nil {
 		fatalf("flue: enter: find podman: %v", err)
 	}
 
-	return runChildWithAgent(podman, execArgs, sockPath)
+	return runChildWithAgent(podman, execArgs, sockPath, preserved)
 }
 
 // enterTarget splits the `flue enter` arguments into the container name
@@ -297,19 +324,31 @@ func enterTarget(args []string) (container string, cmd []string, err error) {
 // enterExecArgs builds the argument list for the `podman exec` that runs
 // flue-broker (wrapping cmd) inside the container. A tty is requested
 // only when the caller's stdin is a tty.
-func enterExecArgs(container string, cmd []string, tty bool) []string {
+func enterExecArgs(container string, cmd []string, tty, injectBroker bool) []string {
 	out := []string{"exec"}
 	if tty {
 		out = append(out, "-ti")
 	} else {
 		out = append(out, "-i")
 	}
-	out = append(out,
-		"--preserve-fds", "1",
-		"-e", "SSH_AUTH_SOCK="+enterSocket,
-		container,
-		"flue-broker",
-	)
+	if injectBroker {
+		// Two preserved fds: fd 3 = the control socketpair, fd 4 = the broker
+		// memfd. The container execs the broker from /proc/self/fd/4, so the
+		// broker needs neither a filesystem path nor a writable filesystem.
+		out = append(out,
+			"--preserve-fds", "2",
+			"-e", "SSH_AUTH_SOCK="+enterSocket,
+			container,
+			"/proc/self/fd/4",
+		)
+	} else {
+		out = append(out,
+			"--preserve-fds", "1",
+			"-e", "SSH_AUTH_SOCK="+enterSocket,
+			container,
+			"flue-broker",
+		)
+	}
 	return append(out, cmd...)
 }
 
@@ -333,7 +372,7 @@ func runPassthrough(args []string, sockPath string) int {
 		}
 	}
 
-	return runChildWithAgent(cmdPath, args[1:], sockPath)
+	return runChildWithAgent(cmdPath, args[1:], sockPath, nil)
 }
 
 // runChildWithAgent starts a child (program plus args), hands one end of
@@ -351,7 +390,7 @@ func runPassthrough(args []string, sockPath string) int {
 // flue itself is signalled; in wrapper mode the broker exits when the
 // wrapped command does, so this returns promptly carrying that command's
 // status.
-func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string) int {
+func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preserved []*os.File) int {
 	// Create a socketpair for the control channel.
 	// The container receives end B (fd 3); the host keeps end A.
 	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
@@ -365,7 +404,10 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string) int {
 	defer closeFile(childFd)
 
 	cmd := exec.Command(cmdPath, cmdArgs...)
-	cmd.ExtraFiles = []*os.File{childFd}
+	// The control socketpair is always the first preserved fd (fd 3). Any
+	// additional preserved files follow in order as fd 4, 5, ... — for
+	// --inject-broker this is the broker memfd (fd 4).
+	cmd.ExtraFiles = append([]*os.File{childFd}, preserved...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
