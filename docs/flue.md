@@ -17,19 +17,26 @@ positionals — which is why the `--` is needed for commands with flags).
   the control socketpair (typically `podman exec --preserve-fds 1 ...
   flue-broker`, or a wrapper that preserves fd 3).
 - **enter** — `flue enter <container> [--] [command...]`: builds and runs
-  `podman exec [-ti] --preserve-fds 1 -e SSH_AUTH_SOCK=/tmp/flue.sock
-  <container> flue-broker [command...]`.
-  - The in-container socket path is the const `enterSocket`
-    (`/tmp/flue.sock`) and **must match the broker's `-sock` default** —
-    guarded by `TestEnterSocketMatchesBrokerDefault`.
+  `podman exec [-ti] --preserve-fds <n> <container> <broker>
+  [command...]`, where `<broker>` is `/proc/self/fd/4` (injected memfd,
+  `--preserve-fds 2`) or the image's `flue-broker` (`--preserve-fds 1`).
   - The command defaults to `defaultEnterCmd` (`/bin/sh`).
   - A tty is allocated only when stdin is a tty (`stdinIsTTY`, via the
     TCGETS ioctl — x/sys v0.49.0 has no `unix.IsTerminal`).
-  - `--inject-broker` (enter-scoped, non-persistent): instead of the
-    image's `flue-broker`, flue hands the broker in a `memfd` and the
-    container execs it via `/proc/self/fd/4` — see the memfd injection
-    bullet under **Embedded broker**. A `FLUE_INJECT_BROKER` env var
-    (any truthy value) turns it on too; a set `--inject-broker` flag wins.
+  - **Memfd injection is the default** (`--inject-broker` defaults on):
+    instead of the image's `flue-broker`, flue hands the broker in a
+    `memfd` and the container execs it via `/proc/self/fd/4` — see the
+    memfd injection bullet under **Embedded broker**. Disable it with
+    `--no-inject-broker`, `--inject-broker=false`, or
+    `FLUE_INJECT_BROKER=0` (a set flag wins over the env var). pflag,
+    unlike stdlib flag, does not auto-generate `--no-<flag>` forms, so
+    `--no-inject-broker` is a real companion flag registered in `init`
+    (`negBoolValue` bound to the same variable, with `NoOptDefVal "true"`
+    so the bare form disables without consuming an argument).
+  - The in-container socket path is not known to the host: the broker
+    generates a unique per-session path (XDG_RUNTIME_DIR → /run/user/<uid>
+    → /run → /tmp) unless `-sock` is given, and exports it to the wrapped
+    command as `SSH_AUTH_SOCK` (see the broker doc).
 - **extract-broker** — `flue extract-broker <filename>`: writes the
   embedded `flue-broker` (see Embedded broker below) to `<filename>`,
   mode 0755, byte-identical to the built broker. It takes no flags.
@@ -85,10 +92,11 @@ listener.
   `flue-broker` binary built when flue was built. go:embed stores the
   file's bytes verbatim, so the embedded copy is 100% identical to the
   build source, and `flue extract-broker` (below) is how that file comes
-  back out as a file; `flue enter --inject-broker` uses the same bytes to
+  back out as a file; `flue enter` uses the same bytes, by default, to
   run the broker entirely in memory (see the memfd injection bullet below).
-- **Memfd injection** (`cmd/flue/inject.go`): `flue enter --inject-broker`
-  runs the broker entirely in memory. `injectBrokerMemfd` creates a memfd
+- **Memfd injection** (`cmd/flue/inject.go`): `flue enter` runs the broker
+  entirely in memory by default (`--no-inject-broker` falls back to the
+  image's `flue-broker`). `injectBrokerMemfd` creates a memfd
   named `flue-broker` with `MFD_EXEC | MFD_CLOEXEC` and writes the
   embedded bytes into it; the memfd is passed to the container as fd 4
   (`--preserve-fds 2`, control socketpair stays on fd 3) and the container

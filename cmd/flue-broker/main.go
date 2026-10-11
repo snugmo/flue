@@ -1,8 +1,9 @@
 // Command flue-broker is the container-side half of the flue SSH agent
 // bridge.
 //
-// It listens on a Unix socket inside the container (default /tmp/flue.sock)
-// so that ssh / ssh-add / git can use it (via SSH_AUTH_SOCK). Rather than
+// It listens on a Unix socket inside the container (a unique per-session
+// path by default; -sock pins one) so that ssh / ssh-add / git can use it
+// (via SSH_AUTH_SOCK). Rather than
 // proxying each client connection itself, it hands the *listening* fd to
 // the host (flue) over a control socketpair (fd 3, received via
 // podman exec --preserve-fds) using SCM_RIGHTS. The host then accepts
@@ -27,22 +28,20 @@
 //     status. If the host's departure is detected first (via the control
 //     channel, best-effort), the child is killed and the broker exits 1.
 //
-// Usage (see flue on the host side):
+// Usage (see flue on the host side). Wrapper mode — get a shell inside the
+// container with the agent available (the broker sets SSH_AUTH_SOCK for
+// the child, so -e is not required):
 //
-//	flue exec -- podman exec \
-//	  --preserve-fds 1 \
-//	  -e SSH_AUTH_SOCK=/tmp/flue.sock \
-//	  <container> flue-broker
-//
-// Wrapper mode — get a shell inside the container with the agent available
-// (the broker sets SSH_AUTH_SOCK for the child, so -e is not required):
-//
-//	flue exec -- podman exec \
-//	  --preserve-fds 1 \
-//	  <container> flue-broker bash
+//	flue exec -- podman exec --preserve-fds 1 <container> flue-broker bash
 //
 // …or just `flue enter <container> [command…]`, which runs that wrapper-
-// mode podman exec for you (defaulting the command to /bin/sh).
+// mode podman exec for you (defaulting the command to /bin/sh) and
+// injects the broker in memory by default. Standalone mode (no command)
+// leaves SSH_AUTH_SOCK to the caller, so pin -sock to a fixed path:
+//
+//	flue exec -- podman exec --preserve-fds 1 \
+//	  -e SSH_AUTH_SOCK=/tmp/flue.sock <container> \
+//	  flue-broker -sock /tmp/flue.sock
 package main
 
 import (
