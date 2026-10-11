@@ -70,55 +70,69 @@ func TestResolveLogLevel(t *testing.T) {
 	}
 }
 
-// TestEnvBool guards the truthy-string parsing used for boolean env-var
-// fallbacks: the accepted truthy set (case-insensitive, surrounding
-// whitespace trimmed) is true, everything else is false.
+// TestEnvBool guards the tri-state env-var parser: recognized truthy and
+// falsy values are distinguished (case-insensitive, surrounding whitespace
+// trimmed), and everything else — including empty and nonsense strings —
+// reports "not recognized" so the caller falls back to its default.
 func TestEnvBool(t *testing.T) {
 	for _, tc := range []struct {
-		in   string
-		want bool
+		in    string
+		want  bool
+		known bool
 	}{
-		{"1", true}, {"t", true}, {"true", true}, {"y", true},
-		{"yes", true}, {"on", true},
-		{"TRUE", true}, {" Yes ", true}, {"1 ", true},
-		{"0", false}, {"false", false}, {"no", false}, {"n", false},
-		{"off", false}, {"", false}, {"abc", false},
+		{"1", true, true}, {"t", true, true}, {"true", true, true},
+		{"y", true, true}, {"yes", true, true}, {"on", true, true},
+		{"TRUE", true, true}, {" Yes ", true, true}, {"1 ", true, true},
+		{"0", false, true}, {"f", false, true}, {"false", false, true},
+		{"no", false, true}, {"n", false, true}, {"off", false, true},
+		{"", false, false}, {"abc", false, false},
 	} {
-		if got := envBool(tc.in); got != tc.want {
-			t.Errorf("envBool(%q) = %v, want %v", tc.in, got, tc.want)
+		got, known := envBool(tc.in)
+		if got != tc.want || known != tc.known {
+			t.Errorf("envBool(%q) = (%v, %v), want (%v, %v)",
+				tc.in, got, known, tc.want, tc.known)
 		}
 	}
 }
 
-// TestInjectBrokerEffective guards the --inject-broker resolution: an
-// explicitly set flag wins, else the FLUE_INJECT_BROKER environment
-// variable, else false. The enter command's flag set is package-global, so
-// the test mutates its Changed state and the bound var, restoring both
-// afterwards.
+// TestInjectBrokerEffective guards the default-on --inject-broker
+// resolution: an explicitly set flag (either form) wins, else a recognized
+// FLUE_INJECT_BROKER value, else the default (on). The enter command's
+// flag set is package-global, so the test mutates the Changed state and
+// the bound var, restoring both afterwards.
 func TestInjectBrokerEffective(t *testing.T) {
-	f := enterCmd.Flags().Lookup("inject-broker")
-	if f == nil {
-		t.Fatal("inject-broker flag is not registered on enter")
+	fIB := enterCmd.Flags().Lookup("inject-broker")
+	fNI := enterCmd.Flags().Lookup("no-inject-broker")
+	if fIB == nil || fNI == nil {
+		t.Fatal("inject-broker / no-inject-broker flags not registered on enter")
 	}
-	oldChanged, oldVar := f.Changed, enterInjectBroker
-	t.Cleanup(func() { f.Changed, enterInjectBroker = oldChanged, oldVar })
+	oldChangedIB, oldChangedNI := fIB.Changed, fNI.Changed
+	oldVar := enterInjectBroker
+	t.Cleanup(func() {
+		fIB.Changed, fNI.Changed, enterInjectBroker = oldChangedIB, oldChangedNI, oldVar
+	})
 
 	for _, tc := range []struct {
-		name    string
-		changed bool
-		flagVal bool
-		env     string
-		want    bool
+		name      string
+		ibChanged bool // --inject-broker set on the command line
+		niChanged bool // --no-inject-broker set on the command line
+		varVal    bool // the bound variable after parsing
+		env       string
+		want      bool
 	}{
-		{"neither set", false, false, "", false},
-		{"env true", false, false, "1", true},
-		{"env truthy (yes)", false, false, "yes", true},
-		{"env falsy", false, false, "false", false},
-		{"flag true beats env false", true, true, "false", true},
-		{"flag false beats env true", true, false, "true", false},
+		{"default on (nothing set)", false, false, true, "", true},
+		{"env truthy", false, false, true, "1", true},
+		{"env truthy (yes)", false, false, true, "yes", true},
+		{"env falsy disables (0)", false, false, true, "0", false},
+		{"env falsy disables (off)", false, false, true, "off", false},
+		{"env unrecognized keeps default", false, false, true, "banana", true},
+		{"--inject-broker beats env off", true, false, true, "0", true},
+		{"--inject-broker=false beats env on", true, false, false, "1", false},
+		{"--no-inject-broker beats env on", false, true, false, "1", false},
+		{"--no-inject-broker beats env off", false, true, false, "0", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f.Changed, enterInjectBroker = tc.changed, tc.flagVal
+			fIB.Changed, fNI.Changed, enterInjectBroker = tc.ibChanged, tc.niChanged, tc.varVal
 			t.Setenv("FLUE_INJECT_BROKER", tc.env)
 			if got := injectBrokerEffective(enterCmd); got != tc.want {
 				t.Errorf("injectBrokerEffective() = %v, want %v", got, tc.want)

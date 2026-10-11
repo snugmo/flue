@@ -33,27 +33,38 @@
 //
 // Two flags also read environment variables as a fallback when the flag
 // itself is not set on the command line: --log-level reads $FLUE_LOG_LEVEL,
-// and enter --inject-broker reads $FLUE_INJECT_BROKER. An explicitly set
-// flag always wins; the env var only fills in when the flag is absent.
+// and enter --inject-broker reads $FLUE_INJECT_BROKER (a recognized value:
+// truthy keeps the default on, falsy disables it). An explicitly set flag
+// always wins; the env var only fills in when the flag is absent.
 //
 // exec — the passthrough form: run any command that receives the control
 // socketpair (typically flue-broker, or a wrapper that preserves fd 3):
 //
-//	flue exec -- podman exec \
-//	  --preserve-fds 1 \
-//	  -e SSH_AUTH_SOCK=/tmp/flue.sock \
-//	  <container> flue-broker
-//
 //	flue exec -- podman exec --preserve-fds 1 <container> flue-broker bash
 //
-// enter — sugar for the common case. It runs the podman exec for you,
-// in wrapper mode (so the broker sets SSH_AUTH_SOCK for the child):
+// (wrapper mode: the broker sets SSH_AUTH_SOCK for its child). In
+// standalone mode (no command after flue-broker), the caller must name the
+// socket, so pin -sock to a fixed path and set SSH_AUTH_SOCK to it:
+//
+//	flue exec -- podman exec --preserve-fds 1 \
+//	  -e SSH_AUTH_SOCK=/tmp/flue.sock <container> \
+//	  flue-broker -sock /tmp/flue.sock
+//
+// enter — the primary flow. It runs the podman exec for you, in wrapper
+// mode (so the broker sets SSH_AUTH_SOCK for the wrapped command):
 //
 //	flue enter <container> [command [args…]]
 //
 // with no command defaulting to /bin/sh, and a tty allocated when stdin
-// is a tty. flue exits when the container command does, returning its
-// exit code. The in-container socket path is fixed at /tmp/flue.sock.
+// is a tty. The broker is not taken from the image by default: it is
+// injected in memory (a memfd the container execs via /proc/self/fd/4),
+// so no writable filesystem or image-side flue-broker is needed;
+// --no-inject-broker (or --inject-broker=false) uses the image's
+// flue-broker instead. flue exits when the container command does,
+// returning its exit code. The in-container socket path is unique per
+// session (the broker generates it: XDG_RUNTIME_DIR, else /run/user/<uid>,
+// else /run, else /tmp) and is exported to the wrapped command as
+// SSH_AUTH_SOCK.
 //
 // extract-broker — writes the embedded broker back out:
 //
@@ -81,6 +92,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -103,18 +115,15 @@ var (
 	logLevel  string
 	allowKeys = newAllowKeyFlag()
 	sockPath  string
-	// enterInjectBroker holds the --inject-broker flag value for `enter`
-	// (bound in init); it switches the in-container command from the image's
-	// flue-broker to a broker exec'd from an in-memory memfd. The enter
-	// command resolves the effective value (flag, else $FLUE_INJECT_BROKER,
-	// else false) in its Run hook before runEnter reads it.
+	// enterInjectBroker holds the --inject-broker value for `enter`
+	// (bound in init to both --inject-broker and its negative form
+	// --no-inject-broker); it switches the in-container command from the
+	// image's flue-broker to a broker exec'd from an in-memory memfd.
+	// The enter command resolves the effective value (an explicit flag,
+	// else $FLUE_INJECT_BROKER, else the default: on) in its Run hook
+	// before runEnter reads it.
 	enterInjectBroker bool
 )
-
-// enterSocket is the Unix socket path flue-broker listens on inside the
-// container in enter mode. It is fixed (not configurable) in this first
-// implementation and must match flue-broker's -sock default.
-const enterSocket = "/tmp/flue.sock"
 
 // defaultEnterCmd is the command run inside the container when `flue
 // enter` is given no explicit command.
@@ -188,28 +197,28 @@ var enterCmd = &cobra.Command{
 	Use:         "enter <container> [command [args...]]",
 	Short:       "Run a command (default /bin/sh) in a container with the agent",
 	Annotations: map[string]string{needsAgentAnnotation: "1"},
-	Long: `enter runs a podman exec against the named container with flue-broker
-wrapping the given command (default /bin/sh), allocating a tty when stdin is
-a tty:
+	Long: `enter is the primary way to use flue: it runs a podman exec against
+the named container with flue-broker wrapping the given command (default
+/bin/sh), allocating a tty when stdin is a tty:
 
     flue enter <container>            # /bin/sh inside the container
     flue enter <container> bash       # bash
     flue enter <container> -- bash -l # command with its own flags
 
-With --inject-broker the broker is not taken from the image: flue writes the
-embedded flue-broker to an in-memory memfd (fd 4) and the container execs it
-via /proc/self/fd/4, so a container with no writable filesystem — and no
-flue-broker in its image — still gets the agent. The control socketpair
-stays on fd 3 either way:
+The broker is not taken from the image by default: flue writes the embedded
+flue-broker to an in-memory memfd (fd 4) and the container execs it via
+/proc/self/fd/4, so a container with no writable filesystem — and no
+flue-broker in its image — still gets the agent. Disable injection with
+--no-inject-broker, --inject-broker=false, or FLUE_INJECT_BROKER=0 to use
+the image's flue-broker instead. The control socketpair stays on fd 3
+either way, and the broker exports its (unique per-session) socket path to
+the wrapped command as SSH_AUTH_SOCK, so ssh, ssh-add, and git just work.
 
-    flue enter --inject-broker <container> [command [args…]]
-
-When the command exits, enter returns its exit code. The in-container socket
-path is fixed at /tmp/flue.sock.`,
+When the command exits, enter returns its exit code.`,
 	Args: cobra.MinimumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		// Resolve the effective --inject-broker: an explicit flag wins, else
-		// $FLUE_INJECT_BROKER, else the registered default (false).
+		// $FLUE_INJECT_BROKER, else the default (on).
 		enterInjectBroker = injectBrokerEffective(cmd)
 		if code := runEnter(args, sockPath); code != 0 {
 			os.Exit(code)
@@ -226,8 +235,16 @@ func init() {
 		"log level: debug, info, warn, or error (default: $FLUE_LOG_LEVEL, else info)")
 	rootCmd.PersistentFlags().Var(allowKeys, "allow-key",
 		"SHA256 fingerprint to allow (repeatable)")
-	enterCmd.Flags().BoolVar(&enterInjectBroker, "inject-broker", false,
-		"run the broker from an in-memory memfd (exec'd via /proc/self/fd/4) instead of the image's flue-broker; no writable filesystem needed (also set by $FLUE_INJECT_BROKER)")
+	enterCmd.Flags().BoolVar(&enterInjectBroker, "inject-broker", true,
+		"run the broker from an in-memory memfd (exec'd via /proc/self/fd/4) instead of the image's flue-broker; no writable filesystem needed (default: on; $FLUE_INJECT_BROKER applies when the flag is unset)")
+	// pflag (unlike stdlib flag) does not auto-generate --no-<flag> forms
+	// for bool flags, so the negative form of the default-on
+	// --inject-broker is registered explicitly, bound to the same variable.
+	// NoOptDefVal makes a bare --no-inject-broker (no =value) disable
+	// injection instead of consuming the next argument.
+	noInject := enterCmd.Flags().VarPF(newNegBoolValue(&enterInjectBroker), "no-inject-broker", "",
+		"disable broker injection (use the image's flue-broker instead); the negative form of --inject-broker")
+	noInject.NoOptDefVal = "true"
 	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
 		if lvl, err := parseLevel(resolveLogLevel()); err != nil {
 			fatalf("flue: %v", err)
@@ -276,27 +293,62 @@ func resolveLogLevel() string {
 	return "info"
 }
 
-// envBool reports whether an environment-variable value is truthy. Accepted
-// truthy strings (case-insensitive): 1, t, true, y, yes, on; everything else
-// (including empty) is false.
-func envBool(s string) bool {
+// envBool parses an environment-variable value as a boolean. It reports
+// (value, recognized): recognized truthy (case-insensitive, trimmed):
+// 1, t, true, y, yes, on; recognized falsy: 0, f, false, n, no, off.
+// Unset, empty, or unrecognized values report recognized=false so the
+// caller can fall back to its default.
+func envBool(s string) (value bool, recognized bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "1", "t", "true", "y", "yes", "on":
-		return true
-	default:
-		return false
+		return true, true
+	case "0", "f", "false", "n", "no", "off":
+		return false, true
 	}
+	return false, false
 }
 
 // injectBrokerEffective resolves the effective --inject-broker value for
-// `enter`: an explicitly set flag wins, else the FLUE_INJECT_BROKER
-// environment variable, else false.
+// `enter`: an explicitly set --inject-broker or --no-inject-broker flag
+// wins (each sets the shared variable directly), else a recognized
+// FLUE_INJECT_BROKER environment variable, else the default: on.
 func injectBrokerEffective(cmd *cobra.Command) bool {
-	if f := cmd.Flags().Lookup("inject-broker"); f != nil && f.Changed {
-		return enterInjectBroker
+	for _, name := range []string{"inject-broker", "no-inject-broker"} {
+		if f := cmd.Flags().Lookup(name); f != nil && f.Changed {
+			return enterInjectBroker
+		}
 	}
-	return envBool(os.Getenv("FLUE_INJECT_BROKER"))
+	if v, ok := envBool(os.Getenv("FLUE_INJECT_BROKER")); ok {
+		return v
+	}
+	return true
 }
+
+// negBoolValue is a pflag Value that sets its bound variable to the
+// negation of its parsed value — the pflag equivalent of the stdlib flag
+// package's `no-` prefix (pflag does not auto-generate --no-<flag> forms
+// for bool flags). newNegBoolValue registers the variable at its default
+// (true), matching the flag it negates.
+type negBoolValue bool
+
+func newNegBoolValue(p *bool) *negBoolValue {
+	*p = true
+	return (*negBoolValue)(p)
+}
+
+// n aliases the bound bool (newNegBoolValue converted *bool to
+// *negBoolValue), so writing *n writes the shared flag variable.
+func (n *negBoolValue) Set(s string) error {
+	v, err := strconv.ParseBool(s)
+	if err != nil {
+		return err
+	}
+	*n = negBoolValue(!v)
+	return nil
+}
+
+func (n *negBoolValue) Type() string   { return "bool" }
+func (n *negBoolValue) String() string { return strconv.FormatBool(bool(*n)) }
 
 // fatalf prints the formatted message to stderr and exits 1, keeping the
 // traditional CLI fatal behavior (a plain-text line, as log.Fatalf used
@@ -324,8 +376,9 @@ func main() {
 // runEnter is the `flue enter` subcommand: it runs `podman exec` against
 // the named container with flue-broker wrapping the given command
 // (default /bin/sh), allocating a tty when stdin is a tty. The control
-// socketpair is preserved through podman exec as fd 3 (--preserve-fds 1)
-// and the agent is proxied exactly as in passthrough mode.
+// socketpair is preserved through podman exec as fd 3 (--preserve-fds 1,
+// or 2 when the broker memfd is also passed) and the agent is proxied
+// exactly as in passthrough mode.
 func runEnter(args []string, sockPath string) int {
 	container, cmd, err := enterTarget(args)
 	if err != nil {
@@ -334,8 +387,9 @@ func runEnter(args []string, sockPath string) int {
 
 	tty := stdinIsTTY()
 
-	// --inject-broker: carry the embedded broker in a memfd (fd 4) instead of
-	// relying on the image's flue-broker, so no writable filesystem is needed.
+	// Broker injection (default on): carry the embedded broker in a memfd
+	// (fd 4) instead of relying on the image's flue-broker, so no writable
+	// filesystem is needed.
 	var preserved []*os.File
 	if enterInjectBroker {
 		mf, err := injectBrokerMemfd()

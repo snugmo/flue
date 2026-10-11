@@ -88,12 +88,63 @@ func TestEnterExecArgsInjectBroker(t *testing.T) {
 }
 
 // TestInjectBrokerFlagRegistered guards that --inject-broker is wired as a
-// (non-persistent, enter-scoped) flag, so a rename or accidental removal of
-// the binding is caught by the pure-function suite.
+// (non-persistent, enter-scoped) default-on bool flag, with the negative
+// form --no-inject-broker registered alongside it (pflag does not generate
+// --no-<flag> forms itself, so flue registers it explicitly).
 func TestInjectBrokerFlagRegistered(t *testing.T) {
-	if f := enterCmd.Flags().Lookup("inject-broker"); f == nil {
+	fl := enterCmd.Flags()
+	if f := fl.Lookup("inject-broker"); f == nil {
 		t.Fatal("--inject-broker flag is not registered on enter")
-	} else if f.DefValue != "false" {
-		t.Errorf("--inject-broker default = %q, want false", f.DefValue)
+	} else if f.DefValue != "true" {
+		t.Errorf("--inject-broker default = %q, want true", f.DefValue)
+	}
+	if f := fl.Lookup("no-inject-broker"); f == nil {
+		t.Fatal("--no-inject-broker is not registered on enter")
+	} else if f.NoOptDefVal != "true" {
+		t.Errorf("--no-inject-broker NoOptDefVal = %q, want %q (bare flag must disable without consuming an argument)",
+			f.NoOptDefVal, "true")
+	}
+}
+
+// TestNegInjectBrokerFlags parses the two disabling forms at the pflag
+// level: --no-inject-broker (a registered companion flag) and
+// --inject-broker=false (pflag's standard form for any bool flag). Both
+// must leave the bound variable false without consuming a following
+// argument, and a plain --inject-broker re-enables.
+func TestNegInjectBrokerFlags(t *testing.T) {
+	fl := enterCmd.Flags()
+	oldVar := enterInjectBroker
+	oldChanged := map[string]bool{}
+	for _, name := range []string{"inject-broker", "no-inject-broker"} {
+		if f := fl.Lookup(name); f != nil {
+			oldChanged[name] = f.Changed
+		}
+	}
+	t.Cleanup(func() {
+		enterInjectBroker = oldVar
+		for name, c := range oldChanged {
+			fl.Lookup(name).Changed = c
+		}
+	})
+
+	if err := fl.Parse([]string{"--no-inject-broker"}); err != nil {
+		t.Fatalf("parse --no-inject-broker: %v", err)
+	}
+	if enterInjectBroker {
+		t.Error("after --no-inject-broker: want injection disabled")
+	}
+
+	if err := fl.Parse([]string{"--inject-broker"}); err != nil {
+		t.Fatalf("re-enable: parse --inject-broker: %v", err)
+	}
+	if !enterInjectBroker {
+		t.Error("after --inject-broker: want injection enabled")
+	}
+
+	if err := fl.Parse([]string{"--inject-broker=false"}); err != nil {
+		t.Fatalf("parse --inject-broker=false: %v", err)
+	}
+	if enterInjectBroker {
+		t.Error("after --inject-broker=false: want injection disabled")
 	}
 }

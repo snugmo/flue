@@ -1,8 +1,6 @@
 package main
 
 import (
-	"os"
-	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -86,29 +84,4 @@ func TestEnterExecArgs(t *testing.T) {
 			t.Fatalf("non-tty args (-want +got):\n%s", diff)
 		}
 	})
-}
-
-// TestEnterSocketMatchesBrokerDefault guards the fixed enter-socket path
-// against drifting from flue-broker's -sock default (they are separate
-// binaries, so a silent change on one side would break `flue enter`). The
-// broker default is read from its source rather than re-stated here.
-func TestEnterSocketMatchesBrokerDefault(t *testing.T) {
-	data, err := os.ReadFile("../flue-broker/main.go")
-	if err != nil {
-		t.Fatalf("read broker source: %v", err)
-	}
-	src := string(data)
-	const marker = `flag.String("sock", "`
-	i := strings.Index(src, marker)
-	if i < 0 {
-		t.Fatal("broker source: no -sock flag definition found")
-	}
-	j := strings.Index(src[i+len(marker):], `"`)
-	if j < 0 {
-		t.Fatal("broker source: unterminated -sock default")
-	}
-	want := src[i+len(marker) : i+len(marker)+j]
-	if enterSocket != want {
-		t.Errorf("enterSocket = %q, want %q (flue-broker's -sock default)", enterSocket, want)
-	}
 }
