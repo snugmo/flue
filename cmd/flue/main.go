@@ -686,15 +686,28 @@ func (f *agentFilter) logf(op, detail string, allowed bool) {
 	log.Debug("flue: agent op", "op", op, "detail", detail, "allowed", allowed)
 }
 
-// keyFingerprint computes the SHA256: fingerprint of an ssh.PublicKey.
+// keyFingerprint computes the SHA256: fingerprint of an ssh.PublicKey the
+// way ssh-add -l prints it: for a certificate that is the fingerprint of
+// the underlying key (cert.Key), not of the certificate blob, so
+// --allow-key values copied from ssh-add -l match certified keys.
 func keyFingerprint(key ssh.PublicKey) string {
+	if cert, ok := key.(*ssh.Certificate); ok {
+		return ssh.FingerprintSHA256(cert.Key)
+	}
 	return ssh.FingerprintSHA256(key)
 }
 
-// keyFingerprintFromBlob computes the SHA256: fingerprint from a raw key blob.
-// Uses the same algorithm as ssh.FingerprintSHA256: SHA256 of the blob,
-// encoded with base64.RawStdEncoding (no padding), prefixed with "SHA256:".
+// keyFingerprintFromBlob computes the SHA256: fingerprint of a raw key
+// blob the same way: if the blob is a certificate, the fingerprint of the
+// underlying key; otherwise the SHA256 of the blob itself — identical to
+// ssh.FingerprintSHA256 for a plain key, since its wire serialization is
+// exactly the blob. An unparsable blob falls back to the raw hash, which
+// matches no --allow-key value (and nothing else either).
 func keyFingerprintFromBlob(blob []byte) string {
+	key, err := ssh.ParsePublicKey(blob)
+	if err == nil {
+		return keyFingerprint(key)
+	}
 	h := sha256.Sum256(blob)
 	return "SHA256:" + base64.RawStdEncoding.EncodeToString(h[:])
 }

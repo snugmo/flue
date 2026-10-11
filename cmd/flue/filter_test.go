@@ -6,6 +6,7 @@ import (
 	"net"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"go.uber.org/goleak"
@@ -66,26 +67,11 @@ func initTestKeys(t *testing.T) {
 	testKeys.once = true
 }
 
-// startKeyringAgent starts a Unix socket agent server serving both test keys.
-// It tracks in-flight ServeAgent goroutines so goleak can verify they drain
-// after the listener closes.
-func startKeyringAgent(t *testing.T) string {
+// serveKeyring serves kr on a fresh Unix socket with an accept loop and
+// returns the socket path. It tracks in-flight ServeAgent goroutines so
+// goleak can verify they drain after the listener closes.
+func serveKeyring(t *testing.T, kr agent.Agent) string {
 	t.Helper()
-	initTestKeys(t)
-
-	kr := agent.NewKeyring()
-	if err := kr.Add(agent.AddedKey{
-		PrivateKey: testKeys.priv1,
-		Comment:    "test-key-1",
-	}); err != nil {
-		t.Fatalf("add key 1: %v", err)
-	}
-	if err := kr.Add(agent.AddedKey{
-		PrivateKey: testKeys.priv2,
-		Comment:    "test-key-2",
-	}); err != nil {
-		t.Fatalf("add key 2: %v", err)
-	}
 
 	l, err := net.Listen("unix", "")
 	if err != nil {
@@ -118,6 +104,120 @@ func startKeyringAgent(t *testing.T) string {
 	})
 
 	return l.Addr().String()
+}
+
+// startKeyringAgent starts a Unix socket agent server serving both test
+// keys.
+func startKeyringAgent(t *testing.T) string {
+	t.Helper()
+	initTestKeys(t)
+
+	kr := agent.NewKeyring()
+	if err := kr.Add(agent.AddedKey{
+		PrivateKey: testKeys.priv1,
+		Comment:    "test-key-1",
+	}); err != nil {
+		t.Fatalf("add key 1: %v", err)
+	}
+	if err := kr.Add(agent.AddedKey{
+		PrivateKey: testKeys.priv2,
+		Comment:    "test-key-2",
+	}); err != nil {
+		t.Fatalf("add key 2: %v", err)
+	}
+
+	return serveKeyring(t, kr)
+}
+
+// newCertKey generates an ed25519 user key certified by a fresh CA and
+// returns the AddedKey to add it to a keyring, the certificate's wire
+// blob, and the fingerprint of the underlying key — the value
+// ssh-add -l prints for a certified key.
+func newCertKey(t *testing.T, comment string) (agent.AddedKey, []byte, string) {
+	t.Helper()
+	_, caPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("gen ca: %v", err)
+	}
+	caPub, err := ssh.NewPublicKey(caPriv.Public())
+	if err != nil {
+		t.Fatalf("ca pub: %v", err)
+	}
+	caSigner, err := ssh.NewSignerFromKey(caPriv)
+	if err != nil {
+		t.Fatalf("ca signer: %v", err)
+	}
+	_, userPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("gen user: %v", err)
+	}
+	userPub, err := ssh.NewPublicKey(userPriv.Public())
+	if err != nil {
+		t.Fatalf("user pub: %v", err)
+	}
+	cert := &ssh.Certificate{
+		Key:         userPub,
+		CertType:    ssh.UserCert,
+		ValidAfter:  uint64(time.Now().Add(-time.Hour).Unix()),
+		ValidBefore: uint64(time.Now().Add(time.Hour).Unix()),
+		SignatureKey: caPub,
+	}
+	if err := cert.SignCert(rand.Reader, caSigner); err != nil {
+		t.Fatalf("sign cert: %v", err)
+	}
+	return agent.AddedKey{
+		PrivateKey:  userPriv,
+		Certificate: cert,
+		Comment:     comment,
+	}, cert.Marshal(), ssh.FingerprintSHA256(userPub)
+}
+
+// TestFilterListCertificate verifies that List fingerprints a certified key
+// the way ssh-add -l prints it: with the allowlist set to the underlying
+// key's fingerprint, the certificate is returned, and a certificate whose
+// base key is not in the allowlist is filtered out.
+func TestFilterListCertificate(t *testing.T) {
+	akA, blobA, fpA := newCertKey(t, "cert-a")
+	akB, blobB, fpB := newCertKey(t, "cert-b")
+	if fpA == fpB {
+		t.Fatal("two freshly generated base keys have the same fingerprint")
+	}
+
+	run := func(t *testing.T, allow map[string]struct{}, wantBlob []byte) {
+		t.Helper()
+		kr := agent.NewKeyring()
+		for _, ak := range []agent.AddedKey{akA, akB} {
+			if err := kr.Add(ak); err != nil {
+				t.Fatalf("add: %v", err)
+			}
+		}
+		addr := serveKeyring(t, kr)
+
+		conn, err := net.Dial("unix", addr)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		t.Cleanup(func() { conn.Close() })
+
+		f := &agentFilter{upstream: agent.NewClient(conn), allow: allow}
+		keys, err := f.List()
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(keys) != 1 {
+			t.Fatalf("List: got %d keys, want 1", len(keys))
+		}
+		if diff := cmp.Diff(wantBlob, keys[0].Blob); diff != "" {
+			t.Fatalf("unexpected key blob (-want +got):\n%s", diff)
+		}
+	}
+
+	t.Run("allowlist matches underlying key", func(t *testing.T) {
+		run(t, map[string]struct{}{fpA: {}}, blobA)
+	})
+	t.Run("allowlist matches the other cert's base key", func(t *testing.T) {
+		run(t, map[string]struct{}{fpB: {}}, blobB)
+	})
 }
 
 // newTestFilter builds an agentFilter wrapping a real agent over a Unix

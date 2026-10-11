@@ -102,11 +102,11 @@ subcommand: `flue --allow-key SHA256:… enter <container>`. (The subcommand
 
 **flue** (host-side; persistent flags, placed before the subcommand):
 
-| Flag          | Default                    | Description                                                                                                             |
-| ------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `--sock`      | `$SSH_AUTH_SOCK`           | Agent socket path to proxy to                                                                                           |
-| `--allow-key` | (none = all keys)          | Repeatable. Only keys with this SHA256 fingerprint are listed and can sign                                              |
-| `--log-level` | `$FLUE_LOG_LEVEL`, else `info` | Log level: `debug`, `info`, `warn`, or `error`. `debug` logs every agent request (operation, fingerprint, allowed/denied). When the flag is unset, `$FLUE_LOG_LEVEL` is read; a set flag wins |
+| Flag          | Default                        | Description                                                                                                                                                                                              |
+| ------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `--sock`      | `$SSH_AUTH_SOCK`               | Agent socket path to proxy to                                                                                                                                                                            |
+| `--allow-key` | (none = all keys)              | Repeatable. Only keys with this SHA256 fingerprint are listed and can sign. Fingerprints are compared the way `ssh-add -l` prints them — for a certificate, that is the fingerprint of its underlying key|
+| `--log-level` | `$FLUE_LOG_LEVEL`, else `info` | Log level: `debug`, `info`, `warn`, or `error`. `debug` logs every agent request (operation, fingerprint, allowed/denied). When the flag is unset, `$FLUE_LOG_LEVEL` is read; a set flag wins            |
 
 **enter** (enter-scoped flag and arguments):
 
