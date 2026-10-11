@@ -24,19 +24,24 @@
 //   - Add, Remove, RemoveAll, Lock, Unlock, Signers: always denied.
 //   - Extension: only session-bind@openssh.com is forwarded.
 //
-// Two forms:
+// flue is a cobra CLI with two subcommands. The global flags (--sock,
+// --allow-key, --log-level) are persistent: place them before the
+// subcommand. The subcommand's arguments follow the subcommand name; a --
+// separates them from the target command so the target's own flags are
+// passed through verbatim (cobra/pflag, unlike stdlib flag, keeps scanning
+// for flags after positional arguments).
 //
-// Passthrough — run any command that receives the control socketpair
-// (typically flue-broker, or a wrapper that preserves fd 3) yourself:
+// exec — the passthrough form: run any command that receives the control
+// socketpair (typically flue-broker, or a wrapper that preserves fd 3):
 //
-//	flue -- podman exec \
+//	flue exec -- podman exec \
 //	  --preserve-fds 1 \
 //	  -e SSH_AUTH_SOCK=/tmp/flue.sock \
 //	  <container> flue-broker
 //
-//	flue -- podman exec --preserve-fds 1 <container> flue-broker bash
+//	flue exec -- podman exec --preserve-fds 1 <container> flue-broker bash
 //
-// Enter — sugar for the common case. It runs the podman exec for you,
+// enter — sugar for the common case. It runs the podman exec for you,
 // in wrapper mode (so the broker sets SSH_AUTH_SOCK for the child):
 //
 //	flue enter <container> [command [args…]]
@@ -50,7 +55,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -60,15 +64,22 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/sys/unix"
 )
 
+// sockArg and logLevel hold the values of the persistent --sock and
+// --log-level flags (bound in init); the zero values are their defaults.
+// sockPath is the resolved agent socket path (sockArg, or $SSH_AUTH_SOCK
+// when the flag is empty), set by the root PersistentPreRun and shared by
+// both the run* subcommands and the per-client dialAgent.
 var (
-	sockArg   = flag.String("sock", "", "Agent socket path to use (default $SSH_AUTH_SOCK)")
-	logLevel  = flag.String("log-level", "info", "log level: debug, info, warn, or error")
+	sockArg   string
+	logLevel  = "info"
 	allowKeys = newAllowKeyFlag()
+	sockPath  string
 )
 
 // enterSocket is the Unix socket path flue-broker listens on inside the
@@ -85,8 +96,103 @@ const defaultEnterCmd = "/bin/sh"
 // never call main) working.
 var log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
+// rootCmd is the top-level `flue` command. It carries the persistent
+// (global) flags shared by both subcommands, and a PersistentPreRun that
+// sets up logging and resolves the agent socket path once, for whichever
+// subcommand runs. Invoked with no subcommand it prints a usage error and
+// exits 1 (the traditional bare-`flue` behavior).
+var rootCmd = &cobra.Command{
+	Use:   "flue",
+	Short: "Filtered SSH agent bridge from the host into a container",
+	Long: `flue proxies your host's SSH agent into a container with a key
+allowlist. It creates a control socketpair, hands one end to the container
+(as fd 3), receives the broker's listening socket, and proxies each client
+connection to the real $SSH_AUTH_SOCK, forwarding only allowed keys.
+
+The global flags (--sock, --allow-key, --log-level) go before the
+subcommand. The subcommand's arguments follow the subcommand name; a --
+separates them from the target command, so the target command's own flags
+are passed through verbatim.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		// No subcommand given: the classic usage-error case.
+		fmt.Fprintln(os.Stderr, `flue: missing subcommand (want "exec" or "enter")`)
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, cmd.Root().UsageString())
+		os.Exit(1)
+	},
+}
+
+// execCmd is the passthrough form: it runs the given command (after --),
+// which is expected to receive the control socketpair as fd 3.
+var execCmd = &cobra.Command{
+	Use:   "exec [command [args...]]",
+	Short: "Run a command that receives the control socketpair",
+	Long: `exec runs any command that receives the control socketpair (fd 3)
+itself — typically flue-broker, or a wrapper that preserves fd 3.
+
+The command and its arguments follow the subcommand name; separate them from
+flue's own flags with -- so the command's own flags are passed through:
+
+    flue exec -- podman exec --preserve-fds 1 \
+      -e SSH_AUTH_SOCK=/tmp/flue.sock <container> flue-broker
+
+flue blocks on the command exiting and returns its exit code.`,
+	Args: cobra.MinimumNArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		if code := runPassthrough(args, sockPath); code != 0 {
+			os.Exit(code)
+		}
+	},
+}
+
+// enterCmd is sugar for the common case: run a command (default /bin/sh) in
+// the named container, wrapping it with flue-broker so the broker sets
+// SSH_AUTH_SOCK for the child.
+var enterCmd = &cobra.Command{
+	Use:   "enter <container> [command [args...]]",
+	Short: "Run a command (default /bin/sh) in a container with the agent",
+	Long: `enter runs a podman exec against the named container with flue-broker
+wrapping the given command (default /bin/sh), allocating a tty when stdin is
+a tty:
+
+    flue enter <container>            # /bin/sh inside the container
+    flue enter <container> bash       # bash
+    flue enter <container> -- bash -l # command with its own flags
+
+When the command exits, enter returns its exit code. The in-container socket
+path is fixed at /tmp/flue.sock.`,
+	Args: cobra.MinimumNArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		if code := runEnter(args, sockPath); code != 0 {
+			os.Exit(code)
+		}
+	},
+}
+
+// init wires the persistent flags and subcommands onto rootCmd, and sets up
+// the shared PersistentPreRun (log-level parse + agent-socket resolution).
 func init() {
-	flag.Var(allowKeys, "allow-key", "SHA256 fingerprint to allow (repeatable)")
+	rootCmd.PersistentFlags().StringVar(&sockArg, "sock", "",
+		"agent socket path to proxy to (default $SSH_AUTH_SOCK)")
+	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "info",
+		"log level: debug, info, warn, or error")
+	rootCmd.PersistentFlags().Var(allowKeys, "allow-key",
+		"SHA256 fingerprint to allow (repeatable)")
+	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
+		if lvl, err := parseLevel(logLevel); err != nil {
+			fatalf("flue: %v", err)
+		} else {
+			log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
+		}
+		sockPath = sockArg
+		if sockPath == "" {
+			sockPath = os.Getenv("SSH_AUTH_SOCK")
+			if sockPath == "" {
+				fatalf("flue: no agent socket: set --sock or SSH_AUTH_SOCK")
+			}
+		}
+	}
+	rootCmd.AddCommand(execCmd, enterCmd)
 }
 
 // parseLevel maps a -log-level flag value to a slog.Level.
@@ -117,44 +223,13 @@ func fatalf(format string, args ...any) {
 }
 
 func main() {
-	flag.Parse()
-
-	if lvl, err := parseLevel(*logLevel); err != nil {
-		fatalf("flue: %v", err)
-	} else {
-		log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
-	}
-
-	sockPath := *sockArg
-	if sockPath == "" {
-		sockPath = os.Getenv("SSH_AUTH_SOCK")
-		if sockPath == "" {
-			fatalf("flue: no agent socket: set -sock or SSH_AUTH_SOCK")
-		}
-	}
-
-	args := flag.Args()
-	if len(args) == 0 {
-		fatalf(`flue: usage:
-  flue [-sock path] [-allow-key fp]... enter <container> [command [args…]]
-  flue [-sock path] [-allow-key fp]... -- command [args...]`)
-	}
-
-	// Subcommand dispatch. `enter` is sugar for a podman exec that runs
-	// flue-broker in the named container; anything else is the classic
-	// passthrough mode, where the caller supplies the whole command. Note
-	// a program literally named `enter` can only be run in passthrough
-	// mode by giving its path.
-	var code int
-	switch args[0] {
-	case "enter":
-		code = runEnter(args[1:], sockPath)
-	default:
-		code = runPassthrough(args, sockPath)
-	}
-
-	if code != 0 {
-		os.Exit(code)
+	// cobra handles flag parsing, subcommand dispatch, and --help. An error
+	// from here is a flag or argument-validation failure (unknown flag,
+	// unknown subcommand, too few args); cobra has already printed it, so we
+	// just exit non-zero. Fatal setup errors exit earlier, via fatalf in the
+	// PersistentPreRun.
+	if err := rootCmd.Execute(); err != nil {
+		os.Exit(1)
 	}
 }
 
@@ -328,6 +403,10 @@ type allowKeyFlag struct {
 func newAllowKeyFlag() *allowKeyFlag { return &allowKeyFlag{} }
 
 func (a *allowKeyFlag) String() string { return strings.Join(a.vals, ",") }
+
+// Type satisfies pflag.Value, which extends stdlib flag.Value with a type
+// name. cobra registers --allow-key as a pflag flag, so this is required.
+func (a *allowKeyFlag) Type() string { return "string" }
 
 func (a *allowKeyFlag) Set(s string) error {
 	a.vals = append(a.vals, s)
@@ -630,12 +709,9 @@ func handleClient(client net.Conn, filter *agentFilter) {
 	_ = agent.ServeAgent(clientFilter, client)
 }
 
-// dialAgent connects to the host's real SSH agent.
-// Prefers the -sock flag over $SSH_AUTH_SOCK.
+// dialAgent connects to the host's real SSH agent at the resolved socket
+// path (the root PersistentPreRun sets sockPath from --sock, or
+// $SSH_AUTH_SOCK when the flag is empty).
 func dialAgent() (net.Conn, error) {
-	sockPath := *sockArg
-	if sockPath == "" {
-		sockPath = os.Getenv("SSH_AUTH_SOCK")
-	}
 	return net.Dial("unix", sockPath)
 }
