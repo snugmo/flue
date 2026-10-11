@@ -131,3 +131,36 @@ func TestReceiveListenerTimeout(t *testing.T) {
 		t.Fatal("receiveListener did not time out")
 	}
 }
+
+// TestClientSetCap verifies the live-connection cap, and that a finished
+// connection frees its slot.
+func TestClientSetCap(t *testing.T) {
+	cs := clientSet{max: 1}
+	a1, a2 := net.Pipe()
+	b1, b2 := net.Pipe()
+	defer a2.Close()
+	defer b2.Close()
+	if !cs.add(a1) {
+		t.Fatal("first add refused")
+	}
+	if cs.add(b1) {
+		t.Fatal("add over the cap accepted")
+	}
+	cs.done(a1)
+	if !cs.add(b1) {
+		t.Fatal("add after a slot freed refused")
+	}
+	cs.done(b1)
+}
+
+// TestIdleConn verifies that a silent peer makes Read fail once the idle
+// timeout passes.
+func TestIdleConn(t *testing.T) {
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	c := &idleConn{Conn: a, timeout: 30 * time.Millisecond}
+	if _, err := c.Read(make([]byte, 1)); !os.IsTimeout(err) {
+		t.Fatalf("Read on idle conn: got %v, want a timeout", err)
+	}
+}

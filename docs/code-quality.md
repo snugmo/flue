@@ -39,7 +39,8 @@ subject that fixed it). Update this file when an item is addressed.
 7. **`receiveListener` read has no timeout** — **fixed** (30s
    `handoverTimeout`; `TestReceiveListenerTimeout`).
 8. **Unbounded per-client resources** (no cap, dial or idle timeout) —
-   **open**.
+   **fixed** (64 concurrent clients, 5s dial timeout, 10min idle timeout;
+   `maxClients`, `dialTimeout`, `idleTimeout`).
 9. **Injected memfd is writable and unsealed** — **open**.
 10. **Socket created with umask permissions before chmod 0600** — **open**.
 11. **Broker does not handle signals; only the direct child is killed** —

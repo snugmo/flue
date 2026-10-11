@@ -140,6 +140,16 @@ const (
 	defaultEnterCmdEnv    = "FLUE_ENTER_CMD"
 )
 
+// Limits on what a container-side client can make the host do: concurrent
+// connections (each costs a goroutine and an upstream agent connection),
+// the time to reach the host agent, and how long a connection may sit idle.
+// Variables so tests can shorten them.
+var (
+	maxClients  = 64
+	dialTimeout = 5 * time.Second
+	idleTimeout = 10 * time.Minute
+)
+
 // handoverTimeout bounds how long flue waits for the broker's listener fd.
 // It is a variable so tests can shorten it.
 var handoverTimeout = 30 * time.Second
@@ -572,7 +582,7 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preser
 
 	log.Info("flue: agent", "sock", sockPath, "filter", allowKeys.describe(), "exec", append([]string{cmdPath}, cmdArgs...))
 
-	var clients clientSet
+	clients := clientSet{max: maxClients}
 	listener, acceptDone := receiveListener(ctrl, filter, &clients)
 
 	err = cmd.Wait()
@@ -900,6 +910,7 @@ func receiveListener(ctrl net.Conn, filter *agentFilter, clients *clientSet) (ne
 			}
 			delay = 0
 			if !clients.add(conn) {
+				log.Warn("flue: rejecting client connection (too many clients or shutting down)")
 				closeQuiet(conn)
 				continue
 			}
@@ -919,15 +930,16 @@ type clientSet struct {
 	sync.WaitGroup
 	mu     sync.Mutex
 	conns  map[net.Conn]struct{}
+	max    int // live-connection cap; 0 means unlimited
 	closed bool
 }
 
 // add registers c and counts its handler; it reports false (and registers
-// nothing) once closeAll has run.
+// nothing) once closeAll has run or when the live-connection cap is hit.
 func (s *clientSet) add(c net.Conn) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
+	if s.closed || (s.max > 0 && len(s.conns) >= s.max) {
 		return false
 	}
 	if s.conns == nil {
@@ -994,6 +1006,7 @@ func closedChannel() <-chan struct{} {
 // disconnects.
 func handleClient(client net.Conn, filter *agentFilter) {
 	defer closeQuiet(client)
+	client = &idleConn{Conn: client, timeout: idleTimeout}
 
 	// Dial a fresh upstream agent connection for this client.
 	upstream, err := dialAgent()
@@ -1014,9 +1027,27 @@ func handleClient(client net.Conn, filter *agentFilter) {
 	_ = agent.ServeAgent(clientFilter, client)
 }
 
+// idleConn re-arms a deadline before every Read and Write, so a connection
+// that goes quiet for longer than timeout fails its next I/O and ends the
+// handler instead of pinning it forever.
+type idleConn struct {
+	net.Conn
+	timeout time.Duration
+}
+
+func (c *idleConn) Read(p []byte) (int, error) {
+	_ = c.Conn.SetReadDeadline(time.Now().Add(c.timeout))
+	return c.Conn.Read(p)
+}
+
+func (c *idleConn) Write(p []byte) (int, error) {
+	_ = c.Conn.SetWriteDeadline(time.Now().Add(c.timeout))
+	return c.Conn.Write(p)
+}
+
 // dialAgent connects to the host's real SSH agent at the resolved socket
 // path (the root PersistentPreRun sets sockPath from --sock, or
 // $SSH_AUTH_SOCK when the flag is empty).
 func dialAgent() (net.Conn, error) {
-	return net.Dial("unix", sockPath)
+	return net.DialTimeout("unix", sockPath, dialTimeout)
 }
