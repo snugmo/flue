@@ -20,9 +20,11 @@ positionals — which is why the `--` is needed for commands with flags).
   `podman exec [-ti] --preserve-fds <n> <container> <broker>
   [command...]`, where `<broker>` is `/proc/self/fd/4` (injected memfd,
   `--preserve-fds 2`) or the image's `flue-broker` (`--preserve-fds 1`).
-  - The container defaults to `defaultEnterContainer` (`snugmo`) and the
-    command to `defaultEnterCmd` (`/bin/sh`), so a bare `flue enter` runs
-    a shell in snugmo.
+  - The container defaults to `defaultEnterContainer` (`snugmo`), and the
+    command to `defaultEnterCmd` (`/bin/sh`) unless `$FLUE_ENTER_CMD` is
+    set and non-blank, in which case it is that value split on whitespace
+    (resolved by `enterDefaultCmd`); an explicit command always wins. So
+    a bare `flue enter` runs a shell in snugmo.
   - A tty is allocated only when stdin is a tty (`stdinIsTTY`, via the
     TCGETS ioctl — x/sys v0.49.0 has no `unix.IsTerminal`).
   - **Memfd injection is the default** (`--inject-broker` defaults on):

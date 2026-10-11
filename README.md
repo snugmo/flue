@@ -67,6 +67,15 @@ flue enter <container> git ls-remote git@github.com:you/repo.git
 flue enter <container> -- bash -l           # command with its own flags
 ```
 
+The default command is `/bin/sh`. Set `$FLUE_ENTER_CMD` to run something
+else by default (the value is split on whitespace; a command given on the
+command line always wins):
+
+```sh
+FLUE_ENTER_CMD=bash flue enter           # bash in snugmo
+FLUE_ENTER_CMD="bash -l" flue enter dev  # a login bash in dev
+```
+
 Inside the session, the agent just works: the broker listens on a socket
 that is unique per session (several `flue enter`s can run at once without
 colliding) and exports that path to your command as `SSH_AUTH_SOCK`, so
@@ -103,7 +112,7 @@ subcommand: `flue --allow-key SHA256:… enter <container>`. (The subcommand
 
 | Flag              | Default                  | Description                                                                                                                                                                                                                                             |
 | ----------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| *(arguments)*     | `snugmo`, `/bin/sh`      | Positional: the container to exec into (default `snugmo`), then the command to run inside it (default `/bin/sh`)                                                                                              |
+| *(arguments)*     | `snugmo`, `$FLUE_ENTER_CMD` else `/bin/sh` | Positional: the container to exec into (default `snugmo`), then the command to run inside it (default `$FLUE_ENTER_CMD` when set and non-blank — split on whitespace — else `/bin/sh`) |
 | `--inject-broker` | `true`  | Run the broker from an in-memory `memfd` (exec'd via `/proc/self/fd/4`) instead of the image's `flue-broker`; no writable filesystem needed. Disable with `--no-inject-broker`, `--inject-broker=false`, or `FLUE_INJECT_BROKER=0` (a set flag wins over the variable) |
 
 **flue-broker** (container-side):

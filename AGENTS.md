@@ -28,7 +28,7 @@ README.md           usage, flags, how-it-works, security
 | Test           | `go build -o cmd/flue/flue-broker.bin ./cmd/flue-broker && go test ./...` |
 | Build image    | `./build.sh` · `./build.sh push [registry]` · overrides `DEV_VERSION`, `DEV_IMAGE_NAME`, `DEV_REGISTRY`, `DEV_BASE_IMAGE` |
 | Forward agent  | `flue exec -- podman exec -e SSH_AUTH_SOCK=/tmp/flue.sock --preserve-fds 1 <container> flue-broker` |
-| Enter a shell  | `flue enter [container] [command…]` (defaults: snugmo, `/bin/sh`; `-ti` when stdin is a tty) |
+| Enter a shell  | `flue enter [container] [command…]` (defaults: snugmo, `$FLUE_ENTER_CMD` else `/bin/sh`; `-ti` when stdin is a tty) |
 
 ## Repo-wide rules
 
