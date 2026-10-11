@@ -83,6 +83,11 @@ Build overrides: `DEV_VERSION=`, `DEV_IMAGE_NAME=`, `DEV_REGISTRY=`, `DEV_BASE_I
 4. **Base image dependency**: the extension build pulls the cote base image from the registry. The base image must be pushed before building flue. Override with `DEV_BASE_IMAGE`.
 5. **Static binary**: the binary is built with `CGO_ENABLED=0`. Do not add cgo dependencies — they will break the static build.
 
+### Development-time gotchas
+
+1. **No `unix.IsTerminal` in this x/sys**: `golang.org/x/sys@v0.49.0` (see go.mod) has no `IsTerminal` helper — that API is not in this version. To test whether an fd is a tty, use the `TCGETS` ioctl: `unix.IoctlGetTermios(fd, unix.TCGETS)`. Note its signature here is the two-arg form returning `(*Termios, error)`; there is no three-arg form.
+2. **slog does not interpret format verbs**: `log.Error("msg: %v", err)` logs the literal `msg: %v` and dumps `err` as a `!BADKEY=…` key/value pair, because slog treats variadic args as key/value pairs, not printf args. Use the `fatalf` helper (it Sprintfs first) or format explicitly. This bit both binaries.
+
 ## Adding Features
 
 - **New flags**: add to the `flag` block in `main.go`; document in the README `### Flags` table.
