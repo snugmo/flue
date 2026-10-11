@@ -600,12 +600,10 @@ func closedChannel() <-chan struct{} {
 	return c
 }
 
-// handleClient proxies a single client connection (fd) to the agent.
-// It dials a fresh upstream agent connection for this client, wraps it
-// with the filter, and runs agent.ServeAgent.
-// handleClient proxies a single client connection to the agent. It dials a
-// fresh upstream agent connection for this client, wraps it with the filter,
-// and runs agent.ServeAgent, which blocks until the client disconnects.
+// handleClient proxies a single client connection (fd) to the agent. It
+// dials a fresh upstream agent connection for this client, wraps it with
+// the filter, and runs agent.ServeAgent, which blocks until the client
+// disconnects.
 func handleClient(client net.Conn, filter *agentFilter) {
 	defer closeQuiet(client)
 

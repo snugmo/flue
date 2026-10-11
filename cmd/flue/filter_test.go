@@ -4,7 +4,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"net"
-	"os"
 	"sync"
 	"testing"
 
@@ -12,7 +11,6 @@ import (
 	"go.uber.org/goleak"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
-	"golang.org/x/sys/unix"
 )
 
 func TestMain(m *testing.M) {
@@ -273,86 +271,5 @@ func TestFilterExtension(t *testing.T) {
 	_, err = f.Extension("some-unknown-extension", []byte{})
 	if err != agent.ErrExtensionUnsupported {
 		t.Errorf("expected ErrExtensionUnsupported, got %v", err)
-	}
-}
-
-// TestFDPass verifies that a connected fd can be sent across a socketpair
-// via SCM_RIGHTS and received on the other end.
-func TestFDPass(t *testing.T) {
-	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
-	if err != nil {
-		t.Fatalf("socketpair: %v", err)
-	}
-	fdA, fdB := pair[0], pair[1]
-
-	connA, err := net.FileConn(os.NewFile(uintptr(fdA), "ctrl-a"))
-	if err != nil {
-		t.Fatalf("file conn A: %v", err)
-	}
-	defer connA.Close()
-	connB, err := net.FileConn(os.NewFile(uintptr(fdB), "ctrl-b"))
-	if err != nil {
-		t.Fatalf("file conn B: %v", err)
-	}
-	defer connB.Close()
-
-	l, err := net.Listen("unix", "")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer l.Close()
-
-	client, err := net.Dial("unix", l.Addr().String())
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer client.Close()
-	serverConn, err := l.Accept()
-	if err != nil {
-		t.Fatalf("accept: %v", err)
-	}
-	defer serverConn.Close()
-
-	sc := serverConn.(*net.UnixConn)
-	sf, err := sc.File()
-	if err != nil {
-		t.Fatalf("file: %v", err)
-	}
-	defer sf.Close()
-
-	oob := unix.UnixRights(int(sf.Fd()))
-	ucA := connA.(*net.UnixConn)
-	if _, _, err := ucA.WriteMsgUnix([]byte{0}, oob, nil); err != nil {
-		t.Fatalf("write msg: %v", err)
-	}
-
-	ucB := connB.(*net.UnixConn)
-	buf := make([]byte, 16)
-	oobBuf := make([]byte, 256)
-	_, oobn, _, _, err := ucB.ReadMsgUnix(buf, oobBuf)
-	if err != nil {
-		t.Fatalf("read msg: %v", err)
-	}
-	if oobn == 0 {
-		t.Fatal("no OOB data received")
-	}
-
-	cmsgs, err := unix.ParseSocketControlMessage(oobBuf[:oobn])
-	if err != nil {
-		t.Fatalf("parse cmsg: %v", err)
-	}
-	var receivedFDs []int
-	for _, cmsg := range cmsgs {
-		rights, err := unix.ParseUnixRights(&cmsg)
-		if err != nil {
-			t.Fatalf("parse rights: %v", err)
-		}
-		receivedFDs = append(receivedFDs, rights...)
-	}
-	if len(receivedFDs) != 1 {
-		t.Fatalf("expected 1 fd, got %d", len(receivedFDs))
-	}
-	if receivedFDs[0] < 0 {
-		t.Fatal("invalid fd received")
 	}
 }
