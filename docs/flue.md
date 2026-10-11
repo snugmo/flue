@@ -28,14 +28,16 @@ positionals — which is why the `--` is needed for commands with flags).
   - `--inject-broker` (enter-scoped, non-persistent): instead of the
     image's `flue-broker`, flue hands the broker in a `memfd` and the
     container execs it via `/proc/self/fd/4` — see the memfd injection
-    bullet under **Embedded broker**.
+    bullet under **Embedded broker**. A `FLUE_INJECT_BROKER` env var
+    (any truthy value) turns it on too; a set `--inject-broker` flag wins.
 - **extract-broker** — `flue extract-broker <filename>`: writes the
   embedded `flue-broker` (see Embedded broker below) to `<filename>`,
   mode 0755, byte-identical to the built broker. It takes no flags.
 
 The two agent subcommands share the socketpair machinery in
 `runChildWithAgent`, which returns the child's exit code. The root
-`PersistentPreRun` parses the log level for every subcommand, but
+`PersistentPreRun` resolves the log level (a set `--log-level`, else
+`$FLUE_LOG_LEVEL`, else `info`) for every subcommand, but
 resolves the agent socket path only for the ones annotated with
 `needsAgentAnnotation` (`exec`, `enter`) — so `extract-broker` runs
 without `SSH_AUTH_SOCK` being set. A bare `flue` (no subcommand) is a
@@ -122,7 +124,7 @@ help/completion) + stdlib `go:embed` (the embedded broker — no
 dependency). Test-only: `go.uber.org/goleak` (goroutine leak
 detection) + `github.com/google/go-cmp` (readable test diffs).
 
-Logging is `log/slog` (stdlib) to stderr, set by `--log-level` (parsed in
+Logging is `log/slog` (stdlib) to stderr, set by `--log-level` (else `$FLUE_LOG_LEVEL`, else `info`; parsed in
 the root `PersistentPreRun`). Fatal setup errors (no agent socket, bad log
 level, socketpair/control-fd/child-start failures) are plain text on
 stderr and exit 1, via `fatalf` — not slog records. Flag and argument

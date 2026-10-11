@@ -187,7 +187,7 @@ After the flags, an optional command starts wrapper mode: `flue-broker
 | ------------- | ------------------ | ---------------------------------------------------- |
 | `--sock`      | `$SSH_AUTH_SOCK`   | Agent socket path to proxy to                        |
 | `--allow-key` | (none = all keys)  | Repeatable. Only keys with this SHA256 fingerprint are listed and can sign |
-| `--log-level` | `info`             | Log level: `debug`, `info`, `warn`, or `error`. `debug` logs every agent request (operation, fingerprint, allowed/denied) |
+| `--log-level` | `$FLUE_LOG_LEVEL`, else `info` | Log level: `debug`, `info`, `warn`, or `error`. `debug` logs every agent request (operation, fingerprint, allowed/denied). When the flag is unset, `$FLUE_LOG_LEVEL` is read; a set flag wins |
 
 These are [cobra](https://github.com/spf13/cobra) persistent flags, so they
 accept the `--flag value` or `--flag=value` forms and go before the
@@ -198,7 +198,9 @@ so the target's flags pass through verbatim.
 `enter` also has one non-persistent flag of its own:
 `--inject-broker` (see above) runs the broker from an in-memory `memfd`
 instead of the image's `flue-broker`, for containers with no writable
-filesystem.
+filesystem. It can also be turned on with the `FLUE_INJECT_BROKER`
+environment variable (any truthy value: `1`, `true`, `yes`, `on`); an
+explicit `--inject-broker=false` still wins over the variable.
 
 ## How it works
 

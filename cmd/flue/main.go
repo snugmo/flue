@@ -31,6 +31,11 @@
 // passed through verbatim (cobra/pflag, unlike stdlib flag, keeps scanning
 // for flags after positional arguments).
 //
+// Two flags also read environment variables as a fallback when the flag
+// itself is not set on the command line: --log-level reads $FLUE_LOG_LEVEL,
+// and enter --inject-broker reads $FLUE_INJECT_BROKER. An explicitly set
+// flag always wins; the env var only fills in when the flag is absent.
+//
 // exec — the passthrough form: run any command that receives the control
 // socketpair (typically flue-broker, or a wrapper that preserves fd 3):
 //
@@ -85,19 +90,24 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// sockArg and logLevel hold the values of the persistent --sock and
-// --log-level flags (bound in init); the zero values are their defaults.
-// sockPath is the resolved agent socket path (sockArg, or $SSH_AUTH_SOCK
-// when the flag is empty), set by the root PersistentPreRun and shared by
-// both the run* subcommands and the per-client dialAgent.
+// sockArg and logLevel hold the raw values of the persistent --sock and
+// --log-level flags (bound in init). Both default to the empty string, which
+// means "not set on the command line": the root PersistentPreRun resolves
+// each against its environment fallback ($SSH_AUTH_SOCK and $FLUE_LOG_LEVEL
+// respectively) before falling back to a built-in default. sockPath is the
+// resolved agent socket path (sockArg, or $SSH_AUTH_SOCK when the flag is
+// empty), set by the root PersistentPreRun and shared by both the run*
+// subcommands and the per-client dialAgent.
 var (
 	sockArg   string
-	logLevel  = "info"
+	logLevel  string
 	allowKeys = newAllowKeyFlag()
 	sockPath  string
 	// enterInjectBroker holds the --inject-broker flag value for `enter`
 	// (bound in init); it switches the in-container command from the image's
-	// flue-broker to a broker exec'd from an in-memory memfd.
+	// flue-broker to a broker exec'd from an in-memory memfd. The enter
+	// command resolves the effective value (flag, else $FLUE_INJECT_BROKER,
+	// else false) in its Run hook before runEnter reads it.
 	enterInjectBroker bool
 )
 
@@ -198,6 +208,9 @@ When the command exits, enter returns its exit code. The in-container socket
 path is fixed at /tmp/flue.sock.`,
 	Args: cobra.MinimumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		// Resolve the effective --inject-broker: an explicit flag wins, else
+		// $FLUE_INJECT_BROKER, else the registered default (false).
+		enterInjectBroker = injectBrokerEffective(cmd)
 		if code := runEnter(args, sockPath); code != 0 {
 			os.Exit(code)
 		}
@@ -209,14 +222,14 @@ path is fixed at /tmp/flue.sock.`,
 func init() {
 	rootCmd.PersistentFlags().StringVar(&sockArg, "sock", "",
 		"agent socket path to proxy to (default $SSH_AUTH_SOCK)")
-	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "info",
-		"log level: debug, info, warn, or error")
+	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "",
+		"log level: debug, info, warn, or error (default: $FLUE_LOG_LEVEL, else info)")
 	rootCmd.PersistentFlags().Var(allowKeys, "allow-key",
 		"SHA256 fingerprint to allow (repeatable)")
 	enterCmd.Flags().BoolVar(&enterInjectBroker, "inject-broker", false,
-		"run the broker from an in-memory memfd (exec'd via /proc/self/fd/4) instead of the image's flue-broker; no writable filesystem needed")
+		"run the broker from an in-memory memfd (exec'd via /proc/self/fd/4) instead of the image's flue-broker; no writable filesystem needed (also set by $FLUE_INJECT_BROKER)")
 	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
-		if lvl, err := parseLevel(logLevel); err != nil {
+		if lvl, err := parseLevel(resolveLogLevel()); err != nil {
 			fatalf("flue: %v", err)
 		} else {
 			log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
@@ -248,6 +261,41 @@ func parseLevel(s string) (slog.Level, error) {
 		return slog.LevelError, nil
 	}
 	return 0, fmt.Errorf("unknown log level %q (want debug, info, warn, or error)", s)
+}
+
+// resolveLogLevel returns the effective --log-level value: an explicit flag
+// wins, else the FLUE_LOG_LEVEL environment variable, else the built-in
+// default "info".
+func resolveLogLevel() string {
+	if logLevel != "" {
+		return logLevel
+	}
+	if v := os.Getenv("FLUE_LOG_LEVEL"); v != "" {
+		return v
+	}
+	return "info"
+}
+
+// envBool reports whether an environment-variable value is truthy. Accepted
+// truthy strings (case-insensitive): 1, t, true, y, yes, on; everything else
+// (including empty) is false.
+func envBool(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "1", "t", "true", "y", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// injectBrokerEffective resolves the effective --inject-broker value for
+// `enter`: an explicitly set flag wins, else the FLUE_INJECT_BROKER
+// environment variable, else false.
+func injectBrokerEffective(cmd *cobra.Command) bool {
+	if f := cmd.Flags().Lookup("inject-broker"); f != nil && f.Changed {
+		return enterInjectBroker
+	}
+	return envBool(os.Getenv("FLUE_INJECT_BROKER"))
 }
 
 // fatalf prints the formatted message to stderr and exits 1, keeping the
