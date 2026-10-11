@@ -41,7 +41,8 @@ subject that fixed it). Update this file when an item is addressed.
 8. **Unbounded per-client resources** (no cap, dial or idle timeout) —
    **fixed** (64 concurrent clients, 5s dial timeout, 10min idle timeout;
    `maxClients`, `dialTimeout`, `idleTimeout`).
-9. **Injected memfd is writable and unsealed** — **open**.
+9. **Injected memfd is writable and unsealed** — **fixed** (sealed with
+   `F_SEAL_{SEAL,SHRINK,GROW,WRITE}` after the write; still executable).
 10. **Socket created with umask permissions before chmod 0600** — **open**.
 11. **Broker does not handle signals; only the direct child is killed** —
     **open**.

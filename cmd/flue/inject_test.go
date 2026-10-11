@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -146,5 +148,46 @@ func TestNegInjectBrokerFlags(t *testing.T) {
 	}
 	if enterInjectBroker {
 		t.Error("after --inject-broker=false: want injection disabled")
+	}
+}
+
+// TestInjectBrokerMemfdSealed verifies that the memfd handed to the
+// container cannot be modified or resized.
+func TestInjectBrokerMemfdSealed(t *testing.T) {
+	if !looksLikeELF(flueBrokerBin) {
+		t.Skip("embedded broker is not an ELF (build flue-broker first)")
+	}
+	f, err := injectBrokerMemfd()
+	if err != nil {
+		t.Fatalf("injectBrokerMemfd: %v", err)
+	}
+	defer f.Close()
+
+	if _, err := f.WriteAt([]byte{0}, 0); err == nil {
+		t.Fatal("write to sealed memfd succeeded")
+	}
+	if err := f.Truncate(0); err == nil {
+		t.Fatal("truncate of sealed memfd succeeded")
+	}
+}
+
+// TestInjectBrokerMemfdExecutable verifies that the sealed memfd can still
+// be exec'd through /proc/self/fd/<n>, which is how the container runs it.
+func TestInjectBrokerMemfdExecutable(t *testing.T) {
+	if !looksLikeELF(flueBrokerBin) {
+		t.Skip("embedded broker is not an ELF (build flue-broker first)")
+	}
+	f, err := injectBrokerMemfd()
+	if err != nil {
+		t.Fatalf("injectBrokerMemfd: %v", err)
+	}
+	defer f.Close()
+
+	cmd := exec.Command("/proc/self/fd/3", "-log-level", "bogus")
+	cmd.ExtraFiles = []*os.File{f}
+	out, err := cmd.CombinedOutput()
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || !strings.Contains(string(out), "unknown log level") {
+		t.Fatalf("exec of memfd broker: err=%v out=%q (want the broker's own flag error)", err, out)
 	}
 }

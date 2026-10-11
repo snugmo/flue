@@ -18,8 +18,9 @@ const brokerMemfdName = "flue-broker"
 // prctl) and is harmless for ordinary processes. MFD_CLOEXEC is belt-and-
 // braces: the fd is already dropped after the in-container exec by the
 // dup2 in the child setup, but it documents the intent that the broker does
-// not need to keep the memfd it was launched from.
-const brokerMemfdFlags = unix.MFD_EXEC | unix.MFD_CLOEXEC
+// not need to keep the memfd it was launched from. MFD_ALLOW_SEALING lets
+// injectBrokerMemfd seal the contents once written (see below).
+const brokerMemfdFlags = unix.MFD_EXEC | unix.MFD_CLOEXEC | unix.MFD_ALLOW_SEALING
 
 // injectBrokerMemfd creates a memfd containing the embedded flue-broker
 // bytes (see embed.go) and returns it as an *os.File ready to be passed to
@@ -41,7 +42,7 @@ func injectBrokerMemfd() (*os.File, error) {
 	if err != nil {
 		// Older kernel without MFD_EXEC: a plain memfd is still executable
 		// by non-MDWE processes, so retry without the flag before failing.
-		fd, err = unix.MemfdCreate(brokerMemfdName, 0)
+		fd, err = unix.MemfdCreate(brokerMemfdName, unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
 		if err != nil {
 			return nil, fmt.Errorf("memfd_create: %w", err)
 		}
@@ -50,6 +51,15 @@ func injectBrokerMemfd() (*os.File, error) {
 	if _, err := f.Write(flueBrokerBin); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("write broker to memfd: %w", err)
+	}
+	// The container side receives this fd writable. Without seals, any
+	// process in the container able to reach it (via /proc/<pid>/fd) could
+	// rewrite the bytes of the running broker. Seal it read-only and
+	// fixed-size, and refuse further seal changes.
+	const seals = unix.F_SEAL_SEAL | unix.F_SEAL_SHRINK | unix.F_SEAL_GROW | unix.F_SEAL_WRITE
+	if _, err := unix.FcntlInt(f.Fd(), unix.F_ADD_SEALS, seals); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("seal broker memfd: %w", err)
 	}
 	log.Debug("flue: created broker memfd", "bytes", len(flueBrokerBin))
 	return f, nil
