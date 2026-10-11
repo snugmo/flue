@@ -46,6 +46,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"errors"
 	"flag"
 	"fmt"
@@ -54,6 +55,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -170,6 +172,13 @@ func main() {
 		fatalf("flue-broker: %v", err)
 	}
 
+	// When -sock is not given explicitly, generate a per-session socket path
+	// (random name in the best available runtime directory) so concurrent
+	// `flue enter` sessions don't collide on a single fixed path.
+	if !sockFlagSet() {
+		*sockPath = generateSocketPath()
+		log.Debug("flue-broker: generated socket path", "sock", *sockPath)
+	}
 	if err := os.Remove(*sockPath); err != nil && !os.IsNotExist(err) {
 		fatalf("flue-broker: remove stale socket %s: %v", *sockPath, err)
 	}
@@ -357,6 +366,67 @@ func withEnv(env []string, key, val string) []string {
 // broker itself keeps using those fds — CLOEXEC only affects the exec'd
 // child. It enumerates open descriptors via /proc/self/fd (the broker is
 // Linux-only).
+// sockFlagSet reports whether the -sock flag was given on the command line.
+func sockFlagSet() bool {
+	set := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "sock" {
+			set = true
+		}
+	})
+	return set
+}
+
+// generateSocketPath returns a per-session Unix socket path: a random name
+// under the best available runtime directory.
+func generateSocketPath() string {
+	return filepath.Join(pickSocketDir(), "flue-"+randHex(8)+".sock")
+}
+
+// pickSocketDir chooses the directory for the generated socket: XDG_RUNTIME_DIR
+// (if set and present), else /run/user/<uid>, else /run, else /tmp — first
+// that is writable wins.
+func pickSocketDir() string {
+	if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" && isDir(d) {
+		return d
+	}
+	if d := filepath.Join("/run/user", strconv.Itoa(os.Getuid())); writableDir(d) {
+		return d
+	}
+	if writableDir("/run") {
+		return "/run"
+	}
+	return "/tmp"
+}
+
+// isDir reports whether path exists and is a directory.
+func isDir(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
+}
+
+// writableDir reports whether a file can be created in dir.
+func writableDir(dir string) bool {
+	f, err := os.CreateTemp(dir, ".flue-wtest-")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	f.Close()
+	os.Remove(name)
+	return true
+}
+
+// randHex returns up to n hex chars of cryptographic randomness (falling
+// back to the pid if the entropy source fails).
+func randHex(n int) string {
+	b := make([]byte, (n+1)/2)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%x", os.Getpid())
+	}
+	return fmt.Sprintf("%x", b)
+}
+
 func markCloexecAll() {
 	ents, err := os.ReadDir("/proc/self/fd")
 	if err != nil {

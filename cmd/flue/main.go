@@ -385,14 +385,12 @@ func enterExecArgs(container string, cmd []string, tty, injectBroker bool) []str
 		// broker needs neither a filesystem path nor a writable filesystem.
 		out = append(out,
 			"--preserve-fds", "2",
-			"-e", "SSH_AUTH_SOCK="+enterSocket,
 			container,
 			"/proc/self/fd/4",
 		)
 	} else {
 		out = append(out,
 			"--preserve-fds", "1",
-			"-e", "SSH_AUTH_SOCK="+enterSocket,
 			container,
 			"flue-broker",
 		)

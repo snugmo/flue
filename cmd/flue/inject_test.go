@@ -68,7 +68,6 @@ func TestEnterExecArgsInjectBroker(t *testing.T) {
 		want := []string{
 			"exec", "-ti",
 			"--preserve-fds", "2",
-			"-e", "SSH_AUTH_SOCK=" + enterSocket,
 			"c", "/proc/self/fd/4", "/bin/sh",
 		}
 		if diff := cmp.Diff(want, got); diff != "" {
@@ -80,7 +79,6 @@ func TestEnterExecArgsInjectBroker(t *testing.T) {
 		want := []string{
 			"exec", "-i",
 			"--preserve-fds", "2",
-			"-e", "SSH_AUTH_SOCK=" + enterSocket,
 			"c", "/proc/self/fd/4", "bash", "-c", "echo hi",
 		}
 		if diff := cmp.Diff(want, got); diff != "" {

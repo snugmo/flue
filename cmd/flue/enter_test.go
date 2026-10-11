@@ -68,7 +68,6 @@ func TestEnterExecArgs(t *testing.T) {
 		want := []string{
 			"exec", "-ti",
 			"--preserve-fds", "1",
-			"-e", "SSH_AUTH_SOCK=" + enterSocket,
 			"c", "flue-broker", "/bin/sh",
 		}
 		if diff := cmp.Diff(want, got); diff != "" {
@@ -81,7 +80,6 @@ func TestEnterExecArgs(t *testing.T) {
 		want := []string{
 			"exec", "-i",
 			"--preserve-fds", "1",
-			"-e", "SSH_AUTH_SOCK=" + enterSocket,
 			"c", "flue-broker", "bash", "-c", "echo hi",
 		}
 		if diff := cmp.Diff(want, got); diff != "" {
