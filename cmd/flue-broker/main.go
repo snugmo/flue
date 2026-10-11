@@ -151,15 +151,6 @@ func sockTypeName(typ int) string {
 	return fmt.Sprintf("%d", typ)
 }
 
-// heldControl keeps the preserved control fd open for the whole process
-// lifetime. net.FileConn wraps a file in a Conn and closes the underlying
-// fd when the Conn is garbage-collected; if that happened to the preserved
-// fd, the number would become invalid and the later WriteMsgUnix in
-// sendListener would fail with EBADF. Holding a global *os.File (whose
-// finalizer only runs at process exit) keeps the fd alive, and creating a
-// new os.File from that number is a cheap dup.
-var heldControl *os.File
-
 func main() {
 	// run returns the exit code rather than calling os.Exit itself, so the
 	// defers inside it (remove the socket, close the control conn) have
@@ -209,26 +200,28 @@ func run() int {
 	}
 	log.Info("flue-broker: listening", "sock", *sockPath, "control-fd", fdNum)
 
-	// Keep the preserved control fd open for the whole process lifetime so
-	// sendListener can build a write conn from it at any point.
-	heldControl = os.NewFile(uintptr(fdNum), "flue-control")
+	// Wrap the preserved fd in a conn exactly once. net.FileConn dups the
+	// fd, so the os.File is closed right away: it would otherwise stay
+	// open until its finalizer ran, and that finalizer would close the
+	// original fd number out from under anything else holding it. The one
+	// conn serves both the listener handover and the host-gone watcher.
+	f := os.NewFile(uintptr(fdNum), "flue-control")
+	c, err := net.FileConn(f)
+	_ = f.Close()
+	if err != nil {
+		return failf("flue-broker: control fd: %v", err)
+	}
+	ctrl := c.(*net.UnixConn)
+	defer closeQuiet(ctrl)
 
 	// Hand the listening fd to the host. The host accepts on it from here
 	// on; the broker no longer touches the listener. The listener stays open
 	// for the broker's lifetime so the socket path it owns remains in place
 	// for in-container clients to connect to.
-	if err := sendListener(listener); err != nil {
+	if err := sendListener(ctrl, listener); err != nil {
 		return failf("flue-broker: hand over listener: %v", err)
 	}
 	log.Debug("flue-broker: handed listener to host")
-
-	// Open the control socket once for a reader that detects EOF (host
-	// gone). The write side is a separate dup created on demand.
-	ctrl, err := net.FileConn(os.NewFile(uintptr(fdNum), "flue-control"))
-	if err != nil {
-		return failf("flue-broker: control fd: %v", err)
-	}
-	defer closeQuiet(ctrl)
 
 	// Branch on mode: with arguments, run the wrapped child and return its
 	// exit status; without, block until the host goes away. The code is
@@ -458,7 +451,7 @@ func markCloexecAll() {
 // name. Closing it here would remove the path even though the host still
 // holds a live fd to the same socket. The listener is left open for the
 // broker's lifetime (closed only at process exit, by then redundant).
-func sendListener(listener net.Listener) error {
+func sendListener(ctrl *net.UnixConn, listener net.Listener) error {
 	ln, ok := listener.(*net.UnixListener)
 	if !ok {
 		return errors.New("listener is not a Unix socket")
@@ -467,24 +460,16 @@ func sendListener(listener net.Listener) error {
 	if err != nil {
 		return err
 	}
-	listenFD := int(f.Fd())
+	// Close only the dup, on every path; keep ln (and thus the path) open.
+	defer func() {
+		if cerr := f.Close(); cerr != nil && !errors.Is(cerr, os.ErrClosed) {
+			log.Debug("flue-broker: close listener dup", "err", cerr)
+		}
+	}()
 
-	ctrl, err := net.FileConn(os.NewFile(heldControl.Fd(), "flue-control-write"))
-	if err != nil {
-		return err
-	}
-	defer closeQuiet(ctrl)
-
-	oob := unix.UnixRights(listenFD)
-	if _, _, err := ctrl.(*net.UnixConn).WriteMsgUnix([]byte{0}, oob, nil); err != nil {
-		return err
-	}
-
-	// Close only the dup; keep ln (and thus the path) open.
-	if cerr := f.Close(); cerr != nil && !errors.Is(cerr, os.ErrClosed) {
-		log.Debug("flue-broker: close listener dup", "err", cerr)
-	}
-	return nil
+	oob := unix.UnixRights(int(f.Fd()))
+	_, _, err = ctrl.WriteMsgUnix([]byte{0}, oob, nil)
+	return err
 }
 
 // removeQuiet removes a file, logging the error unless it is a benign

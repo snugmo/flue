@@ -11,7 +11,9 @@ subject that fixed it). Update this file when an item is addressed.
    `cmd/flue-broker/main.go`: `os.Exit(code)` inside `main` bypasses
    `defer removeQuiet(sock)` / `defer closeQuiet(ctrl)`; `fatalf` after
    `net.Listen` likewise leaves the socket file behind.
-2. **One fd wrapped in several `os.File`s (broker)** — **open**.
+2. **One fd wrapped in several `os.File`s (broker)** — **fixed** (the fd
+   is wrapped once, the `os.File` closed, and one conn serves handover and
+   watcher; `heldControl` removed).
    `heldControl` plus temporary `os.NewFile(fdNum)` objects passed to
    `net.FileConn` (which dups). The temporaries are never closed, so their
    GC finalizers close fd 3 behind `heldControl`.
@@ -41,7 +43,8 @@ subject that fixed it). Update this file when an item is addressed.
 
 12. Doc comment for `markCloexecAll` sits above `sockFlagSet` — **open**.
 13. Signal-killed child yields exit 255 instead of 128+signal — **open**.
-14. `sendListener` leaks the listener dup on early-error returns — **open**.
+14. `sendListener` leaks the listener dup on early-error returns —
+    **fixed** (dup closed by defer, in the same commit as item 2).
 15. Redundant code: second `<-hostGone`, `_ = n`, dead `dir == ""`,
     `cmd.Env = os.Environ()` — **open**.
 16. `extract-broker` does not `fsync` before rename — **open**.
