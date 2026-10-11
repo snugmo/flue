@@ -6,7 +6,8 @@ subject that fixed it). Update this file when an item is addressed.
 
 ## High
 
-1. **Broker skips cleanup on non-zero exit** — **open**.
+1. **Broker skips cleanup on non-zero exit** — **fixed** (`main` now
+   calls `run() int`, so the defers run before `os.Exit`).
    `cmd/flue-broker/main.go`: `os.Exit(code)` inside `main` bypasses
    `defer removeQuiet(sock)` / `defer closeQuiet(ctrl)`; `fatalf` after
    `net.Listen` likewise leaves the socket file behind.

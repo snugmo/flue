@@ -99,8 +99,15 @@ func parseLevel(s string) (slog.Level, error) {
 // treats the args as key/value pairs). slog is used for the non-fatal,
 // leveled operational logging.
 func fatalf(format string, args ...any) {
+	os.Exit(failf(format, args...))
+}
+
+// failf prints the formatted message to stderr like fatalf but returns the
+// exit code (1) instead of exiting, so callers with deferred cleanup can
+// return it.
+func failf(format string, args ...any) int {
 	fmt.Fprintln(os.Stderr, fmt.Sprintf(format, args...))
-	os.Exit(1)
+	return 1
 }
 
 // checkControlFD validates that fdNum is the control socketpair end that
@@ -154,21 +161,29 @@ func sockTypeName(typ int) string {
 var heldControl *os.File
 
 func main() {
+	// run returns the exit code rather than calling os.Exit itself, so the
+	// defers inside it (remove the socket, close the control conn) have
+	// run by the time the process exits.
+	os.Exit(run())
+}
+
+// run is the broker proper; it returns the process exit code.
+func run() int {
 	flag.Parse()
 
 	if lvl, err := parseLevel(*logLevel); err != nil {
-		fatalf("flue-broker: %v", err)
+		return failf("flue-broker: %v", err)
 	} else {
 		log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
 	}
 
 	fdNum, err := strconv.Atoi(*fdArg)
 	if err != nil || fdNum < 3 {
-		fatalf("flue-broker: invalid -fd %q: must be an integer >= 3", *fdArg)
+		return failf("flue-broker: invalid -fd %q: must be an integer >= 3", *fdArg)
 	}
 
 	if err := checkControlFD(fdNum); err != nil {
-		fatalf("flue-broker: %v", err)
+		return failf("flue-broker: %v", err)
 	}
 
 	// When -sock is not given explicitly, generate a per-session socket path
@@ -179,18 +194,20 @@ func main() {
 		log.Debug("flue-broker: generated socket path", "sock", *sockPath)
 	}
 	if err := os.Remove(*sockPath); err != nil && !os.IsNotExist(err) {
-		fatalf("flue-broker: remove stale socket %s: %v", *sockPath, err)
+		return failf("flue-broker: remove stale socket %s: %v", *sockPath, err)
 	}
 
 	listener, err := net.Listen("unix", *sockPath)
 	if err != nil {
-		fatalf("flue-broker: listen %s: %v", *sockPath, err)
+		return failf("flue-broker: listen %s: %v", *sockPath, err)
 	}
+	// Registered before any later step can fail, so every return path
+	// removes the socket file.
+	defer removeQuiet(*sockPath)
 	if err := os.Chmod(*sockPath, 0600); err != nil {
-		fatalf("flue-broker: chmod %s: %v", *sockPath, err)
+		return failf("flue-broker: chmod %s: %v", *sockPath, err)
 	}
 	log.Info("flue-broker: listening", "sock", *sockPath, "control-fd", fdNum)
-	defer removeQuiet(*sockPath)
 
 	// Keep the preserved control fd open for the whole process lifetime so
 	// sendListener can build a write conn from it at any point.
@@ -201,7 +218,7 @@ func main() {
 	// for the broker's lifetime so the socket path it owns remains in place
 	// for in-container clients to connect to.
 	if err := sendListener(listener); err != nil {
-		fatalf("flue-broker: hand over listener: %v", err)
+		return failf("flue-broker: hand over listener: %v", err)
 	}
 	log.Debug("flue-broker: handed listener to host")
 
@@ -209,24 +226,18 @@ func main() {
 	// gone). The write side is a separate dup created on demand.
 	ctrl, err := net.FileConn(os.NewFile(uintptr(fdNum), "flue-control"))
 	if err != nil {
-		fatalf("flue-broker: control fd: %v", err)
+		return failf("flue-broker: control fd: %v", err)
 	}
 	defer closeQuiet(ctrl)
 
 	// Branch on mode: with arguments, run the wrapped child and return its
 	// exit status; without, block until the host goes away. The code is
 	// returned to main so the defers above (remove socket, close control)
-	// run before we os.Exit with it.
-	var code int
+	// run before the process exits with it.
 	if args := flag.Args(); len(args) > 0 {
-		code = runChild(args, *sockPath, ctrl)
-	} else {
-		code = waitForHost(ctrl)
+		return runChild(args, *sockPath, ctrl)
 	}
-
-	if code != 0 {
-		os.Exit(code)
-	}
+	return waitForHost(ctrl)
 }
 
 // waitForHost blocks until the control channel reports the host going away
@@ -302,7 +313,7 @@ func runChild(args []string, sockPath string, ctrl net.Conn) int {
 	markCloexecAll()
 
 	if err := cmd.Start(); err != nil {
-		fatalf("flue-broker: start %s: %v", cmdPath, err)
+		return failf("flue-broker: start %s: %v", cmdPath, err)
 	}
 
 	// Watch the control channel for the host going away. The watcher closes
