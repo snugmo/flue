@@ -107,3 +107,27 @@ func TestClientSetCloseAll(t *testing.T) {
 		t.Fatal("add after closeAll accepted")
 	}
 }
+
+// TestReceiveListenerTimeout verifies that a broker that never sends the
+// listener does not block receiveListener forever.
+func TestReceiveListenerTimeout(t *testing.T) {
+	old := handoverTimeout
+	handoverTimeout = 50 * time.Millisecond
+	defer func() { handoverTimeout = old }()
+
+	host, _ := makeControlPair(t) // the peer stays open and silent
+	var cs clientSet
+	done := make(chan net.Listener, 1)
+	go func() {
+		l, _ := receiveListener(host, &agentFilter{}, &cs)
+		done <- l
+	}()
+	select {
+	case l := <-done:
+		if l != nil {
+			t.Fatal("got a listener from a silent peer")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("receiveListener did not time out")
+	}
+}

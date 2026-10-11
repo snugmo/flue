@@ -140,6 +140,10 @@ const (
 	defaultEnterCmdEnv    = "FLUE_ENTER_CMD"
 )
 
+// handoverTimeout bounds how long flue waits for the broker's listener fd.
+// It is a variable so tests can shorten it.
+var handoverTimeout = 30 * time.Second
+
 // log is the package-level slog logger. The default is rebuilt by the root
 // PersistentPreRun from the --log-level flag; the declaration-time default
 // keeps tests (which never call main) working.
@@ -808,39 +812,47 @@ func receiveListener(ctrl net.Conn, filter *agentFilter, clients *clientSet) (ne
 	buf := make([]byte, 4096)
 	oob := make([]byte, 4096)
 
-	n, oobn, flags, _, err := ctrl.(*net.UnixConn).ReadMsgUnix(buf, oob)
-	_ = n
+	uc := ctrl.(*net.UnixConn)
+	// Bound the wait: a broker that starts but never hands over a listener
+	// would otherwise leave flue blocked here silently. (A broker that
+	// exits closes the peer, which wakes the read with EOF on its own.)
+	_ = uc.SetReadDeadline(time.Now().Add(handoverTimeout))
+	_, oobn, flags, _, err := uc.ReadMsgUnix(buf, oob)
+	_ = uc.SetReadDeadline(time.Time{})
 	if err != nil {
-		if err == io.EOF || err == unix.ECONNRESET {
+		switch {
+		case err == io.EOF || err == unix.ECONNRESET:
 			log.Warn("flue: control channel closed before listener received")
-		} else {
+		case errors.Is(err, os.ErrDeadlineExceeded):
+			log.Warn("flue: no listener received from the broker", "timeout", handoverTimeout)
+		default:
 			log.Warn("flue: control read", "err", err)
 		}
 		return nil, closedChannel()
 	}
+	// The sender is the container side. Whatever fds arrived are ours to
+	// close, including when the message is malformed or truncated.
+	fds, perr := receivedFDs(oob[:oobn])
+	if perr != nil {
+		log.Warn("flue: parse control message", "err", perr)
+	}
 	if flags&unix.MSG_CTRUNC != 0 {
 		log.Warn("flue: control message truncated; discarding")
-		return nil, closedChannel()
+		perr = errors.New("truncated")
 	}
-	cmsgs, err := unix.ParseSocketControlMessage(oob[:oobn])
-	if err != nil {
-		log.Warn("flue: parse cmsg", "err", err)
+	if perr != nil {
+		for _, fd := range fds {
+			closeFD(fd)
+		}
 		return nil, closedChannel()
 	}
 	// Expect exactly one listener fd; use the first, close any extras.
 	listenFd := -1
-	for _, cmsg := range cmsgs {
-		rights, rerr := unix.ParseUnixRights(&cmsg)
-		if rerr != nil {
-			log.Warn("flue: parse rights", "err", rerr)
-			continue
-		}
-		for _, r := range rights {
-			if listenFd < 0 {
-				listenFd = r
-			} else {
-				closeFD(r)
-			}
+	for _, r := range fds {
+		if listenFd < 0 {
+			listenFd = r
+		} else {
+			closeFD(r)
 		}
 	}
 	if listenFd < 0 {
@@ -943,6 +955,29 @@ func (s *clientSet) closeAll() {
 		closeQuiet(c)
 	}
 	s.mu.Unlock()
+}
+
+// receivedFDs extracts every SCM_RIGHTS fd from a control-message buffer.
+// It returns the fds found even when it also returns an error, so the
+// caller can close them rather than leak them.
+func receivedFDs(oob []byte) ([]int, error) {
+	cmsgs, err := unix.ParseSocketControlMessage(oob)
+	if err != nil {
+		return nil, err
+	}
+	var fds []int
+	var firstErr error
+	for i := range cmsgs {
+		rights, rerr := unix.ParseUnixRights(&cmsgs[i])
+		if rerr != nil {
+			if firstErr == nil {
+				firstErr = rerr
+			}
+			continue
+		}
+		fds = append(fds, rights...)
+	}
+	return fds, firstErr
 }
 
 // closedChannel returns an already-closed channel, used as a sentinel

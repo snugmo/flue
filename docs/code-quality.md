@@ -34,8 +34,10 @@ subject that fixed it). Update this file when an item is addressed.
 ## Medium
 
 6. **`receiveListener` leaks received fds on `MSG_CTRUNC`/parse error** —
-   **open**.
-7. **`receiveListener` read has no timeout** — **open**.
+   **fixed** (`receivedFDs` collects them; they are closed on every
+   rejection path).
+7. **`receiveListener` read has no timeout** — **fixed** (30s
+   `handoverTimeout`; `TestReceiveListenerTimeout`).
 8. **Unbounded per-client resources** (no cap, dial or idle timeout) —
    **open**.
 9. **Injected memfd is writable and unsealed** — **open**.
