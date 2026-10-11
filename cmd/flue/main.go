@@ -100,6 +100,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -552,7 +553,6 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preser
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = os.Environ()
 
 	if err := cmd.Start(); err != nil {
 		fatalf("flue: start %s: %v", cmdPath, err)
@@ -606,10 +606,20 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preser
 	}
 	code := 1
 	if ee, ok := err.(*exec.ExitError); ok {
-		code = ee.ExitCode()
+		code = exitStatus(ee)
 	}
 	log.Warn("flue: command exited", "err", err)
 	return code
+}
+
+// exitStatus maps an ExitError to a shell-style exit code: the exit status,
+// or 128+signal when the process was killed by a signal (ExitCode alone
+// reports -1 for that, which os.Exit would turn into 255).
+func exitStatus(ee *exec.ExitError) int {
+	if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		return 128 + int(ws.Signal())
+	}
+	return ee.ExitCode()
 }
 
 // --- allow-key repeatable flag ---

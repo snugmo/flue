@@ -59,6 +59,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -374,7 +375,6 @@ func runChild(args []string, sockPath string, ctrl net.Conn) int {
 		log.Warn("flue-broker: host gone")
 		_ = cmd.Process.Kill()
 		<-childDone
-		<-hostGone // closed by the watcher's defer: it has unwound
 		log.Warn("flue-broker: child killed after host departure")
 		return 1
 	case err := <-childDone:
@@ -393,9 +393,19 @@ func childExitCode(err error) int {
 		return 0
 	}
 	if ee, ok := err.(*exec.ExitError); ok {
-		return ee.ExitCode()
+		return exitStatus(ee)
 	}
 	return 1
+}
+
+// exitStatus maps an ExitError to a shell-style exit code: the exit status,
+// or 128+signal when the process was killed by a signal (ExitCode alone
+// reports -1 for that, which os.Exit would turn into 255).
+func exitStatus(ee *exec.ExitError) int {
+	if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		return 128 + int(ws.Signal())
+	}
+	return ee.ExitCode()
 }
 
 // withEnv returns a copy of env with key set to val, replacing any existing
@@ -412,11 +422,6 @@ func withEnv(env []string, key, val string) []string {
 	return append(out, prefix+val)
 }
 
-// markCloexecAll sets FD_CLOEXEC on every open descriptor above 2, so that a
-// child started afterwards does not inherit the broker's socket fds. The
-// broker itself keeps using those fds — CLOEXEC only affects the exec'd
-// child. It enumerates open descriptors via /proc/self/fd (the broker is
-// Linux-only).
 // sockFlagSet reports whether the -sock flag was given on the command line.
 func sockFlagSet() bool {
 	set := false
@@ -463,8 +468,8 @@ func writableDir(dir string) bool {
 		return false
 	}
 	name := f.Name()
-	f.Close()
-	os.Remove(name)
+	_ = f.Close()
+	_ = os.Remove(name)
 	return true
 }
 
@@ -478,6 +483,11 @@ func randHex(n int) string {
 	return fmt.Sprintf("%x", b)
 }
 
+// markCloexecAll sets FD_CLOEXEC on every open descriptor above 2, so that a
+// child started afterwards does not inherit the broker's socket fds. The
+// broker itself keeps using those fds — CLOEXEC only affects the exec'd
+// child. It enumerates open descriptors via /proc/self/fd (the broker is
+// Linux-only).
 func markCloexecAll() {
 	ents, err := os.ReadDir("/proc/self/fd")
 	if err != nil {

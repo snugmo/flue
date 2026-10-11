@@ -235,3 +235,12 @@ func TestWaitForHostSIGTERM(t *testing.T) {
 		t.Fatal("waitForHost did not return after SIGTERM")
 	}
 }
+
+// TestRunChildSignalExitCode verifies that a child killed by a signal is
+// reported shell-style as 128+signal rather than -1/255.
+func TestRunChildSignalExitCode(t *testing.T) {
+	_, broker := newControlSocketpair(t)
+	if got := runChild([]string{"sh", "-c", "kill -9 $$"}, t.TempDir()+"/s.sock", broker); got != 137 {
+		t.Fatalf("runChild: got exit code %d, want 137", got)
+	}
+}

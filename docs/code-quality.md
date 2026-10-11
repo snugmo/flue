@@ -54,8 +54,9 @@ subject that fixed it). Update this file when an item is addressed.
 
 ## Low
 
-12. Doc comment for `markCloexecAll` sits above `sockFlagSet` — **open**.
-13. Signal-killed child yields exit 255 instead of 128+signal — **open**.
+12. Doc comment for `markCloexecAll` sits above `sockFlagSet` — **fixed**.
+13. Signal-killed child yields exit 255 instead of 128+signal — **fixed**
+    (`exitStatus`; `TestRunChildSignalExitCode`).
 14. `sendListener` leaks the listener dup on early-error returns —
     **fixed** (dup closed by defer, in the same commit as item 2).
 15. Redundant code: second `<-hostGone`, `_ = n`, dead `dir == ""`,
