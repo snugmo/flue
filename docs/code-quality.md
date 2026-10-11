@@ -63,7 +63,9 @@ subject that fixed it). Update this file when an item is addressed.
     `cmd.Env = os.Environ()` — **fixed**. (`keyFingerprintFromBlob` stays:
     it works on a raw blob without parsing a key.)
 16. `extract-broker` does not `fsync` before rename — **fixed**.
-17. `dialAgent` reads the global `sockPath` — **open**.
+17. `dialAgent` reads the global `sockPath` — **fixed** (the path travels
+    on `agentFilter.sock`; the global remains only as the PreRun→Run
+    handoff).
 18. `golangci-lint` findings (unchecked `Close`/`Remove` in
     `writableDir`, `extract.go`, `inject.go`; SA9009 in `embed.go`) —
     **fixed**; `golangci-lint run ./...` reports 0 issues. The broker's

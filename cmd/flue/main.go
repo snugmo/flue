@@ -578,6 +578,7 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preser
 	filter := &agentFilter{
 		upstream: nil, // set per-client in handleClient
 		allow:    allow,
+		sock:     sockPath,
 	}
 
 	log.Info("flue: agent", "sock", sockPath, "filter", allowKeys.describe(), "exec", append([]string{cmdPath}, cmdArgs...))
@@ -665,6 +666,7 @@ func (a *allowKeyFlag) describe() string {
 type agentFilter struct {
 	upstream agent.ExtendedAgent
 	allow    map[string]struct{} // empty = allow all
+	sock     string              // host agent socket to dial per client
 }
 
 // isAllowed checks whether a key's fingerprint is in the allowlist.
@@ -1019,7 +1021,7 @@ func handleClient(client net.Conn, filter *agentFilter) {
 	client = &idleConn{Conn: client, timeout: idleTimeout}
 
 	// Dial a fresh upstream agent connection for this client.
-	upstream, err := dialAgent()
+	upstream, err := dialAgent(filter.sock)
 	if err != nil {
 		log.Warn("flue: dial upstream", "err", err)
 		return
@@ -1030,6 +1032,7 @@ func handleClient(client net.Conn, filter *agentFilter) {
 	clientFilter := &agentFilter{
 		upstream: agent.NewClient(upstream),
 		allow:    filter.allow,
+		sock:     filter.sock,
 	}
 
 	// ServeAgent returns when the client connection ends; I/O errors there
@@ -1055,9 +1058,8 @@ func (c *idleConn) Write(p []byte) (int, error) {
 	return c.Conn.Write(p)
 }
 
-// dialAgent connects to the host's real SSH agent at the resolved socket
-// path (the root PersistentPreRun sets sockPath from --sock, or
-// $SSH_AUTH_SOCK when the flag is empty).
-func dialAgent() (net.Conn, error) {
-	return net.DialTimeout("unix", sockPath, dialTimeout)
+// dialAgent connects to the host's real SSH agent at sock, the path the
+// root PersistentPreRun resolved from --sock or $SSH_AUTH_SOCK.
+func dialAgent(sock string) (net.Conn, error) {
+	return net.DialTimeout("unix", sock, dialTimeout)
 }
