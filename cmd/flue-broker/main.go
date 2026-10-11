@@ -181,19 +181,44 @@ func main() {
 // (EOF / reset) and returns 0 for a clean shutdown. This is the standalone
 // (no-argument) mode.
 func waitForHost(ctrl net.Conn) int {
-	buf := make([]byte, 64)
-	for {
-		_, err := ctrl.Read(buf)
-		if err != nil {
+	<-watchHostGone(ctrl, nil)
+	log.Info("flue-broker: host gone, shutting down")
+	return 0
+}
+
+// watchHostGone starts a goroutine that reads the control channel and
+// closes the returned channel when the peer is gone (EOF / reset), i.e.
+// the host has departed. The channel is closed by the goroutine's deferred
+// cleanup, so receiving on it also serves as a wait for the goroutine to
+// finish. If *shuttingDown is set before a read fails, the failure is our
+// own orderly close and the watcher exits quietly; any other unexpected
+// read error is logged. The host-gone event itself is not logged here:
+// the two callers treat it differently (standalone: clean shutdown;
+// wrapper: the child must be killed).
+func watchHostGone(ctrl net.Conn, shuttingDown *atomic.Bool) <-chan struct{} {
+	gone := make(chan struct{})
+	go func() {
+		defer close(gone)
+		buf := make([]byte, 64)
+		for {
+			_, err := ctrl.Read(buf)
+			if err == nil {
+				// A message arrived on the host->broker direction (should
+				// not in the current design); drain it so the buffer does
+				// not fill.
+				continue
+			}
+			if shuttingDown != nil && shuttingDown.Load() {
+				// We closed the channel during an orderly shutdown.
+				return
+			}
 			if err != io.EOF && err != unix.ECONNRESET {
 				log.Warn("flue-broker: control read", "err", err)
 			}
-			log.Info("flue-broker: host gone, shutting down")
-			return 0
+			return
 		}
-		// A message arrived on the host->broker direction (should not in the
-		// current design); drain it so the buffer does not fill.
-	}
+	}()
+	return gone
 }
 
 // runChild starts args[0] (plus args[1:]) as a child process inside the
@@ -228,32 +253,12 @@ func runChild(args []string, sockPath string, ctrl net.Conn) int {
 		fatalf("flue-broker: start %s: %v", cmdPath, err)
 	}
 
-	// Watch the control channel for the host going away. A reader goroutine
-	// closes hostGone on EOF/reset. shuttingDown is set when we close the
-	// control channel ourselves (child exited) so the reader stops quietly
-	// instead of logging a spurious "host gone".
-	hostGone := make(chan struct{})
-	readerDone := make(chan struct{})
+	// Watch the control channel for the host going away. The watcher closes
+	// hostGone when the peer is gone. shuttingDown is set when we close the
+	// control channel ourselves (child exited) so the watcher exits quietly
+	// instead of treating it as a host departure.
 	var shuttingDown atomic.Bool
-	go func() {
-		defer close(readerDone)
-		buf := make([]byte, 64)
-		for {
-			_, err := ctrl.Read(buf)
-			if err != nil {
-				if shuttingDown.Load() {
-					// We closed the channel during an orderly shutdown.
-					return
-				}
-				if err != io.EOF && err != unix.ECONNRESET {
-					log.Warn("flue-broker: control read", "err", err)
-				}
-				log.Warn("flue-broker: host gone")
-				close(hostGone)
-				return
-			}
-		}
-	}()
+	hostGone := watchHostGone(ctrl, &shuttingDown)
 
 	childDone := make(chan error, 1)
 	go func() { childDone <- cmd.Wait() }()
@@ -262,16 +267,17 @@ func runChild(args []string, sockPath string, ctrl net.Conn) int {
 	case <-hostGone:
 		// The host went away, so the agent socket is no longer served. Kill
 		// the child and exit non-zero.
+		log.Warn("flue-broker: host gone")
 		_ = cmd.Process.Kill()
 		<-childDone
-		<-readerDone // reader already exited after closing hostGone
+		<-hostGone // closed by the watcher's defer: it has unwound
 		log.Warn("flue-broker: child killed after host departure")
 		return 1
 	case err := <-childDone:
 		code := childExitCode(err)
 		shuttingDown.Store(true)
-		_ = ctrl.Close() // unblock the control reader
-		<-readerDone
+		_ = ctrl.Close() // unblock the control-channel watcher
+		<-hostGone
 		log.Debug("flue-broker: child exited", "code", code)
 		return code
 	}
