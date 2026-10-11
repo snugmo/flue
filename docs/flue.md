@@ -6,7 +6,7 @@ agent needs when changing the code.
 
 ## Modes
 
-flue is a cobra CLI with two subcommands. The global flags (`--sock`,
+flue is a cobra CLI with three subcommands. The global flags (`--sock`,
 `--allow-key`, `--log-level`) are persistent on the root and go before the
 subcommand; a subcommand's arguments follow the subcommand name, and a `--`
 separates them from the target command so the target's own flags pass
@@ -25,11 +25,17 @@ positionals — which is why the `--` is needed for commands with flags).
   - The command defaults to `defaultEnterCmd` (`/bin/sh`).
   - A tty is allocated only when stdin is a tty (`stdinIsTTY`, via the
     TCGETS ioctl — x/sys v0.49.0 has no `unix.IsTerminal`).
+- **extract-broker** — `flue extract-broker <filename>`: writes the
+  embedded `flue-broker` (see Embedded broker below) to `<filename>`,
+  mode 0755, byte-identical to the built broker. It takes no flags.
 
-Both subcommands share the socketpair machinery in `runChildWithAgent`,
-which returns the child's exit code. The root `PersistentPreRun` parses the
-log level and resolves the agent socket path once, for whichever subcommand
-runs; a bare `flue` (no subcommand) is a usage error.
+The two agent subcommands share the socketpair machinery in
+`runChildWithAgent`, which returns the child's exit code. The root
+`PersistentPreRun` parses the log level for every subcommand, but
+resolves the agent socket path only for the ones annotated with
+`needsAgentAnnotation` (`exec`, `enter`) — so `extract-broker` runs
+without `SSH_AUTH_SOCK` being set. A bare `flue` (no subcommand) is a
+usage error.
 
 ## Control channel
 
@@ -67,11 +73,37 @@ listener.
   - `Extension`: only `session-bind@openssh.com` is forwarded.
 - Per-request agent trace is emitted at `debug` (`--log-level debug`).
 
+## Embedded broker
+
+- `cmd/flue/embed.go` declares `//go:embed flue-broker.bin`: the complete
+  `flue-broker` binary built when flue was built. go:embed stores the
+  file's bytes verbatim, so the embedded copy is 100% identical to the
+  build source, and `flue extract-broker` (below) is how that file comes
+  back out. A later step uses this to inject the broker into a container
+  without a writable filesystem.
+- **Build order**: the embed file must exist before flue is compiled —
+  build `flue-broker` first, to `cmd/flue/flue-broker.bin` (the AGENTS.md
+  Build/Test commands, `build.sh`, and the Containerfile all do this).
+  If the file is missing, compiling `cmd/flue` fails with "no matching
+  files found": a deliberate hard failure, so a flue without its broker
+  is never built silently.
+- **`extract-broker`** (`cmd/flue/extract.go`): checks the embedded blob's
+  ELF magic first (a non-broker embed source fails at extraction time, not
+  in a container later), then writes atomically — a temp file in the
+  target directory, `chmod 0755`, rename — so the target is never left
+  half-written. It refuses a directory as target.
+- **Architecture**: the embedded broker is built for the same
+  architecture as this flue binary (one source tree, one build). The
+  Containerfile builds the broker to the embed path and copies the same
+  file to `/usr/local/bin/flue-broker`, so a flue from the image extracts
+  a broker identical to the image's own, for the image's architecture.
+
 ## Dependencies
 
 Runtime: `golang.org/x/sys` (unix syscalls) + `golang.org/x/crypto` (ssh
 agent protocol) + `github.com/spf13/cobra` (CLI: flags, subcommands,
-help/completion). Test-only: `go.uber.org/goleak` (goroutine leak
+help/completion) + stdlib `go:embed` (the embedded broker — no
+dependency). Test-only: `go.uber.org/goleak` (goroutine leak
 detection) + `github.com/google/go-cmp` (readable test diffs).
 
 Logging is `log/slog` (stdlib) to stderr, set by `--log-level` (parsed in

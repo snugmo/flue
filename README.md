@@ -16,7 +16,9 @@ Two small Go binaries:
   fd, `accept()`s each client connection itself, and proxies it to the
   real `$SSH_AUTH_SOCK` using
   `golang.org/x/crypto/ssh/agent` with a filtering wrapper. It can run
-  that `podman exec` for you: `flue enter <container> [command…]`.
+  that `podman exec` for you: `flue enter <container> [command…]`. It
+  also **embeds** the `flue-broker` built at the same time (`go:embed`),
+  which `flue extract-broker <filename>` writes out byte-identical.
 
 Built from source at `cmd/flue-broker/` and `cmd/flue/` and installed as
 `/usr/local/bin/flue-broker` and `/usr/local/bin/flue` (fully static
@@ -35,6 +37,14 @@ binaries, no runtime deps).
 ./build.sh push <registry>
 ```
 
+Build order: `flue-broker` is built first, to the `go:embed` path
+`cmd/flue/flue-broker.bin`, because `flue` embeds that binary (compiling
+`flue` fails if the file is missing — a deliberate hard failure).
+`build.sh` then builds `flue` and copies the same broker file to the repo
+root; the Containerfile copies it to the image's
+`/usr/local/bin/flue-broker`, so a `flue` from the image embeds a broker
+identical to the image's own.
+
 ### Environment Variables
 
 | Variable         | Default                  | Description          |
@@ -52,7 +62,8 @@ binaries, no runtime deps).
    (`SSH_AUTH_SOCK` is set, `ssh-add -l` lists keys).
 2. The container is running.
 3. The container's image includes the `flue-broker` binary (use this
-   image, or build and install the binary into your own image).
+   image, or build and install the binary into your own image, or
+   extract a copy from `flue` with `flue extract-broker` — see below).
 
 ### With `flue enter` (recommended)
 
@@ -127,6 +138,22 @@ Any command works, not just a shell — e.g. `flue-broker git ls-remote
 git@github.com:you/repo.git`. `-e SSH_AUTH_SOCK=…` is not needed: the broker
 sets it for the child. (The older `sh -c 'flue-broker & exec bash'` form
 still works, but wrapper mode replaces it.)
+
+### Getting a broker into a container without a flue image
+
+`flue` embeds the `flue-broker` binary built at the same time
+(`go:embed`), and `extract-broker` writes it out again — byte-identical
+to that built `flue-broker`, mode 0755:
+
+```sh
+flue extract-broker /tmp/flue-broker
+podman cp /tmp/flue-broker <container>:/usr/local/bin/flue-broker
+```
+
+The embedded broker was built for the same architecture as your `flue`
+binary (a `flue` from the flue image extracts a broker identical to the
+image's own `/usr/local/bin/flue-broker`). Unlike `exec` and `enter`,
+`extract-broker` needs no agent socket and takes no flags.
 
 ### Flags
 
