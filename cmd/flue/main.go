@@ -49,6 +49,13 @@
 // with no command defaulting to /bin/sh, and a tty allocated when stdin
 // is a tty. flue exits when the container command does, returning its
 // exit code. The in-container socket path is fixed at /tmp/flue.sock.
+//
+// flue also embeds a complete copy of the flue-broker built at the same
+// time: go:embed reads it from cmd/flue/flue-broker.bin, which the build
+// must produce by building flue-broker *first* (see embed.go). If that
+// file is missing, compiling flue fails — a flue without its broker is
+// never built silently. The embedded bytes are the built broker's,
+// untransformed, so they are 100% identical to it.
 package main
 
 import (

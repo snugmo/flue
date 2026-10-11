@@ -26,8 +26,13 @@ WORKDIR /build/flue
 COPY go.mod go.sum ./
 COPY cmd/ cmd/
 
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/local/bin/flue-broker ./cmd/flue-broker \
- && CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/local/bin/flue ./cmd/flue
+# flue embeds the built broker (go:embed; see cmd/flue/embed.go), so the
+# broker is built first, to the embed path. The *same file* is then copied
+# to /usr/local/bin/flue-broker, so the image's flue extract-broker output
+# is byte-identical to the image's own flue-broker.
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/flue/cmd/flue/flue-broker.bin ./cmd/flue-broker \
+ && CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/local/bin/flue ./cmd/flue \
+ && cp /build/flue/cmd/flue/flue-broker.bin /usr/local/bin/flue-broker
 
 FROM ${BASE_IMAGE}
 

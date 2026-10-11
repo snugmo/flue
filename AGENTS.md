@@ -24,8 +24,8 @@ README.md           usage, flags, how-it-works, security
 
 | Task           | Command |
 | -------------- | ------- |
-| Build binaries | `go build -o flue-broker ./cmd/flue-broker && go build -o flue ./cmd/flue` |
-| Test           | `go test ./...` |
+| Build binaries | `go build -o cmd/flue/flue-broker.bin ./cmd/flue-broker && go build -o flue ./cmd/flue && cp cmd/flue/flue-broker.bin flue-broker` |
+| Test           | `go build -o cmd/flue/flue-broker.bin ./cmd/flue-broker && go test ./...` |
 | Build image    | `./build.sh` · `./build.sh push [registry]` · overrides `DEV_VERSION`, `DEV_IMAGE_NAME`, `DEV_REGISTRY`, `DEV_BASE_IMAGE` |
 | Forward agent  | `flue exec -- podman exec -e SSH_AUTH_SOCK=/tmp/flue.sock --preserve-fds 1 <container> flue-broker` |
 | Enter a shell  | `flue enter <container> [command…]` (default `/bin/sh`; `-ti` when stdin is a tty) |
@@ -47,6 +47,13 @@ README.md           usage, flags, how-it-works, security
   binary.
 - **Do not "fix" the deliberate duplication** into a shared package:
   [docs/duplication-policy.md](docs/duplication-policy.md).
+- **`cmd/flue` embeds the built broker** (`cmd/flue/flue-broker.bin`,
+  go:embed — see `cmd/flue/embed.go`): the broker must be built first (the
+  Build/Test commands above do this). If the embed file is missing,
+  compiling `cmd/flue` fails with "no matching files found" — a deliberate
+  hard failure. The embedded bytes are stored verbatim, so
+  `flue extract-broker` produces a broker 100% identical to the build
+  source.
 - Component details are on-demand: [docs/flue.md](docs/flue.md) (host),
   [docs/flue-broker.md](docs/flue-broker.md) (container),
   [docs/build.md](docs/build.md) (image).

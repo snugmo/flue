@@ -12,6 +12,10 @@
 /flue
 /flue-broker
 
+# Built broker binary embedded in flue (go:embed source; built before
+# compiling cmd/flue — see cmd/flue/embed.go)
+/cmd/flue/flue-broker.bin
+
 # Test binary, built with `go test -c`
 *.test
 
