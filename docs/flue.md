@@ -16,11 +16,13 @@ positionals — which is why the `--` is needed for commands with flags).
 - **exec** — `flue exec [--] <command...>`: run any command that receives
   the control socketpair (typically `podman exec --preserve-fds 1 ...
   flue-broker`, or a wrapper that preserves fd 3).
-- **enter** — `flue enter <container> [--] [command...]`: builds and runs
+- **enter** — `flue enter [container] [--] [command...]`: builds and runs
   `podman exec [-ti] --preserve-fds <n> <container> <broker>
   [command...]`, where `<broker>` is `/proc/self/fd/4` (injected memfd,
   `--preserve-fds 2`) or the image's `flue-broker` (`--preserve-fds 1`).
-  - The command defaults to `defaultEnterCmd` (`/bin/sh`).
+  - The container defaults to `defaultEnterContainer` (`snugmo`) and the
+    command to `defaultEnterCmd` (`/bin/sh`), so a bare `flue enter` runs
+    a shell in snugmo.
   - A tty is allocated only when stdin is a tty (`stdinIsTTY`, via the
     TCGETS ioctl — x/sys v0.49.0 has no `unix.IsTerminal`).
   - **Memfd injection is the default** (`--inject-broker` defaults on):

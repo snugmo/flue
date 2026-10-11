@@ -22,7 +22,7 @@ Two small Go binaries:
 The usual flow, in one line:
 
 ```sh
-flue enter <container>
+flue enter <container>     # or just flue enter — snugmo is the default
 ```
 
 …and you are in a shell where `ssh-add -l`, `git push`, and friends use the
@@ -56,10 +56,11 @@ see [Flags](#flags) — the image must provide `flue-broker`; see
 
 `flue enter` runs the `podman exec` for you: it preserves the control
 socket as fd 3, hands your command to `flue-broker` in wrapper mode, runs
-`/bin/sh` when you give no command, and allocates a tty when your stdin is
-a tty:
+`/bin/sh` when you give no command, targets the `snugmo` container when
+you give none, and allocates a tty when your stdin is a tty:
 
 ```sh
+flue enter                                  # /bin/sh in snugmo
 flue enter <container>                      # /bin/sh inside the container
 flue enter <container> bash                 # bash
 flue enter <container> git ls-remote git@github.com:you/repo.git
@@ -98,10 +99,11 @@ subcommand: `flue --allow-key SHA256:… enter <container>`. (The subcommand
 | `--allow-key` | (none = all keys)          | Repeatable. Only keys with this SHA256 fingerprint are listed and can sign                                              |
 | `--log-level` | `$FLUE_LOG_LEVEL`, else `info` | Log level: `debug`, `info`, `warn`, or `error`. `debug` logs every agent request (operation, fingerprint, allowed/denied). When the flag is unset, `$FLUE_LOG_LEVEL` is read; a set flag wins |
 
-**enter** (enter-scoped flag):
+**enter** (enter-scoped flag and arguments):
 
-| Flag              | Default | Description                                                                                                                                                                                                                                             |
-| ----------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Flag              | Default                  | Description                                                                                                                                                                                                                                             |
+| ----------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| *(arguments)*     | `snugmo`, `/bin/sh`      | Positional: the container to exec into (default `snugmo`), then the command to run inside it (default `/bin/sh`)                                                                                              |
 | `--inject-broker` | `true`  | Run the broker from an in-memory `memfd` (exec'd via `/proc/self/fd/4`) instead of the image's `flue-broker`; no writable filesystem needed. Disable with `--no-inject-broker`, `--inject-broker=false`, or `FLUE_INJECT_BROKER=0` (a set flag wins over the variable) |
 
 **flue-broker** (container-side):
