@@ -2,9 +2,11 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +17,44 @@ import (
 
 func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
+}
+
+// TestMarkCloexecAll verifies the invariant that runChild relies on: after
+// markCloexecAll, no fd above 2 survives into a wrapped child, so the control
+// socketpair and listener are never leaked to processes like bash.
+// TestSetProcName verifies that setProcName changes the comm name of the
+// calling thread — what `ps` reports for a process, so a broker exec'd
+// from the injected memfd (/proc/self/fd/4) still reads as flue-broker.
+// It checks /proc/self/task/<tid>/comm of the calling thread, because the
+// goroutine may run on a non-main OS thread (whose comm /proc/self/comm
+// would not show). PR_SET_NAME is Linux-only, so the test skips
+// otherwise.
+func TestSetProcName(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("PR_SET_NAME is Linux-only")
+	}
+	runtime.LockOSThread()
+	tid := unix.Gettid()
+	comm := func() string {
+		b, err := os.ReadFile(fmt.Sprintf("/proc/self/task/%d/comm", tid))
+		if err != nil {
+			t.Fatalf("read /proc/self/task/%d/comm: %v", tid, err)
+		}
+		return strings.TrimSpace(string(b))
+	}
+
+	setProcName("flue-broker")
+	if got := comm(); got != "flue-broker" {
+		t.Fatalf("comm = %q, want flue-broker", got)
+	}
+
+	// Names longer than 15 characters are ignored by the guard: prctl
+	// would truncate them (dropping the null terminator and leaving a
+	// mangled name).
+	setProcName("a-very-long-name-more-than-15")
+	if got := comm(); got != "flue-broker" {
+		t.Fatalf("comm = %q, want flue-broker (overlong name must be ignored)", got)
+	}
 }
 
 // TestMarkCloexecAll verifies the invariant that runChild relies on: after

@@ -22,6 +22,9 @@ connections. The file header in `main.go` is the authoritative overview.
 - Listens on `-sock`, removing a stale socket first. When `-sock` is
   unset (or set to the empty value) a unique per-session path is
   generated instead, so pin `-sock` for standalone mode.
+- Names itself `flue-broker` (`PR_SET_NAME` at startup, so `ps` and
+  `/proc/<pid>/comm` show it that way) — this is what makes an injected
+  broker, exec'd from the memfd as `/proc/self/fd/4`, readable in `ps`.
 - **Socket path**: when `-sock` is unset (or empty), the broker
   generates `flue-<8hex>.sock` under the best available runtime
   directory (`$XDG_RUNTIME_DIR` if set, else `/run/user/<uid>`, else

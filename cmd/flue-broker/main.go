@@ -60,6 +60,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"syscall"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -154,9 +155,29 @@ func main() {
 	os.Exit(run())
 }
 
+// setProcName sets the process's comm name — what `ps` shows and what
+// /proc/<pid>/comm contains — to name. The name must be at most 15
+// characters, so longer ones are ignored (prctl would truncate them,
+// dropping the null terminator and leaving a mangled name). The name is
+// copied to a NUL-terminated buffer first: Go string data is not
+// NUL-terminated, and passing it raw lets prctl read past the name into
+// whatever bytes follow it in the binary. Failures (non-Linux or an old
+// kernel) are silently ignored: this is cosmetic. It matters most when
+// the broker runs from the injected memfd, where the on-disk name would
+// otherwise be /proc/self/fd/4.
+func setProcName(name string) {
+	if len(name) > 15 {
+		return
+	}
+	buf := make([]byte, len(name)+1)
+	copy(buf, name)
+	_ = unix.Prctl(unix.PR_SET_NAME, uintptr(unsafe.Pointer(&buf[0])), 0, 0, 0)
+}
+
 // run is the broker proper; it returns the process exit code.
 func run() int {
 	flag.Parse()
+	setProcName("flue-broker")
 
 	if lvl, err := parseLevel(*logLevel); err != nil {
 		return failf("flue-broker: %v", err)
