@@ -17,7 +17,9 @@ subject that fixed it). Update this file when an item is addressed.
    `heldControl` plus temporary `os.NewFile(fdNum)` objects passed to
    `net.FileConn` (which dups). The temporaries are never closed, so their
    GC finalizers close fd 3 behind `heldControl`.
-3. **Host-side fds double-closed / never closed** — **open**.
+3. **Host-side fds double-closed / never closed** — **fixed** (end B is
+   closed once via its `os.File`; the `os.File`s given to `FileConn` /
+   `FileListener` are closed immediately).
    `cmd/flue/main.go`: `childFd` is closed by both `unix.Close(b)` and a
    deferred `closeFile`; the `os.File`s given to `net.FileConn` (control
    end `a`) and `net.FileListener` (received listener) are never closed, so

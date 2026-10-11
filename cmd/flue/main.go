@@ -543,13 +543,18 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preser
 		fatalf("flue: start %s: %v", cmdPath, err)
 	}
 
-	// Close the host copy of end B; the child now owns it.
-	if err := unix.Close(b); err != nil {
-		log.Debug("flue: close control end B", "err", err)
-	}
+	// Close the host copy of end B; the child now owns it. This goes
+	// through childFd (which owns the fd) rather than a raw unix.Close, so
+	// the deferred close above is a harmless no-op instead of a second
+	// close of a possibly reused fd number.
+	closeFile(childFd)
 
-	// The host's control socket is end A.
-	ctrl, err := net.FileConn(os.NewFile(uintptr(a), "flue-control-host"))
+	// The host's control socket is end A. net.FileConn dups the fd, so the
+	// os.File is closed right away; left open it would keep the original
+	// fd (and thus the socket's peer state) alive until a GC finalizer.
+	af := os.NewFile(uintptr(a), "flue-control-host")
+	ctrl, err := net.FileConn(af)
+	closeFile(af)
 	if err != nil {
 		fatalf("flue: control fd: %v", err)
 	}
@@ -839,10 +844,14 @@ func receiveListener(ctrl net.Conn, filter *agentFilter, wg *sync.WaitGroup) (ne
 	}
 
 	// Wrap the received listener fd in a *net.UnixListener so Accept works.
-	listener, err := net.FileListener(os.NewFile(uintptr(listenFd), "flue-listener"))
+	// FileListener dups the fd, so close the os.File right away: otherwise
+	// the original stays open and the socket keeps listening even after the
+	// caller closes the returned listener.
+	lf := os.NewFile(uintptr(listenFd), "flue-listener")
+	listener, err := net.FileListener(lf)
+	closeFile(lf)
 	if err != nil {
 		log.Warn("flue: listener fd", "err", err)
-		closeFD(listenFd)
 		return nil, closedChannel()
 	}
 	log.Debug("flue: accepting on handed-over listener")
