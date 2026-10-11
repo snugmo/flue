@@ -7,20 +7,20 @@ import (
 )
 
 // TestEnterTarget verifies how `flue enter` arguments are split into the
-// container name and the in-container command, including the /bin/sh
-// default when no command is given.
+// container name and the in-container command, including the snugmo
+// container and /bin/sh defaults when no arguments are given.
 func TestEnterTarget(t *testing.T) {
 	tests := []struct {
 		name          string
 		args          []string
 		wantContainer string
 		wantCmd       []string
-		wantErr       bool
 	}{
 		{
-			name:    "no args is an error",
-			args:    nil,
-			wantErr: true,
+			name:          "no args defaults to snugmo and /bin/sh",
+			args:          nil,
+			wantContainer: "snugmo",
+			wantCmd:       []string{"/bin/sh"},
 		},
 		{
 			name:          "container only defaults to /bin/sh",
@@ -37,16 +37,7 @@ func TestEnterTarget(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			container, cmd, err := enterTarget(tt.args)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("enterTarget(%v) succeeded, want error", tt.args)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("enterTarget(%v): %v", tt.args, err)
-			}
+			container, cmd := enterTarget(tt.args)
 			if container != tt.wantContainer {
 				t.Errorf("container = %q, want %q", container, tt.wantContainer)
 			}

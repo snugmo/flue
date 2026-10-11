@@ -18,7 +18,7 @@ func TestCobraSubcommands(t *testing.T) {
 	}
 	for name, wantUse := range map[string]string{
 		"exec":           "exec [command [args...]]",
-		"enter":          "enter <container> [command [args...]]",
+		"enter":          "enter [container] [command [args...]]",
 		"extract-broker": "extract-broker <filename>",
 	} {
 		c, ok := byName[name]

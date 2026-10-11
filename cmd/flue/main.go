@@ -53,11 +53,12 @@
 // enter — the primary flow. It runs the podman exec for you, in wrapper
 // mode (so the broker sets SSH_AUTH_SOCK for the wrapped command):
 //
-//	flue enter <container> [command [args…]]
+//	flue enter [container] [command [args…]]
 //
-// with no command defaulting to /bin/sh, and a tty allocated when stdin
-// is a tty. The broker is not taken from the image by default: it is
-// injected in memory (a memfd the container execs via /proc/self/fd/4),
+// with no container defaulting to snugmo, no command defaulting to
+// /bin/sh, and a tty allocated when stdin is a tty. The broker is not
+// taken from the image by default: it is injected in memory (a memfd the
+// container execs via /proc/self/fd/4),
 // so no writable filesystem or image-side flue-broker is needed;
 // --no-inject-broker (or --inject-broker=false) uses the image's
 // flue-broker instead. flue exits when the container command does,
@@ -125,9 +126,13 @@ var (
 	enterInjectBroker bool
 )
 
-// defaultEnterCmd is the command run inside the container when `flue
-// enter` is given no explicit command.
-const defaultEnterCmd = "/bin/sh"
+// defaultEnterContainer is the container `flue enter` targets when none is
+// given, and defaultEnterCmd the command run inside it when no explicit
+// command is given.
+const (
+	defaultEnterContainer = "snugmo"
+	defaultEnterCmd       = "/bin/sh"
+)
 
 // log is the package-level slog logger. The default is rebuilt by the root
 // PersistentPreRun from the --log-level flag; the declaration-time default
@@ -190,19 +195,20 @@ flue blocks on the command exiting and returns its exit code.`,
 	},
 }
 
-// enterCmd is sugar for the common case: run a command (default /bin/sh) in
-// the named container, wrapping it with flue-broker so the broker sets
-// SSH_AUTH_SOCK for the child.
+// enterCmd is sugar for the common case: run a command (default /bin/sh)
+// in a container (default snugmo), wrapping it with flue-broker so the
+// broker sets SSH_AUTH_SOCK for the child.
 var enterCmd = &cobra.Command{
-	Use:         "enter <container> [command [args...]]",
-	Short:       "Run a command (default /bin/sh) in a container with the agent",
+	Use:         "enter [container] [command [args...]]",
+	Short:       "Run a command (default /bin/sh) in a container (default snugmo) with the agent",
 	Annotations: map[string]string{needsAgentAnnotation: "1"},
 	Long: `enter is the primary way to use flue: it runs a podman exec against
-the named container with flue-broker wrapping the given command (default
-/bin/sh), allocating a tty when stdin is a tty:
+a container (default snugmo) with flue-broker wrapping the given command
+(default /bin/sh), allocating a tty when stdin is a tty:
 
-    flue enter <container>            # /bin/sh inside the container
-    flue enter <container> bash       # bash
+    flue enter                      # /bin/sh in the snugmo container
+    flue enter <container>          # /bin/sh in the container
+    flue enter <container> bash     # bash
     flue enter <container> -- bash -l # command with its own flags
 
 The broker is not taken from the image by default: flue writes the embedded
@@ -215,7 +221,7 @@ either way, and the broker exports its (unique per-session) socket path to
 the wrapped command as SSH_AUTH_SOCK, so ssh, ssh-add, and git just work.
 
 When the command exits, enter returns its exit code.`,
-	Args: cobra.MinimumNArgs(1),
+	Args: cobra.ArbitraryArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		// Resolve the effective --inject-broker: an explicit flag wins, else
 		// $FLUE_INJECT_BROKER, else the default (on).
@@ -374,16 +380,13 @@ func main() {
 }
 
 // runEnter is the `flue enter` subcommand: it runs `podman exec` against
-// the named container with flue-broker wrapping the given command
+// a container (default snugmo) with flue-broker wrapping the given command
 // (default /bin/sh), allocating a tty when stdin is a tty. The control
 // socketpair is preserved through podman exec as fd 3 (--preserve-fds 1,
 // or 2 when the broker memfd is also passed) and the agent is proxied
 // exactly as in passthrough mode.
 func runEnter(args []string, sockPath string) int {
-	container, cmd, err := enterTarget(args)
-	if err != nil {
-		fatalf("flue: enter: %v\n  usage: flue enter <container> [command [args…]]", err)
-	}
+	container, cmd := enterTarget(args)
 
 	tty := stdinIsTTY()
 
@@ -411,16 +414,16 @@ func runEnter(args []string, sockPath string) int {
 }
 
 // enterTarget splits the `flue enter` arguments into the container name
-// and the command to run inside it (default /bin/sh).
-func enterTarget(args []string) (container string, cmd []string, err error) {
+// (default snugmo) and the command to run inside it (default /bin/sh).
+func enterTarget(args []string) (container string, cmd []string) {
 	if len(args) == 0 {
-		return "", nil, errors.New("missing container name")
+		return defaultEnterContainer, []string{defaultEnterCmd}
 	}
 	container = args[0]
 	if len(args) > 1 {
-		return container, args[1:], nil
+		return container, args[1:]
 	}
-	return container, []string{defaultEnterCmd}, nil
+	return container, []string{defaultEnterCmd}
 }
 
 // enterExecArgs builds the argument list for the `podman exec` that runs
