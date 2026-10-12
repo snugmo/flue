@@ -522,7 +522,7 @@ func runEnter(args []string, sockPath string) int {
 		fatalf("flue: enter: find podman: %v", err)
 	}
 
-	return runChildWithAgent(podman, execArgs, sockPath, preserved, checkMode)
+	return runChildWithAgent(podman, execArgs, sockPath, preserved, checkMode, enterSessionCheck != "")
 }
 
 // parseSessionCheckMode maps a --session-check value to a
@@ -615,7 +615,7 @@ func runPassthrough(args []string, sockPath string) int {
 		}
 	}
 
-	return runChildWithAgent(cmdPath, args[1:], sockPath, nil, sessionCheckOff)
+	return runChildWithAgent(cmdPath, args[1:], sockPath, nil, sessionCheckOff, false)
 }
 
 // runChildWithAgent starts a child (program plus args), hands one end of
@@ -625,8 +625,11 @@ func runPassthrough(args []string, sockPath string) int {
 // the child exits and returns the child's exit code (0 on success). The
 // lifetime model — the control connection stays open until the broker is
 // gone, and the block is on the child, not the channel — is in the file
-// header.
-func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preserved []*os.File, checkMode sessionCheckMode) int {
+// header. checkExplicit marks a mode the user selected with
+// --session-check (rather than one chosen from how the broker was
+// started): the handover log then attributes the check's state to the
+// explicit choice, not to the auto rule.
+func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preserved []*os.File, checkMode sessionCheckMode, checkExplicit bool) int {
 	// The container takes end B (fd 3); the host keeps end A.
 	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
@@ -680,10 +683,11 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preser
 	}
 
 	pol := &policy{
-		allow:            allowKeys.toSet(),
-		sock:             sockPath,
-		sessionCheckMode: checkMode,
-		refusals:         &refusalLimiter{},
+		allow:                allowKeys.toSet(),
+		sock:                 sockPath,
+		sessionCheckMode:     checkMode,
+		sessionCheckExplicit: checkExplicit,
+		refusals:             &refusalLimiter{},
 	}
 
 	log.Info("flue: agent", "sock", sockPath, "filter", allowKeys.describe(), "exec", append([]string{cmdPath}, cmdArgs...))
@@ -790,14 +794,15 @@ func (a *allowKeyFlag) describe() string {
 // runChildWithAgent and shared across all per-client agentFilter values;
 // the broker fields are set once more, by receiveListener.
 type policy struct {
-	allow               map[string]struct{} // empty = allow all
-	sock                string              // host agent socket to dial per client
-	sessionCheckMode    sessionCheckMode    // how the session check is enforced (see its type)
-	brokerPID           int                 // broker's pid in flue's pid ns (0 = unknown)
-	brokerSession       int                 // broker's session id (0 = unknown)
-	sessionPrivate      bool                // broker's session had no other live member at handover
-	sessionPrivateKnown bool                // the privacy scan ran (false = could not be determined)
-	refusals            *refusalLimiter     // rate-limits the refusal warnings (lograte.go)
+	allow                map[string]struct{} // empty = allow all
+	sock                 string              // host agent socket to dial per client
+	sessionCheckMode     sessionCheckMode    // how the session check is enforced (see its type)
+	brokerPID            int                 // broker's pid in flue's pid ns (0 = unknown)
+	brokerSession        int                 // broker's session id (0 = unknown)
+	sessionPrivate       bool                // broker's session had no other live member at handover
+	sessionPrivateKnown  bool                // the privacy scan ran (false = could not be determined)
+	sessionCheckExplicit bool                // the mode came from --session-check, not the auto rule
+	refusals             *refusalLimiter     // rate-limits the refusal warnings (lograte.go)
 }
 
 // agentFilter wraps one upstream ssh agent client (one per client
@@ -1051,7 +1056,11 @@ func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listen
 	// enabled is a session failure: the caller aborts (fail closed).
 	switch {
 	case pol.sessionCheckMode == sessionCheckOff:
-		log.Warn("flue: session check off: the broker was not injected, so it is untrusted code: a modified broker could hand over a listener from any session it controls and make the check a no-op")
+		if pol.sessionCheckExplicit {
+			log.Warn("flue: session check off: explicitly disabled with --session-check=off")
+		} else {
+			log.Warn("flue: session check off: the broker was not injected, so it is untrusted code: a modified broker could hand over a listener from any session it controls and make the check a no-op")
+		}
 	case sessionCheckActive(pol):
 		log.Info("flue: session check on", "session", pol.brokerSession)
 	case pol.sessionCheckMode == sessionCheckRequired:
@@ -1061,7 +1070,7 @@ func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listen
 			closeFD(fd)
 		}
 		return nil, closedChannel(),
-			fmt.Errorf("session check is required (injected broker with a tty) but could not be enabled: %s", sessionCheckOffReason(pol))
+			fmt.Errorf("session check is required but could not be enabled: %s", sessionCheckOffReason(pol))
 	default:
 		log.Info("flue: session check off", "reason", sessionCheckOffReason(pol))
 	}
