@@ -319,6 +319,16 @@ flue enter <container> -- sh -c 'ssh-add -l' & flue enter <container> -- sh -c '
 # 7. (run from a terminal, so the broker is a session leader) a client
 #    that starts its own session is refused
 flue enter <container> -- setsid sh -c 'ssh-add -l 2>&1'  # expect an agent error, not a key list
+
+# 8. The session check is on with and without a tty: the log shows
+#    "session check on" in both cases (the tty run in required mode,
+#    the other in advisory) — verified 2026-10-12 on podman 5.8.7 /
+#    crun 1.28 / Linux 7.2 (the broker's session was private in both).
+#    On a runtime that places execs in the container's init session the
+#    no-tty run logs the reason the check is off instead; on that
+#    runtime `--session-check` is the escape hatch (see Flags).
+flue enter <container> true            # from a terminal
+echo | flue enter <container> true     # no tty
 ```
 
 ---
