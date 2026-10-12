@@ -206,3 +206,64 @@ continues from the items above.
     smaller)** — **accepted as designed**; confirm-instead-of-deny is
     tracked in [snugmo/flue#1](https://github.com/snugmo/flue/issues/1)
     (deferred until the desktop endpoint exists).
+
+## Follow-up review 2026-10-12 (reply to snugmo/flue#2)
+
+The reply to [snugmo/flue#2](https://github.com/snugmo/flue/issues/2)
+confirming the `6aae5fa..7fbf2cb` fixes, with four remaining items and
+three smaller points. Numbering continues from the items above.
+
+37. **`flue exec` used `sessionCheckAdvisory` for an untrusted broker
+    (review item 1, medium)** — **fixed** (`🚫 fix: use
+    sessionCheckOff in the flue exec passthrough`, bafffb5).
+    `runPassthrough` runs the broker unmodified from the image — the
+    same untrusted-broker case as `--no-inject-broker` — but passed
+    `sessionCheckAdvisory`, so flue logged "session check on" when the
+    broker's session happened to be private, protecting against
+    nothing (a modified broker can hand over its listener from any
+    private session it controls). It now passes `sessionCheckOff` and
+    logs the standard warning; the mode docs follow (off = no
+    injection, advisory = injected broker without a tty).
+38. **No escape hatch for the required mode (review item 2,
+    low–medium)** — **fixed** (`⚖️ feat: add --session-check to enter
+    as an escape hatch for the check mode`, 3fe130d; `🗣 fix: give
+    --session-check=off its own warning at handover`, 59cbd37). On a
+    runtime that places execs in the container's init session the
+    broker's session is never private, so a terminal `flue enter`
+    always aborted, and the only workaround, `--no-inject-broker`,
+    also gave up the sealed injected broker. `enter
+    --session-check=required|advisory|off` now overrides the auto
+    choice; an explicit choice is logged at info (a bad value fails
+    fast, before the memfd; `TestParseSessionCheckMode`), and explicit
+    `off` gets its own warning at handover instead of the
+    auto-rule "broker was not injected" one.
+39. **The "too many clients" warning was not rate-limited (review item
+    3, low)** — **fixed** (`📉 fix: rate-limit the "too many clients"
+    warning too`, 8a6752d). The accept-loop cap warning went through
+    the session's `refusalLimiter` like the session-check refusals
+    (only clients that already passed the check can reach the cap, so
+    it was minor, but a container process can still loop against it).
+40. **Confirm the private-session behavior on real runtimes (review
+    item 4, test)** — **verified** (`🧪 docs: add the private-session
+    integration check, verified on podman 5.8.7 / crun 1.28`,
+    f380e4d). `flue enter <container> true` logs "session check on"
+    both from a terminal (pty: required mode, `podman exec -ti`) and
+    piped (advisory, `-i`) — the broker's session was private in both
+    (it was the session leader in each case). Verified 2026-10-12 on
+    podman 5.8.7 / crun 1.28 / Linux 7.2.9-200.fc44; recorded as item
+    8 of the README's manual integration list, with the expected
+    behavior on runtimes whose execs share the init session.
+41. **Smaller points (review smaller)** — **fixed** (`📝 docs: note
+    the pidfd O_CLOEXEC guarantee, the scan race, and fix a header
+    wrap`, 303e16f). The `SO_PEERPIDFD` fd is actually created by the
+    kernel **with** `O_CLOEXEC` (`__pidfd_prepare` reserves the fd and
+    its anon inode with `O_RDWR | O_CLOEXEC`; verified in v6.5 through
+    current master, including the pidfs rewrite) and
+    `peerPidfdLiveness` closes it immediately anyway — now noted, so
+    the desktop-endpoint work keeps that invariant.
+    `sessionIsPrivate` documents its theoretical scan race (a member
+    forking and exiting mid-scan, with pid wraparound placing the
+    child at an already-scanned pid — it needs a second process in
+    the session, which is the very thing the scan excludes). The file
+    header's "place them before the subcommand" no longer breaks
+    oddly.
