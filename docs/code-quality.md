@@ -133,3 +133,76 @@ continues from the items above.
     must share the broker's session (`SO_PEERCRED` on the accepted
     connection, session id from `/proc`); an unknown or different session
     is refused, failing closed.
+
+## Review 2026-10-12 (snugmo/flue#2)
+
+Findings from the code review of `6aae5fa` posted as
+[snugmo/flue#2](https://github.com/snugmo/flue/issues/2), recorded here
+so the review and this file share one tracking location. Numbering
+continues from the items above.
+
+29. **Namespace and `MFD_EXEC` comments were inaccurate (review
+    smaller)** — **fixed** (`📝 docs: fix the pid-namespace and
+    MFD_EXEC comments`, 5b02ae5). The `SCM_CREDENTIALS` / `SO_PEERCRED`
+    comments called the pids "root (host) pid namespace" pids; the
+    kernel translates them to the **reading** process's namespace (and
+    `/proc` shows values in the namespace of its mount) — the same
+    result for a host-side flue, but the old wording would mislead a
+    flue run from inside a container. `MFD_EXEC` is not "a no-op on
+    kernels that predate the sysctl"; it is rejected with `EINVAL`,
+    which is why `memfdCreateWithFallback` exists.
+30. **The "broker is a session leader" gate silently disabled the
+    session check (root cause of the review's items 1–2)** — **fixed**
+    (`🔒 feat: gate the session check on the broker's session being
+    private`, 96db91d). Current runtimes (podman/crun) create a
+    per-exec session led by a short-lived helper that exits before the
+    exec'd process runs, so the broker is a *member*, not the leader,
+    of its session and the old `session id == broker pid` test never
+    fired. It is replaced by a privacy test: at handover, a `/proc`
+    scan verifies the broker is the session's only live member;
+    membership is inherited by `fork` only, so such a session can later
+    hold only the broker and its descendants — with or without a tty.
+31. **Fail closed when the check was expected but can't be enabled
+    (review item 1)** — **fixed** (`🛑 fix: fail closed when the session
+    check cannot be enabled`, d6e0959). `sessionCheckMode` carries the
+    expectation: an injected broker run with a tty (`flue enter` from a
+    terminal) makes the check **required** — if it cannot be enabled
+    (no credentials, unreadable session, session not private), the
+    session is aborted (control channel closed, the broker kills its
+    command, flue exits 1) instead of silently serving without the
+    second gate. The other modes log their state at `info`.
+32. **`--no-inject-broker` lets the check be bypassed (review item
+    2)** — **fixed** (same commit, d6e0959). Without injection the
+    broker is untrusted image code that could hand over a listener
+    from any session it controls, so the check's session reference
+    would not be trustworthy: the mode is **off**, the privacy scan is
+    skipped, and a `warn` states exactly why.
+33. **Refusal warnings can flood the terminal (review item 3)** —
+    **fixed** (`📉 fix: rate-limit refusal warnings; add --log-file`,
+    766126d). `refusalLimiter` (`cmd/flue/lograte.go`) logs the first
+    refusal of a burst in full, summarizes the rest once every 30 s
+    (`flue: client refusals`, `more=N`), and flushes the remainder when
+    the session ends. The new global `--log-file` sends log output to a
+    file (mode `0600`) instead of stderr.
+34. **The `SO_PEERPIDFD` comment was wrong (review item 4)** —
+    **fixed** (`💓 feat: verify client liveness with SO_PEERPIDFD after
+    the /proc read`, f56766e). The comment claimed there is no practical
+    way to use a pidfd; in fact the kernel (6.5+) pins the peer's task
+    at connect time, so after the `/proc` read `peerPidfdLiveness`
+    checks the pidfd (`pidfd_send_signal(pidfd, 0)`: `0`/`EPERM` alive,
+    `ESRCH` gone) and refuses a peer that is gone or unverifiable.
+    Kernels without the option (`ENOPROTOOPT`) keep the best-effort
+    `/proc` read.
+35. **`setsid()` in the broker for non-tty mode (review item 5)** —
+    **investigated: no change needed**. The privacy gate (item 30)
+    already covers the non-tty case: current runtimes give every exec
+    its own session with or without `-t`, so a scripted `flue enter`
+    or standalone session runs with the check on (advisory) without the
+    broker doing anything. A `setsid()` would only matter for runtimes
+    whose exec'd process joins the container's init session, where the
+    check stays advisory — the same exposure as before the session
+    check existed.
+36. **Clients that start their own session are refused (review
+    smaller)** — **accepted as designed**; confirm-instead-of-deny is
+    tracked in [snugmo/flue#1](https://github.com/snugmo/flue/issues/1)
+    (deferred until the desktop endpoint exists).
