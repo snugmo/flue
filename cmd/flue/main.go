@@ -19,11 +19,23 @@
 // command does, so flue returns that command's exit status.
 //
 // The filter implements agent.ExtendedAgent:
-//   - List: forwarded, but only keys matching --allow-key are returned
-//     (all keys if no --allow-key flag is given).
-//   - Sign / SignWithFlags: forwarded only for allowed keys.
+//   - List: forwarded, but only keys allowed by the --allow-key and
+//     --allow-key-type lists are returned (all keys if neither flag is
+//     given).
+//   - Sign / SignWithFlags: forwarded only for keys allowed by both
+//     lists.
 //   - Add, Remove, RemoveAll, Lock, Unlock, Signers: always denied.
 //   - Extension: only session-bind@openssh.com is forwarded.
+//
+// A certificate matches by both its certificate type (e.g.
+// ssh-ed25519-cert-v01@openssh.com) and its underlying key's type, and
+// its fingerprint is the underlying key's — so --allow-key-type can
+// admit or deny certificates independently of static keys, and a key of
+// an unknown or unparsable type matches no type list (denied when
+// --allow-key-type is set). A key an allowlist denies is logged with a
+// reason field naming the violated list(s) by flag name, so the trace
+// says which flag to adjust; the error returned to the client is
+// deliberately the same either way.
 //
 // A second gate is the session check. At handover, flue checks that the
 // broker's session (learned from the handover message's credentials) is
@@ -873,13 +885,37 @@ func (f *agentFilter) isAllowed(fp string) bool {
 // --log-level=debug; the former -verbose flag). For ops about a specific
 // key, ktype is the key type (e.g. ssh-ed25519) and detail the key
 // fingerprint, logged as the type and fingerprint fields; for the rest,
-// ktype is empty and detail a summary (or empty).
-func (f *agentFilter) logf(op, ktype, detail string, allowed bool) {
+// ktype is empty and detail a summary (or empty). When an allowlist
+// denies the key, reasons names the violated rules by their flag names
+// (allow-key, allow-key-type) and is logged as the reason field, so an
+// operator can tell which flag to adjust.
+func (f *agentFilter) logf(op, ktype, detail string, allowed bool, reasons []string) {
+	args := []any{"op", op}
 	if ktype != "" {
-		log.Debug("flue: agent op", "op", op, "type", ktype, "fingerprint", detail, "allowed", allowed)
+		args = append(args, "type", ktype, "fingerprint", detail)
 	} else {
-		log.Debug("flue: agent op", "op", op, "detail", detail, "allowed", allowed)
+		args = append(args, "detail", detail)
 	}
+	args = append(args, "allowed", allowed)
+	if r := strings.Join(reasons, ","); r != "" {
+		args = append(args, "reason", r)
+	}
+	log.Debug("flue: agent op", args...)
+}
+
+// keyVerdict checks a key against both allowlist dimensions and reports
+// whether it is allowed and, when not, the names of the violated rules
+// (the --allow-key and --allow-key-type flag names) for the trace's
+// reason field.
+func (f *agentFilter) keyVerdict(types []string, fp string) (bool, []string) {
+	var reasons []string
+	if !f.isAllowed(fp) {
+		reasons = append(reasons, "allow-key")
+	}
+	if !f.typeAllowed(types) {
+		reasons = append(reasons, "allow-key-type")
+	}
+	return len(reasons) == 0, reasons
 }
 
 // keyFingerprint computes the SHA256: fingerprint of an ssh.PublicKey the
@@ -959,84 +995,87 @@ func (f *agentFilter) typeAllowed(types []string) bool {
 	return false
 }
 
-// List returns keys, filtered by allowlist if one is set.
+// List returns keys, filtered by the allowlists if either is set.
 func (f *agentFilter) List() ([]*agent.Key, error) {
 	keys, err := f.upstream.List()
 	if err != nil {
 		return nil, err
 	}
-	if len(f.pol.allow) == 0 {
-		f.logf("list", "", fmt.Sprintf("%d keys", len(keys)), true)
+	if len(f.pol.allow) == 0 && len(f.pol.allowTypes) == 0 {
+		f.logf("list", "", fmt.Sprintf("%d keys", len(keys)), true, nil)
 		return keys, nil
 	}
 	var out []*agent.Key
 	for _, k := range keys {
 		fp := keyFingerprintFromBlob(k.Blob)
-		if f.isAllowed(fp) {
+		allowed, reasons := f.keyVerdict(keyTypesFromBlob(k.Blob), fp)
+		if allowed {
 			out = append(out, k)
 		} else {
-			f.logf("list", keyTypeFromBlob(k.Blob), fp, false)
+			f.logf("list", keyTypeFromBlob(k.Blob), fp, false, reasons)
 		}
 	}
-	f.logf("list", "", fmt.Sprintf("%d of %d keys allowed", len(out), len(keys)), true)
+	f.logf("list", "", fmt.Sprintf("%d of %d keys allowed", len(out), len(keys)), true, nil)
 	return out, nil
 }
 
 // Sign forwards the signing request only for allowed keys.
 func (f *agentFilter) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error) {
 	fp := keyFingerprint(key)
-	if !f.isAllowed(fp) {
-		f.logf("sign", key.Type(), fp, false)
+	allowed, reasons := f.keyVerdict(keyTypes(key), fp)
+	if !allowed {
+		f.logf("sign", key.Type(), fp, false, reasons)
 		return nil, fmt.Errorf("signing denied for key %s", fp)
 	}
-	f.logf("sign", key.Type(), fp, true)
+	f.logf("sign", key.Type(), fp, true, nil)
 	return f.upstream.Sign(key, data)
 }
 
 // SignWithFlags is like Sign but with flags (needed for RSA rsa-sha2-256/512).
 func (f *agentFilter) SignWithFlags(key ssh.PublicKey, data []byte, flags agent.SignatureFlags) (*ssh.Signature, error) {
 	fp := keyFingerprint(key)
-	if !f.isAllowed(fp) {
-		f.logf("sign(flags)", key.Type(), fp, false)
+	allowed, reasons := f.keyVerdict(keyTypes(key), fp)
+	if !allowed {
+		f.logf("sign(flags)", key.Type(), fp, false, reasons)
 		return nil, fmt.Errorf("signing denied for key %s", fp)
 	}
-	f.logf("sign(flags)", key.Type(), fp, true)
+	f.logf("sign(flags)", key.Type(), fp, true, nil)
 	return f.upstream.SignWithFlags(key, data, flags)
 }
 
 // Add is always denied.
 func (f *agentFilter) Add(k agent.AddedKey) error {
-	f.logf("add", "", "", false)
+	f.logf("add", "", "", false, nil)
 	return fmt.Errorf("adding keys is not allowed through flue")
 }
 
 // Remove is always denied.
 func (f *agentFilter) Remove(key ssh.PublicKey) error {
-	f.logf("remove", key.Type(), keyFingerprint(key), false)
+	f.logf("remove", key.Type(), keyFingerprint(key), false, nil)
 	return fmt.Errorf("removing keys is not allowed through flue")
 }
 
 // RemoveAll is always denied.
 func (f *agentFilter) RemoveAll() error {
-	f.logf("remove-all", "", "", false)
+	f.logf("remove-all", "", "", false, nil)
 	return fmt.Errorf("removing all keys is not allowed through flue")
 }
 
 // Lock is always denied.
 func (f *agentFilter) Lock(passphrase []byte) error {
-	f.logf("lock", "", "", false)
+	f.logf("lock", "", "", false, nil)
 	return fmt.Errorf("locking the agent is not allowed through flue")
 }
 
 // Unlock is always denied.
 func (f *agentFilter) Unlock(passphrase []byte) error {
-	f.logf("unlock", "", "", false)
+	f.logf("unlock", "", "", false, nil)
 	return fmt.Errorf("unlocking the agent is not allowed through flue")
 }
 
 // Signers returns signers for the given key blob.
 func (f *agentFilter) Signers() ([]ssh.Signer, error) {
-	f.logf("signers", "", "", false)
+	f.logf("signers", "", "", false, nil)
 	return nil, fmt.Errorf("signers request is not allowed through flue")
 }
 

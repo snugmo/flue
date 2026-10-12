@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"log/slog"
 	"net"
@@ -19,21 +21,25 @@ func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
 }
 
-// testKeys holds the shared test key material (ed25519 private keys and
-// their SSH public key blobs + fingerprints).
+// testKeys holds the shared test key material (an ed25519 key, a second
+// ed25519 key, and an ECDSA P-256 key, so tests can distinguish key
+// types), with their SSH public key blobs + fingerprints.
 var testKeys struct {
 	priv1 ed25519.PrivateKey
 	priv2 ed25519.PrivateKey
+	priv3 *ecdsa.PrivateKey
 	blob1 []byte
 	blob2 []byte
+	blob3 []byte
 	fp1   string
 	fp2   string
+	fp3   string
 	once  bool
 }
 
-// initTestKeys generates two ed25519 keys once and stores them globally.
-// The fingerprint is computed with the same algorithm the filter uses
-// (SHA256 of the raw key blob), so allowlists match.
+// initTestKeys generates the shared test keys once and stores them
+// globally. The fingerprints are computed with the same algorithm the
+// filter uses (SHA256 of the raw key blob), so allowlists match.
 func initTestKeys(t *testing.T) {
 	t.Helper()
 	if testKeys.once {
@@ -63,8 +69,19 @@ func initTestKeys(t *testing.T) {
 	}
 	testKeys.blob2 = pub2.Marshal()
 
+	testKeys.priv3, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen ecdsa: %v", err)
+	}
+	pub3, err := ssh.NewPublicKey(testKeys.priv3.Public())
+	if err != nil {
+		t.Fatalf("ssh pub 3: %v", err)
+	}
+	testKeys.blob3 = pub3.Marshal()
+
 	testKeys.fp1 = keyFingerprintFromBlob(testKeys.blob1)
 	testKeys.fp2 = keyFingerprintFromBlob(testKeys.blob2)
+	testKeys.fp3 = keyFingerprintFromBlob(testKeys.blob3)
 	testKeys.once = true
 }
 
@@ -128,6 +145,44 @@ func startKeyringAgent(t *testing.T) string {
 	}
 
 	return serveKeyring(t, kr)
+}
+
+// startTypeKeyring starts a Unix socket agent serving one ed25519 key
+// and one ECDSA P-256 key, so tests can filter by key type.
+func startTypeKeyring(t *testing.T) string {
+	t.Helper()
+	initTestKeys(t)
+
+	kr := agent.NewKeyring()
+	if err := kr.Add(agent.AddedKey{
+		PrivateKey: testKeys.priv1,
+		Comment:    "ed25519-key",
+	}); err != nil {
+		t.Fatalf("add ed25519 key: %v", err)
+	}
+	if err := kr.Add(agent.AddedKey{
+		PrivateKey: testKeys.priv3,
+		Comment:    "ecdsa-key",
+	}); err != nil {
+		t.Fatalf("add ecdsa key: %v", err)
+	}
+
+	return serveKeyring(t, kr)
+}
+
+// newTestFilterFor dials the filter at an agent address with both
+// allowlists set.
+func newTestFilterFor(t *testing.T, addr string, allow, allowTypes map[string]struct{}) *agentFilter {
+	t.Helper()
+	conn, err := net.Dial("unix", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return &agentFilter{
+		upstream: agent.NewClient(conn),
+		pol:      &policy{allow: allow, allowTypes: allowTypes},
+	}
 }
 
 // newCertKey generates an ed25519 user key certified by a fresh CA and
@@ -521,5 +576,224 @@ func TestTypeAllowed(t *testing.T) {
 				t.Fatalf("typeAllowed(%v) = %v, want %v", c.types, got, c.want)
 			}
 		})
+	}
+}
+
+// oneSet is a test helper building a single-entry allowlist set.
+func oneSet(s string) map[string]struct{} { return map[string]struct{}{s: {}} }
+
+// TestFilterListType verifies List filters by key type over a keyring
+// holding keys of two different types.
+func TestFilterListType(t *testing.T) {
+	initTestKeys(t)
+	addr := startTypeKeyring(t)
+
+	cases := []struct {
+		name       string
+		allowTypes map[string]struct{}
+		want       [][]byte
+	}{
+		{"ed25519 only", oneSet("ssh-ed25519"), [][]byte{testKeys.blob1}},
+		{"ecdsa only", oneSet("ecdsa-sha2-nistp256"), [][]byte{testKeys.blob3}},
+		{"both types", map[string]struct{}{"ssh-ed25519": {}, "ecdsa-sha2-nistp256": {}}, [][]byte{testKeys.blob1, testKeys.blob3}},
+		{"unlisted type allows none", oneSet("rsa"), nil},
+		{"no type filter", nil, [][]byte{testKeys.blob1, testKeys.blob3}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newTestFilterFor(t, addr, nil, c.allowTypes)
+			keys, err := f.List()
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			var got [][]byte
+			for _, k := range keys {
+				got = append(got, k.Blob)
+			}
+			if diff := cmp.Diff(c.want, got); diff != "" {
+				t.Fatalf("unexpected keys (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestFilterSignType verifies Sign and SignWithFlags enforce the type
+// list, independently of the fingerprint list.
+func TestFilterSignType(t *testing.T) {
+	initTestKeys(t)
+	addr := startTypeKeyring(t)
+	f := newTestFilterFor(t, addr, nil, oneSet("ssh-ed25519"))
+
+	pub1, err := ssh.ParsePublicKey(testKeys.blob1)
+	if err != nil {
+		t.Fatalf("parse pub1: %v", err)
+	}
+	pub3, err := ssh.ParsePublicKey(testKeys.blob3)
+	if err != nil {
+		t.Fatalf("parse pub3: %v", err)
+	}
+
+	if _, err := f.Sign(pub1, []byte("ok")); err != nil {
+		t.Fatalf("Sign ed25519 key: %v", err)
+	}
+	if _, err := f.SignWithFlags(pub1, []byte("ok"), 0); err != nil {
+		t.Fatalf("SignWithFlags ed25519 key: %v", err)
+	}
+	if _, err := f.Sign(pub3, []byte("no")); err == nil {
+		t.Fatal("Sign ecdsa key: expected denial, got nil error")
+	}
+	if _, err := f.SignWithFlags(pub3, []byte("no"), 0); err == nil {
+		t.Fatal("SignWithFlags ecdsa key: expected denial, got nil error")
+	}
+}
+
+// TestFilterCertificateType verifies a certificate matches both its
+// certificate type and its underlying key's type in List: a list naming
+// the underlying type admits the cert and the static key alike, while
+// one naming only the certificate type admits the cert but not the
+// static key.
+func TestFilterCertificateType(t *testing.T) {
+	initTestKeys(t)
+	ak, certBlob, _ := newCertKey(t, "cert")
+
+	run := func(t *testing.T, allowTypes map[string]struct{}) []*agent.Key {
+		t.Helper()
+		kr := agent.NewKeyring()
+		for _, k := range []agent.AddedKey{{PrivateKey: testKeys.priv1, Comment: "static"}, ak} {
+			if err := kr.Add(k); err != nil {
+				t.Fatalf("add: %v", err)
+			}
+		}
+		addr := serveKeyring(t, kr)
+		conn, err := net.Dial("unix", addr)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		t.Cleanup(func() { conn.Close() })
+		f := &agentFilter{upstream: agent.NewClient(conn), pol: &policy{allowTypes: allowTypes}}
+		keys, err := f.List()
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		return keys
+	}
+
+	t.Run("underlying type admits cert and static key", func(t *testing.T) {
+		if keys := run(t, oneSet("ssh-ed25519")); len(keys) != 2 {
+			t.Fatalf("List: got %d keys, want 2", len(keys))
+		}
+	})
+
+	t.Run("certificate type admits the cert but not the static key", func(t *testing.T) {
+		keys := run(t, oneSet("ssh-ed25519-cert-v01@openssh.com"))
+		if len(keys) != 1 {
+			t.Fatalf("List: got %d keys, want 1 (the certificate)", len(keys))
+		}
+		if diff := cmp.Diff(certBlob, keys[0].Blob); diff != "" {
+			t.Fatalf("wrong key returned (-want +got):\n%s", diff)
+		}
+	})
+}
+
+// TestFilterConjunction verifies --allow-key and --allow-key-type
+// compose: a key must pass both lists to be usable.
+func TestFilterConjunction(t *testing.T) {
+	initTestKeys(t)
+	addr := startTypeKeyring(t)
+
+	pub1, err := ssh.ParsePublicKey(testKeys.blob1) // ed25519, fp1
+	if err != nil {
+		t.Fatalf("parse pub1: %v", err)
+	}
+	pub3, err := ssh.ParsePublicKey(testKeys.blob3) // ecdsa, fp3
+	if err != nil {
+		t.Fatalf("parse pub3: %v", err)
+	}
+
+	cases := []struct {
+		name       string
+		allow      map[string]struct{}
+		allowTypes map[string]struct{}
+		want1      bool // key1 (ed25519/fp1) signs
+		want3      bool // key3 (ecdsa/fp3) signs
+	}{
+		{"both pass key1", map[string]struct{}{testKeys.fp1: {}}, oneSet("ssh-ed25519"), true, false},
+		{"type fails both", map[string]struct{}{testKeys.fp1: {}}, oneSet("ecdsa-sha2-nistp256"), false, false},
+		{"fingerprint fails both", map[string]struct{}{testKeys.fp3: {}}, oneSet("ssh-ed25519"), false, false},
+		{"both pass key3", map[string]struct{}{testKeys.fp3: {}}, oneSet("ecdsa-sha2-nistp256"), false, true},
+		{"type list only", nil, oneSet("ssh-ed25519"), true, false},
+		{"fingerprint list only", map[string]struct{}{testKeys.fp1: {}}, nil, true, false},
+		{"no lists", nil, nil, true, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newTestFilterFor(t, addr, c.allow, c.allowTypes)
+			_, err1 := f.Sign(pub1, []byte("m"))
+			got1 := err1 == nil
+			_, err3 := f.Sign(pub3, []byte("m"))
+			got3 := err3 == nil
+			if got1 != c.want1 || got3 != c.want3 {
+				t.Fatalf("Sign: key1 allowed=%v (want %v, err %v), key3 allowed=%v (want %v, err %v)",
+					got1, c.want1, err1, got3, c.want3, err3)
+			}
+		})
+	}
+}
+
+// TestAgentOpLogDenialReason verifies that a key an allowlist denies is
+// logged with a reason field naming the violated list(s) by their flag
+// names, so the operator knows which flag to adjust.
+func TestAgentOpLogDenialReason(t *testing.T) {
+	initTestKeys(t)
+	pub1, err := ssh.ParsePublicKey(testKeys.blob1)
+	if err != nil {
+		t.Fatalf("parse pub1: %v", err)
+	}
+
+	build := func(allow, allowTypes map[string]struct{}) *agentFilter {
+		return newTestFilterFor(t, startKeyringAgent(t), allow, allowTypes)
+	}
+
+	oldLog := log
+	h := &captureHandler{}
+	log = slog.New(h)
+	defer func() { log = oldLog }()
+
+	// Denied by the fingerprint list only.
+	_, _ = build(map[string]struct{}{testKeys.fp2: {}}, nil).Sign(pub1, []byte("m"))
+	// Denied by the type list only.
+	_, _ = build(nil, oneSet("ecdsa-sha2-nistp256")).Sign(pub1, []byte("m"))
+	// Denied by both lists.
+	_, _ = build(map[string]struct{}{testKeys.fp2: {}}, oneSet("ecdsa-sha2-nistp256")).Sign(pub1, []byte("m"))
+
+	recs := h.snapshot()
+	if len(recs) != 3 {
+		t.Fatalf("got %d log records, want 3", len(recs))
+	}
+	wants := []string{"allow-key", "allow-key-type", "allow-key,allow-key-type"}
+	for i, w := range wants {
+		r := recs[i]
+		var op, reason string
+		allowed, hasAllowed := false, false
+		r.Attrs(func(a slog.Attr) bool {
+			switch a.Key {
+			case "op":
+				op = a.Value.String()
+			case "reason":
+				reason = a.Value.String()
+			case "allowed":
+				allowed, hasAllowed = a.Value.Bool(), true
+			}
+			return true
+		})
+		if !hasAllowed || allowed {
+			t.Fatalf("record %d: allowed=%v (present=%v), want false", i, allowed, hasAllowed)
+		}
+		if op != "sign" {
+			t.Fatalf("record %d: op=%q, want sign", i, op)
+		}
+		if reason != w {
+			t.Fatalf("record %d: reason=%q, want %q", i, reason, w)
+		}
 	}
 }

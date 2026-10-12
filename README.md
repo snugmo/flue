@@ -96,7 +96,8 @@ flue enter --no-inject-broker <container>       # or --inject-broker=false
 FLUE_INJECT_BROKER=0 flue enter <container>     # via the environment
 ```
 
-Global flags (`--sock`, `--allow-key`, `--log-level`, `--log-file`) go
+Global flags (`--sock`, `--allow-key`, `--allow-key-type`, `--log-level`,
+`--log-file`) go
 before the
 subcommand: `flue --allow-key SHA256:… enter <container>`. (The subcommand
 `--` separator above is for your *target command's* flags.)
@@ -109,7 +110,8 @@ subcommand: `flue --allow-key SHA256:… enter <container>`. (The subcommand
 | ------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `--sock`      | `$SSH_AUTH_SOCK`               | Agent socket path to proxy to                                                                                                                                                                            |
 | `--allow-key` | (none = all keys)              | Repeatable. Only keys with this SHA256 fingerprint are listed and can sign. Fingerprints are compared the way `ssh-add -l` prints them — for a certificate, that is the fingerprint of its underlying key|
-| `--log-level` | `$FLUE_LOG_LEVEL`, else `info` | Log level: `debug`, `info`, `warn`, or `error`. `debug` logs every agent request (operation, key type, fingerprint, allowed/denied). When the flag is unset, `$FLUE_LOG_LEVEL` is read; a set flag wins            |
+| `--allow-key-type` | (none = all types)          | Repeatable. Only keys of this type (the wire type name, e.g. `ssh-ed25519`, `ecdsa-sha2-nistp256`, `rsa`) are listed and can sign. A certificate matches both its certificate type and its underlying key's type, so a cert-only list denies static (uncertified) keys; secure-enclave keys have their own `sk-` type names |
+| `--log-level` | `$FLUE_LOG_LEVEL`, else `info` | Log level: `debug`, `info`, `warn`, or `error`. `debug` logs every agent request (operation, key type, fingerprint, allowed/denied — and, when an allowlist denies a key, which list did, as a `reason` field). When the flag is unset, `$FLUE_LOG_LEVEL` is read; a set flag wins            |
 | `--log-file`  | `stderr`                       | Append log output to this file (created if needed, mode `0600`) instead of stderr — keeps session-check refusal warnings off the user's terminal                                                                                              |
 
 **enter** (enter-scoped flag and arguments):
@@ -248,9 +250,9 @@ identical to the image's own.
 
 | Operation       | Behavior                                              |
 | --------------- | ----------------------------------------------------- |
-| `List`          | Forwarded; only allowed keys returned if `--allow-key` is set |
-| `Sign`          | Forwarded only for allowed keys                       |
-| `SignWithFlags` | Forwarded only for allowed keys (needed for RSA rsa-sha2-256/512) |
+| `List`          | Forwarded; only keys allowed by `--allow-key` and `--allow-key-type` are returned (all keys if neither is set) |
+| `Sign`          | Forwarded only for keys allowed by both lists             |
+| `SignWithFlags` | Forwarded only for keys allowed by both lists (needed for RSA rsa-sha2-256/512) |
 | `Add`           | Denied                                                |
 | `Remove`        | Denied                                                |
 | `RemoveAll`     | Denied                                                |
@@ -264,10 +266,10 @@ identical to the image's own.
 While a session is open, a process in the container can (a) list the
 allowlisted keys — fingerprint and comment are visible — and (b) get
 signatures from them. It cannot add, remove, lock, or unlock keys, nor use
-any key outside the `--allow-key` list (the filter policy table above
-carries the per-operation detail), and it never sees a path or fd to the
-host agent socket, its directory, or `$XDG_RUNTIME_DIR`. The trust boundary
-is the allowlist, not the container.
+any key outside the `--allow-key` / `--allow-key-type` lists (the filter
+policy table above carries the per-operation detail), and it never sees a
+path or fd to the host agent socket, its directory, or `$XDG_RUNTIME_DIR`.
+The trust boundary is the allowlists, not the container.
 
 When the broker's session is private — its only live member at
 handover time, what an exec that created its own session looks like,
@@ -315,7 +317,10 @@ flue enter <container> git ls-remote git@github.com:your/repo.git
 # 5. With --allow-key, only that key shows in ssh-add -l
 flue --allow-key SHA256:... enter <container> ssh-add -l
 
-# 6. Two concurrent sessions get distinct sockets and both work
+# 6. With --allow-key-type, only keys of those types show
+flue --allow-key-type ssh-ed25519 enter <container> ssh-add -l
+
+# 7. Two concurrent sessions get distinct sockets and both work
 flue enter <container> -- sh -c 'ssh-add -l' & flue enter <container> -- sh -c 'ssh-add -l'; wait
 
 # 7. (run from a terminal, so the broker is a session leader) a client

@@ -7,7 +7,8 @@ agent needs when changing the code.
 ## Modes
 
 flue is a cobra CLI with three subcommands. The global flags (`--sock`,
-`--allow-key`, `--log-level`, `--log-file`) are persistent on the root
+`--allow-key`, `--allow-key-type`, `--log-level`, `--log-file`) are
+persistent on the root
 and go before the
 subcommand; a subcommand's arguments follow the subcommand name, and a `--`
 separates them from the target command so the target's own flags pass
@@ -94,16 +95,28 @@ listener.
 - Each accepted client connection gets a fresh `net.Dial("unix",
   SSH_AUTH_SOCK)` upstream connection, wrapped in an `agentFilter` that
   implements `agent.ExtendedAgent`.
-- The session's policy (allowlist + socket path) is a single `policy`
+- The session's policy (allowlists + socket path) is a single `policy`
   value built once in `runChildWithAgent`; each per-client `agentFilter`
   shares it read-only.
 - Policy (mirrors the per-operation table in the README):
-  - `List`: forwarded, but only keys matching `--allow-key` (repeatable,
-    SHA256 fingerprint) are returned; all keys when the flag is absent.
-  - `Sign` / `SignWithFlags`: forwarded only for allowed keys.
+  - `List`: forwarded, but only keys allowed by `--allow-key`
+    (repeatable, SHA256 fingerprint) and `--allow-key-type` (repeatable,
+    wire type name) are returned; all keys when the flags are absent.
+  - `Sign` / `SignWithFlags`: forwarded only for keys allowed by both
+    lists.
   - `Add`, `Remove`, `RemoveAll`, `Lock`, `Unlock`, `Signers`: always
     denied.
   - `Extension`: only `session-bind@openssh.com` is forwarded.
+  - A certificate matches by both its certificate type and its
+    underlying key's type, and its fingerprint is the underlying
+    key's, so `--allow-key-type` can admit or deny certificates
+    independently of static keys; a key of an unknown or unparsable
+    type matches no type list and is denied when `--allow-key-type`
+    is set (fail closed).
+  - A key an allowlist denies is logged with a `reason` field naming
+    the violated list(s) by flag name (`allow-key`, `allow-key-type`)
+    — so the trace says which flag to adjust. The error returned to
+    the client is deliberately the same either way.
 - Per-request agent trace is emitted at `debug` (`--log-level debug`):
   an op about a specific key carries the key type and its fingerprint
   (for a certificate, the certificate's own type), other ops a summary.
