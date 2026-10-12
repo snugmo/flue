@@ -27,6 +27,13 @@ positionals — which is why the `--` is needed for commands with flags).
     set and non-blank, in which case it is that value split on whitespace
     (resolved by `enterDefaultCmd`); an explicit command always wins. So
     a bare `flue enter` runs a shell in snugmo.
+  - A `--` separator (recovered from the raw process arguments by
+    `enterDashDash`, since pflag strips it before Run) takes precedence
+    over that split: the tokens after it are the command, and the single
+    positional argument before it — if any — names the container, so
+    `flue enter -- bash` runs bash in snugmo, not the default command in
+    a container named bash. A trailing separator (nothing after it) is a
+    no-op; more than one positional before it is a usage error.
   - A tty is allocated only when stdin is a tty (`stdinIsTTY`, via the
     TCGETS ioctl — x/sys v0.49.0 has no `unix.IsTerminal`).
   - **Memfd injection is the default** (`--inject-broker` defaults on):

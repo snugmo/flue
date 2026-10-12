@@ -67,7 +67,13 @@ flue enter <container>                      # /bin/sh inside the container
 flue enter <container> bash                 # bash
 flue enter <container> git ls-remote git@github.com:you/repo.git
 flue enter <container> -- bash -l           # command with its own flags
+flue enter -- bash -l                       # bash -l in the default container
 ```
+
+A `--` with no argument before it makes everything after it the command run
+in the default container — `flue enter -- bash` does *not* mean a container
+named `bash`. With a container before it, the `--` only separates the
+target command's own flags.
 
 The default command is `/bin/sh`. Set `$FLUE_ENTER_CMD` to run something
 else by default (the value is split on whitespace; a command given on the

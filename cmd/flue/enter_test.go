@@ -42,7 +42,95 @@ func TestEnterTarget(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			container, cmd := enterTarget(tt.args)
+			container, cmd, err := enterTarget(tt.args)
+			if err != nil {
+				t.Fatalf("enterTarget(%v) error: %v", tt.args, err)
+			}
+			if container != tt.wantContainer {
+				t.Errorf("container = %q, want %q", container, tt.wantContainer)
+			}
+			if diff := cmp.Diff(tt.wantCmd, cmd); diff != "" {
+				t.Errorf("cmd mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestEnterTargetDashDash verifies the `--` separator: the tokens after it
+// are the command, the single positional argument before it (if any) names
+// the container, a trailing separator is a no-op, and more than one
+// positional before it is a usage error. The separator itself is stripped
+// by pflag before Run, so each case installs the matching raw process
+// arguments (what enterDashDash reads from os.Args) and the positional
+// arguments Run would receive.
+func TestEnterTargetDashDash(t *testing.T) {
+	t.Setenv("FLUE_ENTER_CMD", "")
+
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+
+	for _, tt := range []struct {
+		name          string
+		raw           []string // process args after the program name
+		cobraArgs     []string // positionals Run receives (-- stripped)
+		wantContainer string
+		wantCmd       []string
+		wantErr       bool
+	}{
+		{
+			name:          "separator before any positional runs the command in the default container",
+			raw:           []string{"enter", "--", "bash", "-l"},
+			cobraArgs:     []string{"bash", "-l"},
+			wantContainer: "snugmo",
+			wantCmd:       []string{"bash", "-l"},
+		},
+		{
+			name:          "a flag with a value before the separator is not a container",
+			raw:           []string{"enter", "--log-level", "debug", "--", "bash"},
+			cobraArgs:     []string{"bash"},
+			wantContainer: "snugmo",
+			wantCmd:       []string{"bash"},
+		},
+		{
+			name:          "a container before the separator is honored",
+			raw:           []string{"enter", "c", "--", "bash", "-l"},
+			cobraArgs:     []string{"c", "bash", "-l"},
+			wantContainer: "c",
+			wantCmd:       []string{"bash", "-l"},
+		},
+		{
+			name:          "a trailing separator is a no-op",
+			raw:           []string{"enter", "--"},
+			cobraArgs:     nil,
+			wantContainer: "snugmo",
+			wantCmd:       []string{"/bin/sh"},
+		},
+		{
+			name:          "a trailing separator after a container is a no-op",
+			raw:           []string{"enter", "c", "--"},
+			cobraArgs:     []string{"c"},
+			wantContainer: "c",
+			wantCmd:       []string{"/bin/sh"},
+		},
+		{
+			name:      "more than one positional before the separator is a usage error",
+			raw:       []string{"enter", "a", "b", "--", "sh"},
+			cobraArgs: []string{"a", "b", "sh"},
+			wantErr:   true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			os.Args = append([]string{"flue"}, tt.raw...)
+			container, cmd, err := enterTarget(tt.cobraArgs)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("enterTarget(%v) = (%q, %v), want an error", tt.cobraArgs, container, cmd)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("enterTarget(%v) error: %v", tt.cobraArgs, err)
+			}
 			if container != tt.wantContainer {
 				t.Errorf("container = %q, want %q", container, tt.wantContainer)
 			}

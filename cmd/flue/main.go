@@ -106,7 +106,11 @@
 //
 // No container defaults to snugmo; no command defaults to
 // $FLUE_ENTER_CMD (whitespace-split) when set and non-blank, else /bin/sh;
-// a tty is allocated when stdin is a tty. The broker is not taken from the
+// a tty is allocated when stdin is a tty. A `--` separator takes
+// precedence: the tokens after it are the command and the single
+// positional argument before it — if any — names the container, so
+// `flue enter -- bash` runs bash in the default container, not the
+// default command in a container named bash. The broker is not taken from the
 // image by default: it is injected in memory (a memfd the container execs
 // via /proc/self/fd/4), so no writable filesystem or image-side broker is
 // needed; --no-inject-broker (or --inject-broker=false) uses the image's.
@@ -290,6 +294,11 @@ allocating a tty when stdin is a tty:
     flue enter <container>          # /bin/sh in the container
     flue enter <container> bash     # bash
     flue enter <container> -- bash -l # command with its own flags
+    flue enter -- bash -l           # bash -l in the default container
+
+A -- with no argument before it makes everything after it the command run
+in the default container (not a container name); with a container before
+it, the -- only separates the command's own flags from the rest.
 
 The broker is not taken from the image by default: flue writes the embedded
 flue-broker to an in-memory memfd (fd 4) and the container execs it via
@@ -486,7 +495,10 @@ func main() {
 // fd 3 (--preserve-fds 1, or 2 when the broker memfd is also passed) and
 // the agent is proxied exactly as in passthrough mode.
 func runEnter(args []string, sockPath string) int {
-	container, cmd := enterTarget(args)
+	container, cmd, err := enterTarget(args)
+	if err != nil {
+		fatalf("flue: %v", err)
+	}
 
 	tty := stdinIsTTY()
 
@@ -557,16 +569,73 @@ func parseSessionCheckMode(s string) (sessionCheckMode, error) {
 
 // enterTarget splits the `flue enter` arguments into the container name
 // (default snugmo) and the command to run inside it (the default command,
-// see enterDefaultCmd).
-func enterTarget(args []string) (container string, cmd []string) {
+// see enterDefaultCmd). A `--` separator (recovered from the raw process
+// arguments, see enterDashDash) takes precedence over that split: the
+// tokens after it are the command, and the single positional argument
+// before it — if any — names the container, so `flue enter -- bash` runs
+// bash in the default container instead of the default command in a
+// container named bash. A separator with nothing after it is a no-op.
+// More than one positional argument before the separator is a usage
+// error.
+func enterTarget(args []string) (container string, cmd []string, err error) {
+	if dashCmd, preCount, present := enterDashDash(args); present && len(dashCmd) > 0 {
+		switch preCount {
+		case 0:
+			return defaultEnterContainer, dashCmd, nil
+		case 1:
+			return args[0], dashCmd, nil
+		default:
+			return "", nil, fmt.Errorf("enter: at most one argument (a container name) may precede -- (got %d)", preCount)
+		}
+	}
 	if len(args) == 0 {
-		return defaultEnterContainer, enterDefaultCmd()
+		return defaultEnterContainer, enterDefaultCmd(), nil
 	}
 	container = args[0]
 	if len(args) > 1 {
-		return container, args[1:]
+		return container, args[1:], nil
 	}
-	return container, enterDefaultCmd()
+	return container, enterDefaultCmd(), nil
+}
+
+// enterDashDash recovers the `--` separator from the raw process
+// arguments for the enter subcommand: cobra (via pflag) consumes the
+// first one before Run, so it is not in the positional arguments
+// enterTarget receives, but its presence changes how they split — the
+// tokens after the last separator are the target command, and the
+// positional arguments before it (at most one) name the container. It
+// returns the tokens after the last separator, the number of positional
+// arguments before the first separator, and whether a separator appears
+// after the subcommand (found as the first `enter` word in os.Args, which
+// no global flag value can precede it as a subcommand).
+//
+// The count is derived arithmetically: pflag consumes only the first
+// separator and appends the remaining tokens verbatim (any later `--`
+// included), so the positional arguments cobra hands to Run are exactly
+// the pre-separator positional arguments plus everything after the first
+// separator.
+func enterDashDash(args []string) (cmd []string, preCount int, present bool) {
+	i := 0
+	for i < len(os.Args) && os.Args[i] != "enter" {
+		i++
+	}
+	if i == len(os.Args) {
+		return nil, 0, false
+	}
+	rest := os.Args[i+1:]
+	first, last := -1, -1
+	for j, s := range rest {
+		if s == "--" {
+			if first == -1 {
+				first = j
+			}
+			last = j
+		}
+	}
+	if last == -1 {
+		return nil, 0, false
+	}
+	return rest[last+1:], len(args) - len(rest[first+1:]), true
 }
 
 // enterDefaultCmd resolves the command `flue enter` runs when no explicit
