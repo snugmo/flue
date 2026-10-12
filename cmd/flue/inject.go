@@ -49,13 +49,9 @@ func memfdCreateWithFallback(create func(flags int) (int, error)) (int, error) {
 // a child as a preserved fd (fd 4, alongside the control socketpair on fd
 // 3). The container then execs the broker from /proc/self/fd/4, so the
 // broker runs entirely in memory and never touches the container's
-// filesystem — no writable filesystem is required.
-//
-// The memfd is created with MFD_EXEC (Linux ≥ 6.3) so it stays executable
-// via /proc/self/fd/<n> under the vm.memfd_noexec sysctl; on a kernel that
-// rejects the flag (EINVAL, older than 6.3) it falls back to a plain
-// memfd. A system-level refusal of executable memfds (EACCES, e.g.
-// vm.memfd_noexec=2) is a hard error: broker injection does not work there.
+// filesystem — no writable filesystem is required. The MFD_EXEC fallback
+// and the hard failure on vm.memfd_noexec=2 are in
+// memfdCreateWithFallback.
 func injectBrokerMemfd() (*os.File, error) {
 	if !looksLikeELF(flueBrokerBin) {
 		return nil, fmt.Errorf("embedded flue-broker is not a Linux ELF binary: build flue-broker (to cmd/flue/flue-broker.bin) before building flue, then rebuild")

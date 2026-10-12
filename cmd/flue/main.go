@@ -68,18 +68,16 @@
 //
 //	flue enter [container] [command [args…]]
 //
-// with no container defaulting to snugmo, no command defaulting to
-// $FLUE_ENTER_CMD (whitespace-split) when set and non-blank, else
-// /bin/sh, and a tty allocated when stdin is a tty. The broker is not
-// taken from the image by default: it is injected in memory (a memfd the
-// container execs via /proc/self/fd/4),
-// so no writable filesystem or image-side flue-broker is needed;
-// --no-inject-broker (or --inject-broker=false) uses the image's
-// flue-broker instead. flue exits when the container command does,
-// returning its exit code. The in-container socket path is unique per
-// session (the broker generates it: XDG_RUNTIME_DIR, else /run/user/<uid>,
-// else /run, else /tmp) and is exported to the wrapped command as
-// SSH_AUTH_SOCK.
+// No container defaults to snugmo; no command defaults to
+// $FLUE_ENTER_CMD (whitespace-split) when set and non-blank, else /bin/sh;
+// a tty is allocated when stdin is a tty. The broker is not taken from the
+// image by default: it is injected in memory (a memfd the container execs
+// via /proc/self/fd/4), so no writable filesystem or image-side broker is
+// needed; --no-inject-broker (or --inject-broker=false) uses the image's.
+// flue exits when the container command does, returning its exit code. The
+// in-container socket path is unique per session (the broker generates it:
+// XDG_RUNTIME_DIR, else /run/user/<uid>, else /run, else /tmp) and is
+// exported to the wrapped command as SSH_AUTH_SOCK.
 //
 // extract-broker — writes the embedded broker back out:
 //
@@ -90,11 +88,10 @@
 // the agent socket only for the subcommands that proxy it (exec, enter).
 //
 // flue also embeds a complete copy of the flue-broker built at the same
-// time: go:embed reads it from cmd/flue/flue-broker.bin, which the build
-// must produce by building flue-broker *first* (see embed.go). If that
-// file is missing, compiling flue fails — a flue without its broker is
-// never built silently. The embedded bytes are the built broker's,
-// untransformed, so they are 100% identical to it.
+// time (see embed.go): go:embed reads cmd/flue/flue-broker.bin, which the
+// build must produce by building flue-broker *first*; a missing file fails
+// the compile, so a flue without its broker is never built silently. The
+// embedded bytes are the built broker's, untransformed, so identical.
 package main
 
 import (
@@ -520,7 +517,6 @@ func stdinIsTTY() bool {
 // `--`) that is expected to receive the control socketpair (flue-broker,
 // or a wrapper that preserves fd 3).
 func runPassthrough(args []string, sockPath string) int {
-	// Resolve the command to an absolute path.
 	cmdPath := args[0]
 	if !strings.Contains(cmdPath, "/") {
 		if resolved, err := exec.LookPath(cmdPath); err == nil {
@@ -536,20 +532,12 @@ func runPassthrough(args []string, sockPath string) int {
 // a SOCK_SEQPACKET socketpair to it as fd 3, receives the broker's
 // listening fd over the other end, and proxies each accepted client
 // connection to the host agent with filtering applied. It blocks until
-// the child exits and returns the child's exit code (0 on success).
-//
-// Lifetime is driven by the process tree, not the control channel. The
-// control channel carries exactly one message (the listener fd); its
-// connection stays open until the broker is gone (so the broker never
-// sees a premature "host gone"), and this function blocks on the child
-// (the `podman exec` that runs the broker, or any other command) exiting.
-// In standalone mode the broker outlives the child, so this blocks until
-// flue itself is signalled; in wrapper mode the broker exits when the
-// wrapped command does, so this returns promptly carrying that command's
-// status.
+// the child exits and returns the child's exit code (0 on success). The
+// lifetime model — the control connection stays open until the broker is
+// gone, and the block is on the child, not the channel — is in the file
+// header.
 func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preserved []*os.File) int {
-	// Create a socketpair for the control channel.
-	// The container receives end B (fd 3); the host keeps end A.
+	// The container takes end B (fd 3); the host keeps end A.
 	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
 		fatalf("flue: socketpair: %v", err)
@@ -878,12 +866,11 @@ func closeFile(f *os.File) {
 // each client connection to the agent. The sender's credentials
 // (SCM_CREDENTIALS) ride the same message; receiveListener turns the
 // broker's pid into its session id and stores it on the policy
-// (0 = unknown: no credentials, or the broker already gone). It returns
-// the listener (so the caller can close it to stop the loop) and a channel
-// that is closed when the accept loop exits. The control message is
-// one-shot, but the control connection is NOT closed here: the caller keeps
-// it open until the broker is gone, so the broker (which reads its own end)
-// does not observe a premature "host gone". The caller closes ctrl.
+// (0 = unknown: no credentials, or the broker already gone). The control
+// message is one-shot, but the control connection is NOT closed here: the
+// caller keeps it open until the broker is gone, so the broker (which reads
+// its own end) does not observe a premature "host gone". The caller closes
+// ctrl.
 func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listener, <-chan struct{}) {
 	buf := make([]byte, 4096)
 	oob := make([]byte, 4096)
@@ -1248,15 +1235,13 @@ func closedChannel() <-chan struct{} {
 	return c
 }
 
-// handleClient proxies a single client connection (fd) to the agent. It
-// dials a fresh upstream agent connection for this client, wraps it with
-// a filter carrying the session's policy, and runs agent.ServeAgent,
-// which blocks until the client disconnects.
+// handleClient proxies one client connection to the agent: it dials a
+// fresh upstream connection, wraps it with a filter carrying the session's
+// policy, and runs agent.ServeAgent until the client disconnects.
 func handleClient(client net.Conn, pol *policy) {
 	defer closeQuiet(client)
 	client = &idleConn{Conn: client, timeout: idleTimeout}
 
-	// Dial a fresh upstream agent connection for this client.
 	upstream, err := dialAgent(pol.sock)
 	if err != nil {
 		log.Warn("flue: dial upstream", "err", err)
