@@ -57,7 +57,8 @@
 // explicit choice is logged at info; the default at handover).
 //
 // flue is a cobra CLI with three subcommands. The global flags (--sock,
-// --allow-key, --log-level, --log-file) are persistent: place them before
+// --allow-key, --allow-key-type, --log-level, --log-file) are persistent:
+// place them before
 // the subcommand. The subcommand's arguments follow the subcommand name;
 // a --
 // separates them from the target command so the target's own flags are
@@ -149,11 +150,12 @@ import (
 // empty), set by the root PersistentPreRun and shared by both the run*
 // subcommands and the per-client dialAgent.
 var (
-	sockArg   string
-	logLevel  string
-	logFile   string
-	allowKeys = newAllowKeyFlag()
-	sockPath  string
+	sockArg       string
+	logLevel      string
+	logFile       string
+	allowKeys     = newAllowKeyFlag()
+	allowKeyTypes = newAllowKeyTypeFlag()
+	sockPath      string
 	// enterInjectBroker holds the --inject-broker value for `enter`
 	// (bound in init to both --inject-broker and its negative form
 	// --no-inject-broker); it switches the in-container command from the
@@ -213,7 +215,7 @@ allowlist. It creates a control socketpair, hands one end to the container
 (as fd 3), receives the broker's listening socket, and proxies each client
 connection to the real $SSH_AUTH_SOCK, forwarding only allowed keys.
 
-The global flags (--sock, --allow-key, --log-level) go before the
+The global flags (--sock, --allow-key, --allow-key-type, --log-level, --log-file) go before the
 subcommand. The subcommand's arguments follow the subcommand name; a --
 separates them from the target command, so the target command's own flags
 are passed through verbatim.`,
@@ -313,6 +315,8 @@ func init() {
 		"append log output to this file instead of stderr (e.g. to keep refusal warnings off the user's terminal)")
 	rootCmd.PersistentFlags().Var(allowKeys, "allow-key",
 		"SHA256 fingerprint to allow (repeatable)")
+	rootCmd.PersistentFlags().Var(allowKeyTypes, "allow-key-type",
+		"key type to allow (repeatable); e.g. ssh-ed25519, ecdsa-sha2-nistp256, rsa")
 	enterCmd.Flags().BoolVar(&enterInjectBroker, "inject-broker", true,
 		"run the broker from an in-memory memfd (exec'd via /proc/self/fd/4) instead of the image's flue-broker; no writable filesystem needed (default: on; $FLUE_INJECT_BROKER applies when the flag is unset)")
 	// pflag (unlike stdlib flag) does not auto-generate --no-<flag> forms
@@ -684,13 +688,14 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preser
 
 	pol := &policy{
 		allow:                allowKeys.toSet(),
+		allowTypes:           allowKeyTypes.toSet(),
 		sock:                 sockPath,
 		sessionCheckMode:     checkMode,
 		sessionCheckExplicit: checkExplicit,
 		refusals:             &refusalLimiter{},
 	}
 
-	log.Info("flue: agent", "sock", sockPath, "filter", allowKeys.describe(), "exec", append([]string{cmdPath}, cmdArgs...))
+	log.Info("flue: agent", "sock", sockPath, "filter", allowKeys.describe(), "filter-types", allowKeyTypes.describe(), "exec", append([]string{cmdPath}, cmdArgs...))
 
 	clients := clientSet{max: maxClients}
 	listener, acceptDone, checkErr := receiveListener(ctrl, pol, &clients)
@@ -785,16 +790,58 @@ func (a *allowKeyFlag) describe() string {
 	return strings.Join(a.vals, ", ")
 }
 
+// --- allow-key-type repeatable flag ---
+
+// allowKeyTypeFlag collects the --allow-key-type values (SSH key type wire
+// names, e.g. ssh-ed25519, ecdsa-sha2-nistp256, rsa). Like allowKeyFlag it
+// implements pflag.Value so the flag is repeatable.
+type allowKeyTypeFlag struct {
+	vals []string
+}
+
+func newAllowKeyTypeFlag() *allowKeyTypeFlag { return &allowKeyTypeFlag{} }
+
+func (a *allowKeyTypeFlag) String() string { return strings.Join(a.vals, ",") }
+
+// Type satisfies pflag.Value, which extends stdlib flag.Value with a type
+// name. cobra registers --allow-key-type as a pflag flag, so this is
+// required.
+func (a *allowKeyTypeFlag) Type() string { return "string" }
+
+func (a *allowKeyTypeFlag) Set(s string) error {
+	a.vals = append(a.vals, s)
+	return nil
+}
+
+// toSet returns a map of key type → struct{} for O(1) lookups.
+func (a *allowKeyTypeFlag) toSet() map[string]struct{} {
+	m := make(map[string]struct{}, len(a.vals))
+	for _, v := range a.vals {
+		m[v] = struct{}{}
+	}
+	return m
+}
+
+// describe returns a human-readable summary for logging.
+func (a *allowKeyTypeFlag) describe() string {
+	if len(a.vals) == 0 {
+		return "all types"
+	}
+	return strings.Join(a.vals, ", ")
+}
+
 // --- agent filter ---
 
 // policy is the session-wide agent policy: the --allow-key set (empty
-// means allow all), the path of the host agent socket that each client
+// means allow all), the --allow-key-type set (empty means allow all
+// types), the path of the host agent socket that each client
 // dials, and the broker's pid and session id (0 = unknown) learned from
 // the handover message's credentials. It is built once in
 // runChildWithAgent and shared across all per-client agentFilter values;
 // the broker fields are set once more, by receiveListener.
 type policy struct {
 	allow                map[string]struct{} // empty = allow all
+	allowTypes           map[string]struct{} // empty = allow all types
 	sock                 string              // host agent socket to dial per client
 	sessionCheckMode     sessionCheckMode    // how the session check is enforced (see its type)
 	brokerPID            int                 // broker's pid in flue's pid ns (0 = unknown)

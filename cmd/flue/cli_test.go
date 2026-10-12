@@ -31,11 +31,11 @@ func TestCobraSubcommands(t *testing.T) {
 	}
 }
 
-// TestCobraPersistentFlags guards that the three global flags are registered
+// TestCobraPersistentFlags guards that the global flags are registered
 // as *persistent* flags on the root, so they are inherited by both subcommands
 // and can be placed before the subcommand (the current flue convention).
 func TestCobraPersistentFlags(t *testing.T) {
-	for _, name := range []string{"sock", "log-level", "allow-key"} {
+	for _, name := range []string{"sock", "log-level", "allow-key", "allow-key-type"} {
 		if rootCmd.PersistentFlags().Lookup(name) == nil {
 			t.Errorf("persistent flag --%s is not registered on the root", name)
 		}
