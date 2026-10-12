@@ -921,6 +921,44 @@ func keyTypeFromBlob(blob []byte) string {
 	return key.Type()
 }
 
+// keyTypes returns the type names a key matches against --allow-key-type:
+// a plain key has exactly its own wire type, while a certificate has both
+// its certificate type (e.g. ssh-ed25519-cert-v01@openssh.com) and its
+// underlying key's type (ssh-ed25519) — so a certificate can be allowed
+// or excluded through either name, which is what lets a cert-only
+// allowlist deny static (uncertified) keys.
+func keyTypes(key ssh.PublicKey) []string {
+	if cert, ok := key.(*ssh.Certificate); ok {
+		return []string{cert.Type(), cert.Key.Type()}
+	}
+	return []string{key.Type()}
+}
+
+// keyTypesFromBlob is the blob variant of keyTypes: nil for an unparsable
+// blob, which matches no --allow-key-type value (the filter fails closed
+// when a type list is set).
+func keyTypesFromBlob(blob []byte) []string {
+	key, err := ssh.ParsePublicKey(blob)
+	if err != nil {
+		return nil
+	}
+	return keyTypes(key)
+}
+
+// typeAllowed reports whether any of the key's type names is in the
+// --allow-key-type set; an empty set allows all types.
+func (f *agentFilter) typeAllowed(types []string) bool {
+	if len(f.pol.allowTypes) == 0 {
+		return true
+	}
+	for _, t := range types {
+		if _, ok := f.pol.allowTypes[t]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // List returns keys, filtered by allowlist if one is set.
 func (f *agentFilter) List() ([]*agent.Key, error) {
 	keys, err := f.upstream.List()

@@ -456,3 +456,70 @@ func TestAgentOpLogHasKeyType(t *testing.T) {
 		}
 	}
 }
+
+// TestKeyTypesPlain verifies that a plain key matches only its own wire
+// type.
+func TestKeyTypesPlain(t *testing.T) {
+	initTestKeys(t)
+	pub, err := ssh.ParsePublicKey(testKeys.blob1)
+	if err != nil {
+		t.Fatalf("parse pub: %v", err)
+	}
+	if got := keyTypes(pub); !cmp.Equal(got, []string{"ssh-ed25519"}) {
+		t.Fatalf("keyTypes = %v, want [ssh-ed25519]", got)
+	}
+}
+
+// TestKeyTypesCertificate verifies that a certificate matches both its
+// certificate type and its underlying key's type.
+func TestKeyTypesCertificate(t *testing.T) {
+	ak, _, _ := newCertKey(t, "cert")
+	want := []string{"ssh-ed25519-cert-v01@openssh.com", "ssh-ed25519"}
+	if got := keyTypes(ak.Certificate); !cmp.Equal(got, want) {
+		t.Fatalf("keyTypes = %v, want %v", got, want)
+	}
+}
+
+// TestKeyTypesFromBlob verifies the blob variant: a certificate blob
+// yields both names, an unparsable blob yields nil.
+func TestKeyTypesFromBlob(t *testing.T) {
+	_, certBlob, _ := newCertKey(t, "cert")
+	want := []string{"ssh-ed25519-cert-v01@openssh.com", "ssh-ed25519"}
+	if got := keyTypesFromBlob(certBlob); !cmp.Equal(got, want) {
+		t.Fatalf("keyTypesFromBlob = %v, want %v", got, want)
+	}
+	if got := keyTypesFromBlob([]byte("not a key blob")); got != nil {
+		t.Fatalf("unparsable blob: keyTypesFromBlob = %v, want nil", got)
+	}
+}
+
+// TestTypeAllowed verifies the --allow-key-type predicate: an empty set
+// allows everything; otherwise a key passes when any of its type names is
+// listed — including, for a certificate, through either name.
+func TestTypeAllowed(t *testing.T) {
+	_, certBlob, _ := newCertKey(t, "cert")
+	certTypes := keyTypesFromBlob(certBlob)
+	plainTypes := []string{"ssh-ed25519"}
+	one := func(s string) map[string]struct{} { return map[string]struct{}{s: {}} }
+	cases := []struct {
+		name  string
+		allow map[string]struct{}
+		types []string
+		want  bool
+	}{
+		{"empty set allows all", nil, certTypes, true},
+		{"underlying type matches cert", one("ssh-ed25519"), certTypes, true},
+		{"cert type matches cert", one("ssh-ed25519-cert-v01@openssh.com"), certTypes, true},
+		{"other type denies cert", one("ecdsa-sha2-nistp256"), certTypes, false},
+		{"cert-only set denies plain key", one("ssh-ed25519-cert-v01@openssh.com"), plainTypes, false},
+		{"set set denies unparsable key", one("ssh-ed25519"), nil, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := &agentFilter{pol: &policy{allowTypes: c.allow}}
+			if got := f.typeAllowed(c.types); got != c.want {
+				t.Fatalf("typeAllowed(%v) = %v, want %v", c.types, got, c.want)
+			}
+		})
+	}
+}
