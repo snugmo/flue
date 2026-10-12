@@ -60,8 +60,10 @@ usage error.
   (`exec.Command.ExtraFiles`), end A stays on the host.
 - It carries exactly one message: the broker's listener fd (SCM_RIGHTS),
   read by `receiveListener`. The host end has `SO_PASSCRED` enabled, so
-  the broker's credentials (`SCM_CREDENTIALS` — its pid in the root, i.e.
-  host, pid namespace) ride the same message, and `receiveListener` turns
+  the broker's credentials (`SCM_CREDENTIALS` — its pid in flue's pid
+  namespace: the kernel translates the sender's pid to the reader's
+  namespace, so for a flue on the host that is the host's) ride the same
+  message, and `receiveListener` turns
   that pid into the broker's session id (`policy.brokerSession`), the
   reference the client session check compares against.
 - The received fd is validated before use: `getsockopt` on the raw fd must
@@ -116,9 +118,10 @@ listener.
   (logged at `debug` at handover).
 - Each accepted connection is checked before it is proxied:
   `getsockopt(SO_PEERCRED)` on the accepted connection yields the
-  client's pid — the kernel records it at connect time, and it is the
-  root-namespace pid even for a client in a container pid namespace —
-  and its session id is read the same way as the broker's. A client
+  client's pid in flue's pid namespace — the kernel records it at
+  connect time and translates it to the reader's namespace, so a client
+  in a container pid namespace still yields a usable pid — and its
+  session id is read the same way as the broker's. A client
   whose session is unknown (no peer credentials, or the pid already
   gone) or different from the broker's is refused: a warn is logged
   with both session ids and the connection is closed. Every failure

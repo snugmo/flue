@@ -545,8 +545,8 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preser
 	a, b := pair[0], pair[1]
 
 	// Enable SO_PASSCRED on the host end: the kernel then attaches the
-	// sender's credentials (SCM_CREDENTIALS — the broker's pid in the
-	// root (host) pid namespace) to the handover message, so
+	// sender's credentials (SCM_CREDENTIALS — the broker's pid in flue's
+	// pid namespace) to the handover message, so
 	// receiveListener can learn the broker's session id for the client
 	// session check. If this fails, the session stays unknown (0) and
 	// the check fails open.
@@ -682,7 +682,7 @@ func (a *allowKeyFlag) describe() string {
 type policy struct {
 	allow         map[string]struct{} // empty = allow all
 	sock          string              // host agent socket to dial per client
-	brokerPID     int                 // broker's pid in the root ns (0 = unknown)
+	brokerPID     int                 // broker's pid in flue's pid ns (0 = unknown)
 	brokerSession int                 // broker's session id (0 = unknown)
 }
 
@@ -901,8 +901,9 @@ func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listen
 	}
 	// The broker's credentials (SO_PASSCRED on the host end, see
 	// runChildWithAgent) ride the same message: a Ucred carrying the
-	// broker's root-namespace pid, from which we read its session id for
-	// the client session check. Unknown (0) when absent or gone.
+	// broker's pid in flue's pid namespace, from which we read its
+	// session id for the client session check. Unknown (0) when absent
+	// or gone.
 	if cred, cerr := receivedUcreds(oob[:oobn]); cerr == nil && cred.Pid > 0 {
 		pol.brokerPID = int(cred.Pid)
 		if sess, serr := sessionIDOfPID(int(cred.Pid)); serr != nil {
@@ -1104,10 +1105,11 @@ func receivedFDs(oob []byte) ([]int, error) {
 
 // receivedUcreds extracts the SCM_CREDENTIALS control message (the
 // sender's pid, uid, gid) from a control message's oob bytes, if
-// present. The pid is in the root (host) pid namespace: the kernel
-// records the sender's struct pid in the skb and converts it with
-// pid_vnr (numbers[0]) at read time, so a sender in a container pid
-// namespace still yields the pid to look up in the host's /proc.
+// present. The pid is in the pid namespace of the reading process: the
+// kernel records the sender's struct pid in the skb and translates it
+// (pid_vnr) to the reader's namespace at read time, so a sender in a
+// container pid namespace still yields a pid to look up in the /proc
+// flue reads (the host's, when flue runs on the host).
 func receivedUcreds(oob []byte) (*unix.Ucred, error) {
 	cmsgs, err := unix.ParseSocketControlMessage(oob)
 	if err != nil {
@@ -1139,10 +1141,12 @@ func sessionIDFromStatLine(line string) (int, error) {
 }
 
 // sessionIDOfPID reads the session id of pid from /proc/<pid>/stat.
-// Session ids are global (they are the session leader's process-group
-// id in the root namespace), so a broker's and a client's values read
-// from the host's /proc are directly comparable even when the two
-// processes live in container pid namespaces.
+// Session ids are comparable between processes only as long as they
+// are read from the same /proc: field 6 is the session leader's pid
+// translated to the namespace in which /proc is mounted, so a broker's
+// and a client's values read from the same /proc (e.g. the host's) are
+// directly comparable even when the two processes live in container
+// pid namespaces.
 func sessionIDOfPID(pid int) (int, error) {
 	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
 	if err != nil {
@@ -1164,8 +1168,8 @@ func sessionCheckActive(pol *policy) bool {
 }
 
 // peerSessionID returns the session id of the peer of a connected Unix
-// socket. getsockopt(SO_PEERCRED) yields the peer's pid in the root (host)
-// pid namespace — the kernel records it at connect time, so it works on
+// socket. getsockopt(SO_PEERCRED) yields the peer's pid in flue's pid
+// namespace — the kernel records it at connect time, so it works on
 // accepted connections without SO_PASSCRED — and the session is read from
 // /proc (sessionIDOfPID). A peer that already exited is an error, not a
 // guess: the caller fails closed. (SO_PEERPIDFD, Linux 6.5+, would pin

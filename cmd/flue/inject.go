@@ -15,11 +15,13 @@ const brokerMemfdName = "flue-broker"
 
 // brokerMemfdFlags are the flags for the injected-broker memfd. MFD_EXEC
 // (Linux ≥ 6.3) opts the memfd into execution against the vm.memfd_noexec
-// sysctl, which otherwise refuses to exec memfd-backed files; it is a
-// no-op on kernels that predate the sysctl. MFD_CLOEXEC is belt-and-braces:
-// the child drops the fd across its exec, but it documents that the broker
-// needs no persistent handle to its own backing file. MFD_ALLOW_SEALING
-// lets injectBrokerMemfd seal the bytes once written (see below).
+// sysctl, which otherwise refuses to exec memfd-backed files; kernels that
+// predate the sysctl reject the flag with EINVAL, which
+// memfdCreateWithFallback retries without it. MFD_CLOEXEC is
+// belt-and-braces: the child drops the fd across its exec, but it
+// documents that the broker needs no persistent handle to its own backing
+// file. MFD_ALLOW_SEALING lets injectBrokerMemfd seal the bytes once
+// written (see below).
 const brokerMemfdFlags = unix.MFD_EXEC | unix.MFD_CLOEXEC | unix.MFD_ALLOW_SEALING
 
 // memfdCreateWithFallback creates a memfd with the preferred flags,
