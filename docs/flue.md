@@ -59,7 +59,11 @@ usage error.
 - `SOCK_SEQPACKET` socketpair; end B is passed to the child as fd 3
   (`exec.Command.ExtraFiles`), end A stays on the host.
 - It carries exactly one message: the broker's listener fd (SCM_RIGHTS),
-  read by `receiveListener`.
+  read by `receiveListener`. The host end has `SO_PASSCRED` enabled, so
+  the broker's credentials (`SCM_CREDENTIALS` — its pid in the root, i.e.
+  host, pid namespace) ride the same message, and `receiveListener` turns
+  that pid into the broker's session id (`policy.brokerSession`), the
+  reference the client session check compares against.
 - The received fd is validated before use: `getsockopt` on the raw fd must
   report `AF_UNIX` / `SOCK_STREAM` / `SO_ACCEPTCONN=1`, and the wrapped
   result must be a `*net.UnixListener`. Anything else (e.g. a TCP listener

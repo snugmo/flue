@@ -213,12 +213,15 @@ identical to the image's own.
    socket's fd to the host over the control socket (SCM_RIGHTS) exactly
    once. It then either (standalone) blocks watching for the host to go
    away, or (wrapper mode) launches the wrapped command as a child with
-   `SSH_AUTH_SOCK` pointed at its socket and waits for it.
+   `SSH_AUTH_SOCK` pointed at its socket and waits for it. Because the
+   host end of the control socket has `SO_PASSCRED` enabled, the same
+   message also carries the broker's credentials.
 4. On the host, `flue` receives the listener fd and `accept()`s client
    connections directly; for each one it dials a fresh connection to
    `$SSH_AUTH_SOCK` and runs `agent.ServeAgent(filter, clientConn)` —
    the filter wraps the upstream agent client and enforces the key
-   allowlist.
+   allowlist. From the handover message's `SCM_CREDENTIALS` it learns the
+   broker's session id, the reference for the client session check.
 5. Lifetime is driven by the process tree, not the control channel (which
    carries a single listener-fd message). In wrapper mode, when the wrapped
    command exits, `flue-broker` exits, the `podman exec` returns, and

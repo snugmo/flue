@@ -98,6 +98,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -545,6 +546,17 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preser
 		fatalf("flue: socketpair: %v", err)
 	}
 	a, b := pair[0], pair[1]
+
+	// Enable SO_PASSCRED on the host end: the kernel then attaches the
+	// sender's credentials (SCM_CREDENTIALS — the broker's pid in the
+	// root (host) pid namespace) to the handover message, so
+	// receiveListener can learn the broker's session id for the client
+	// session check. If this fails, the session stays unknown (0) and
+	// the check fails open.
+	if err := unix.SetsockoptInt(a, unix.SOL_SOCKET, unix.SO_PASSCRED, 1); err != nil {
+		log.Warn("flue: enable SO_PASSCRED", "err", err)
+	}
+
 	// Pass end B as an extra file in the child; it will be fd 3
 	// (first extra file after stdin/stdout/stderr).
 	childFd := os.NewFile(uintptr(b), "flue-control-child")
@@ -665,12 +677,15 @@ func (a *allowKeyFlag) describe() string {
 // --- agent filter ---
 
 // policy is the session-wide agent policy: the --allow-key set (empty
-// means allow all) and the path of the host agent socket that each
-// client dials. It is built once in runChildWithAgent and shared
-// read-only across all per-client agentFilter values.
+// means allow all), the path of the host agent socket that each client
+// dials, and the broker's session id (0 = unknown) learned from the
+// handover message. It is built once in runChildWithAgent and shared
+// across all per-client agentFilter values; brokerSession is set once
+// more, by receiveListener.
 type policy struct {
-	allow map[string]struct{} // empty = allow all
-	sock  string              // host agent socket to dial per client
+	allow         map[string]struct{} // empty = allow all
+	sock          string              // host agent socket to dial per client
+	brokerSession int                 // broker's session id (0 = unknown)
 }
 
 // agentFilter wraps one upstream ssh agent client (one per client
@@ -848,10 +863,14 @@ func closeFile(f *os.File) {
 }
 
 // receiveListener reads the single control message (the broker's listening
-// fd) from the control channel, wraps it in a *net.UnixListener, and starts
-// a background accept loop that proxies each client connection to the agent.
-// It returns the listener (so the caller can close it to stop the loop) and
-// a channel that is closed when the accept loop exits. The control message is
+// fd, plus the broker's credentials) from the control channel, wraps the fd
+// in a *net.UnixListener, and starts a background accept loop that proxies
+// each client connection to the agent. The sender's credentials
+// (SCM_CREDENTIALS) ride the same message; receiveListener turns the
+// broker's pid into its session id and stores it on the policy
+// (0 = unknown: no credentials, or the broker already gone). It returns
+// the listener (so the caller can close it to stop the loop) and a channel
+// that is closed when the accept loop exits. The control message is
 // one-shot, but the control connection is NOT closed here: the caller keeps
 // it open until the broker is gone, so the broker (which reads its own end)
 // does not observe a premature "host gone". The caller closes ctrl.
@@ -882,6 +901,20 @@ func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listen
 	fds, perr := receivedFDs(oob[:oobn])
 	if perr != nil {
 		log.Warn("flue: parse control message", "err", perr)
+	}
+	// The broker's credentials (SO_PASSCRED on the host end, see
+	// runChildWithAgent) ride the same message: a Ucred carrying the
+	// broker's root-namespace pid, from which we read its session id for
+	// the client session check. Unknown (0) when absent or gone.
+	if cred, cerr := receivedUcreds(oob[:oobn]); cerr == nil && cred.Pid > 0 {
+		if sess, serr := sessionIDOfPID(int(cred.Pid)); serr != nil {
+			log.Warn("flue: broker session", "pid", cred.Pid, "err", serr)
+		} else {
+			pol.brokerSession = sess
+			log.Info("flue: broker session", "pid", cred.Pid, "session", sess)
+		}
+	} else if cerr != nil {
+		log.Warn("flue: no broker credentials in handover message", "err", cerr)
 	}
 	if flags&unix.MSG_CTRUNC != 0 {
 		log.Warn("flue: control message truncated; discarding")
@@ -1042,6 +1075,11 @@ func receivedFDs(oob []byte) ([]int, error) {
 	var fds []int
 	var firstErr error
 	for i := range cmsgs {
+		if cmsgs[i].Header.Type != unix.SCM_RIGHTS {
+			// Not a rights message (e.g. the SCM_CREDENTIALS that rides
+			// the same handover message); receivedUcreds handles it.
+			continue
+		}
 		rights, rerr := unix.ParseUnixRights(&cmsgs[i])
 		if rerr != nil {
 			if firstErr == nil {
@@ -1052,6 +1090,55 @@ func receivedFDs(oob []byte) ([]int, error) {
 		fds = append(fds, rights...)
 	}
 	return fds, firstErr
+}
+
+// receivedUcreds extracts the SCM_CREDENTIALS control message (the
+// sender's pid, uid, gid) from a control message's oob bytes, if
+// present. The pid is in the root (host) pid namespace: the kernel
+// records the sender's struct pid in the skb and converts it with
+// pid_vnr (numbers[0]) at read time, so a sender in a container pid
+// namespace still yields the pid to look up in the host's /proc.
+func receivedUcreds(oob []byte) (*unix.Ucred, error) {
+	cmsgs, err := unix.ParseSocketControlMessage(oob)
+	if err != nil {
+		return nil, err
+	}
+	for i := range cmsgs {
+		if cred, perr := unix.ParseUnixCredentials(&cmsgs[i]); perr == nil {
+			return cred, nil
+		}
+	}
+	return nil, errors.New("no SCM_CREDENTIALS in control message")
+}
+
+// sessionIDFromStatLine extracts the session id (field 6) from a
+// /proc/<pid>/stat line. The comm field (2) is wrapped in parentheses
+// but may itself contain spaces and parentheses, so the parse starts
+// after the last `)`: the remaining fields are state, ppid, pgrp,
+// session, ...
+func sessionIDFromStatLine(line string) (int, error) {
+	idx := strings.LastIndexByte(line, ')')
+	if idx < 0 {
+		return 0, errors.New("no closing paren")
+	}
+	fields := strings.Fields(line[idx+1:])
+	if len(fields) < 4 {
+		return 0, errors.New("too few fields after comm")
+	}
+	return strconv.Atoi(fields[3])
+}
+
+// sessionIDOfPID reads the session id of pid from /proc/<pid>/stat.
+// Session ids are global (they are the session leader's process-group
+// id in the root namespace), so a broker's and a client's values read
+// from the host's /proc are directly comparable even when the two
+// processes live in container pid namespaces.
+func sessionIDOfPID(pid int) (int, error) {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return 0, err
+	}
+	return sessionIDFromStatLine(string(data))
 }
 
 // closedChannel returns an already-closed channel, used as a sentinel
