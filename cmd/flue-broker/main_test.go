@@ -20,9 +20,6 @@ func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
 }
 
-// TestMarkCloexecAll verifies the invariant that runChild relies on: after
-// markCloexecAll, no fd above 2 survives into a wrapped child, so the control
-// socketpair and listener are never leaked to processes like bash.
 // TestSetProcName verifies that setProcName changes the comm name of the
 // calling thread — what `ps` reports for a process, so a broker exec'd
 // from the injected memfd (/proc/self/fd/4) still reads as flue-broker.

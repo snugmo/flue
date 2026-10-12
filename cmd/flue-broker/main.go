@@ -2,11 +2,12 @@
 // bridge.
 //
 // It listens on a Unix socket inside the container (a unique per-session
-// path by default; -sock pins one) so that ssh / ssh-add / git can use it
-// (via SSH_AUTH_SOCK). Rather than
-// proxying each client connection itself, it hands the *listening* fd to
-// the host (flue) over a control socketpair (fd 3, received via
-// podman exec --preserve-fds) using SCM_RIGHTS. The host then accepts
+// path by default; -sock pins one) so that ssh / ssh-add / git inside the
+// container can use it via SSH_AUTH_SOCK — the wrapper mode sets that
+// variable for its child; standalone mode leaves it to the caller.
+// Rather than proxying each client connection itself, it hands the
+// *listening* fd to the host (flue) over a control socketpair (fd 3 by
+// default; -fd names another) using SCM_RIGHTS. The host then accepts
 // connections directly on that listener and proxies each one to the real
 // agent with filtering applied.
 //
@@ -17,16 +18,20 @@
 // Two modes:
 //
 //  1. Standalone (no arguments): the broker hands over the listener and
-//     blocks until the control channel reports the host gone (EOF), then
-//     exits and removes the socket. This is the original behavior.
+//     blocks until the control channel reports the host gone (EOF) or a
+//     SIGTERM/SIGHUP/SIGINT arrives, then exits and removes the socket.
+//     This is the original behavior.
 //
 //  2. Wrapper (one or more arguments): the broker hands over the listener,
 //     then launches the given command as a child process inside the
 //     container (e.g. `flue-broker bash`) with SSH_AUTH_SOCK pointed at its
 //     socket, and waits for it. The child's stdio is wired straight through,
 //     so an interactive shell works. The broker exits with the child's exit
-//     status. If the host's departure is detected first (via the control
-//     channel, best-effort), the child is killed and the broker exits 1.
+//     status. If the host's departure arrives on the control channel
+//     (best-effort; in an exact race with the child's exit either event
+//     can win), the child is killed — its descendants may be orphaned in
+//     the container, but the agent socket is removed so they can no
+//     longer reach it — and the broker exits 1.
 //
 // Usage (see flue on the host side). Wrapper mode — get a shell inside the
 // container with the agent available (the broker sets SSH_AUTH_SOCK for
@@ -35,8 +40,9 @@
 //	flue exec -- podman exec --preserve-fds 1 <container> flue-broker bash
 //
 // …or just `flue enter <container> [command…]`, which runs that wrapper-
-// mode podman exec for you (defaulting the command to /bin/sh) and
-// injects the broker in memory by default. Standalone mode (no command)
+// mode podman exec for you (defaulting the command to $FLUE_ENTER_CMD
+// when set and non-blank, else /bin/sh) and injects the broker in memory
+// by default. Standalone mode (no command)
 // leaves SSH_AUTH_SOCK to the caller, so pin -sock to a fixed path:
 //
 //	flue exec -- podman exec --preserve-fds 1 \
@@ -453,9 +459,10 @@ func generateSocketPath() string {
 	return filepath.Join(pickSocketDir(), "flue-"+randHex(8)+".sock")
 }
 
-// pickSocketDir chooses the directory for the generated socket: XDG_RUNTIME_DIR
-// (if set and writable), else /run/user/<uid>, else /run, else /tmp — first
-// that is writable wins.
+// pickSocketDir chooses the directory for the generated socket:
+// XDG_RUNTIME_DIR (if set and writable), /run/user/<uid>, /run — the first
+// writable of those wins — or /tmp as an unconditional last resort (if
+// even that is unwritable, listen fails with a clear error).
 func pickSocketDir() string {
 	if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" && writableDir(d) {
 		return d

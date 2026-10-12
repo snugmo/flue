@@ -48,7 +48,8 @@ func (r *refusalLimiter) reject(level slog.Level, msg string, kv ...any) {
 }
 
 // onWindow fires at the end of a burst window: it summarizes the
-// suppressed refusals and starts a fresh window if the burst continues.
+// suppressed refusals; if the burst continues, the next refusal starts a
+// fresh window.
 func (r *refusalLimiter) onWindow() {
 	r.mu.Lock()
 	n := r.suppressed
