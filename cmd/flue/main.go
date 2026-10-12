@@ -57,9 +57,9 @@
 // explicit choice is logged at info; the default at handover).
 //
 // flue is a cobra CLI with three subcommands. The global flags (--sock,
-// --allow-key, --log-level, --log-file) are persistent: place them
-// before the
-// subcommand. The subcommand's arguments follow the subcommand name; a --
+// --allow-key, --log-level, --log-file) are persistent: place them before
+// the subcommand. The subcommand's arguments follow the subcommand name;
+// a --
 // separates them from the target command so the target's own flags are
 // passed through verbatim (cobra/pflag, unlike stdlib flag, keeps scanning
 // for flags after positional arguments).
@@ -1360,7 +1360,10 @@ func sessionCheckActive(pol *policy) bool {
 //
 // The scan reads the /proc directory and every process's stat line
 // once; it runs once per session, at handover, so the cost is a few
-// milliseconds.
+// milliseconds. A member that forks and exits while the scan runs,
+// with pid wraparound placing the child at an already-scanned pid,
+// would be missed — theoretical: it needs a second process in the
+// session, which is the very thing the scan excludes.
 func sessionIsPrivate(brokerPID, session int) (bool, error) {
 	if brokerPID <= 0 || session <= 0 {
 		return false, nil
@@ -1488,6 +1491,12 @@ func peerPidfdLiveness(rc syscall.RawConn) (bool, error) {
 		}
 		return false, fmt.Errorf("peer process no longer verifiable: %v", gerr)
 	}
+	// The kernel creates the SO_PEERPIDFD fd with O_CLOEXEC
+	// (__pidfd_prepare reserves the fd and its anon inode with
+	// O_RDWR | O_CLOEXEC; verified in v6.5 through 7.2, including
+	// the pidfs rewrite) and this close makes it airtight — a pidfd
+	// must never reach a child process. Keep that in mind when a
+	// child is added here (the desktop endpoint).
 	defer unix.Close(pidfd)
 	if err := unix.PidfdSendSignal(pidfd, 0, nil, 0); err != nil && err != unix.EPERM {
 		return false, fmt.Errorf("peer exited before its session could be verified: %w", err)
