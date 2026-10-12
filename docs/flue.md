@@ -143,6 +143,11 @@ listener.
   - **advisory** (the default) — an injected broker without a tty:
     the check is on when the broker's session is private, off
     otherwise.
+  The mode is an escape hatch on `enter`:
+  `--session-check=required|advisory|off` overrides it (e.g. `off`
+  keeps injection but opts out of the required check on a runtime
+  whose execs share a session). An explicit choice is logged at
+  `info`; the default is logged at handover.
 - The check's state is logged once at handover: at `info` when the
   mode is advisory (`session check on` / `session check off:
   <reason>`), a `warn` with the reason in off mode, and an `error`

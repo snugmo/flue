@@ -116,6 +116,7 @@ subcommand: `flue --allow-key SHA256:… enter <container>`. (The subcommand
 | ----------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | *(arguments)*     | `snugmo`, `$FLUE_ENTER_CMD` else `/bin/sh` | Positional: the container to exec into (default `snugmo`), then the command to run inside it (default `$FLUE_ENTER_CMD` when set and non-blank — split on whitespace — else `/bin/sh`) |
 | `--inject-broker` | `true`  | Run the broker from an in-memory `memfd` (exec'd via `/proc/self/fd/4`) instead of the image's `flue-broker`; no writable filesystem needed. Disable with `--no-inject-broker`, `--inject-broker=false`, or `FLUE_INJECT_BROKER=0` (a set flag wins over the variable) |
+| `--session-check` | auto                  | Override the session check mode: `required` (abort the session if the check cannot be enabled), `advisory`, or `off`. Default is auto: required for an injected broker with a tty, off without injection, advisory otherwise |
 
 **flue-broker** (container-side):
 
@@ -281,7 +282,11 @@ with `--no-inject-broker` or in the `flue exec` passthrough it is not
 used at all, because the broker is then untrusted code that could hand
 over a listener from any session it controls (a warning is logged);
 otherwise (an injected broker without a tty) it is advisory and its
-state is logged at `info` when the session starts. Refusal warnings are
+state is logged at `info` when the session starts.
+`enter --session-check=required|advisory|off` overrides the choice (an
+explicit choice is logged at `info`) — the escape hatch for runtimes
+whose execs share a session, where an interactive session's required
+check would otherwise always abort. Refusal warnings are
 rate-limited (the first of a burst in full, a summary every 30 s, the
 rest flushed at session end), and `--log-file` sends log output to a
 file instead of the terminal.

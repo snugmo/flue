@@ -119,3 +119,24 @@ func TestEnterExecArgs(t *testing.T) {
 		}
 	})
 }
+
+// TestParseSessionCheckMode verifies the --session-check value
+// mapping: the three recognized values map to their modes, anything
+// else errors.
+func TestParseSessionCheckMode(t *testing.T) {
+	good := map[string]sessionCheckMode{
+		"required": sessionCheckRequired,
+		"advisory": sessionCheckAdvisory,
+		"off":      sessionCheckOff,
+	}
+	for s, want := range good {
+		if got, err := parseSessionCheckMode(s); err != nil || got != want {
+			t.Errorf("parseSessionCheckMode(%q) = (%v, %v), want (%v, nil)", s, got, err, want)
+		}
+	}
+	for _, s := range []string{"", "on", "REQUIRED", "advisory "} {
+		if got, err := parseSessionCheckMode(s); err == nil {
+			t.Errorf("parseSessionCheckMode(%q) succeeded (%v), want an error", s, got)
+		}
+	}
+}

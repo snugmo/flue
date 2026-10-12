@@ -52,7 +52,9 @@
 // hand over a listener from any session it controls, so the check is not
 // used (a warning is logged). In the remaining case (an injected broker
 // without a tty) the check is advisory: on when the broker's session is
-// private, off otherwise; its state is logged at info at handover.
+// private, off otherwise; its state is logged at info at handover. On
+// enter, --session-check=required|advisory|off overrides the choice (an
+// explicit choice is logged at info; the default at handover).
 //
 // flue is a cobra CLI with three subcommands. The global flags (--sock,
 // --allow-key, --log-level, --log-file) are persistent: place them
@@ -160,6 +162,10 @@ var (
 	// else $FLUE_INJECT_BROKER, else the default: on) in its Run hook
 	// before runEnter reads it.
 	enterInjectBroker bool
+	// enterSessionCheck holds the raw --session-check value for `enter`
+	// ("" = auto: the mode is chosen from how the broker was started,
+	// see runEnter; required|advisory|off override it).
+	enterSessionCheck string
 )
 
 // defaultEnterContainer is the container `flue enter` targets when none is
@@ -317,6 +323,8 @@ func init() {
 	noInject := enterCmd.Flags().VarPF(newNegBoolValue(&enterInjectBroker), "no-inject-broker", "",
 		"disable broker injection (use the image's flue-broker instead); the negative form of --inject-broker")
 	noInject.NoOptDefVal = "true"
+	enterCmd.Flags().StringVar(&enterSessionCheck, "session-check", "",
+		"override the session check mode: required, advisory, or off (default: auto — required for an injected broker with a tty, off without injection, advisory otherwise)")
 	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
 		if lvl, err := parseLevel(resolveLogLevel()); err != nil {
 			fatalf("flue: %v", err)
@@ -466,6 +474,34 @@ func runEnter(args []string, sockPath string) int {
 
 	tty := stdinIsTTY()
 
+	// The session check's mode: an injected broker with a tty is the
+	// interactive session the check exists to protect, so the check is
+	// required (a session without it is aborted); without injection the
+	// broker is untrusted code and the check is not used; otherwise
+	// (an injected broker without a tty) it is advisory. Resolved before
+	// the memfd and exec below so a bad --session-check value fails fast.
+	var checkMode sessionCheckMode
+	switch {
+	case tty && enterInjectBroker:
+		checkMode = sessionCheckRequired
+	case !enterInjectBroker:
+		checkMode = sessionCheckOff
+	default:
+		checkMode = sessionCheckAdvisory
+	}
+	// --session-check overrides the choice (the escape hatch for
+	// runtimes whose execs share a session — e.g. the container's init
+	// session — so an interactive enter's required check always aborts).
+	// The default choice is logged at handover; an explicit one here.
+	if enterSessionCheck != "" {
+		mode, err := parseSessionCheckMode(enterSessionCheck)
+		if err != nil {
+			fatalf("flue: enter: %v", err)
+		}
+		checkMode = mode
+		log.Info("flue: session check mode (explicit)", "mode", enterSessionCheck)
+	}
+
 	// Broker injection (default on): carry the embedded broker in a memfd
 	// (fd 4) instead of relying on the image's flue-broker, so no writable
 	// filesystem is needed.
@@ -486,22 +522,21 @@ func runEnter(args []string, sockPath string) int {
 		fatalf("flue: enter: find podman: %v", err)
 	}
 
-	// The session check's mode: an injected broker with a tty is the
-	// interactive session the check exists to protect, so the check is
-	// required (a session without it is aborted); without injection the
-	// broker is untrusted code and the check is not used; otherwise
-	// (an injected broker without a tty) it is advisory.
-	var checkMode sessionCheckMode
-	switch {
-	case tty && enterInjectBroker:
-		checkMode = sessionCheckRequired
-	case !enterInjectBroker:
-		checkMode = sessionCheckOff
-	default:
-		checkMode = sessionCheckAdvisory
-	}
-
 	return runChildWithAgent(podman, execArgs, sockPath, preserved, checkMode)
+}
+
+// parseSessionCheckMode maps a --session-check value to a
+// sessionCheckMode.
+func parseSessionCheckMode(s string) (sessionCheckMode, error) {
+	switch s {
+	case "required":
+		return sessionCheckRequired, nil
+	case "advisory":
+		return sessionCheckAdvisory, nil
+	case "off":
+		return sessionCheckOff, nil
+	}
+	return 0, fmt.Errorf("--session-check must be required, advisory, or off (got %q)", s)
 }
 
 // enterTarget splits the `flue enter` arguments into the container name
