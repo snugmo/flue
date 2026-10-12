@@ -135,13 +135,14 @@ listener.
     control connection, which makes the broker kill the wrapped
     command — rather than serve a session without the second gate
     (fail closed).
-  - **off** — `--no-inject-broker`: the broker is untrusted code that
-    could hand over a listener from any session it controls, so the
-    session it reports is not a trustworthy reference; the check is
-    never used, a warning says why, and the privacy scan is skipped.
-  - **advisory** (the default) — an injected broker without a tty,
-    and standalone mode: the check is on when the broker's session is
-    private, off otherwise.
+  - **off** — `--no-inject-broker` or the `flue exec` passthrough: the
+    broker is untrusted code that could hand over a listener from any
+    session it controls, so the session it reports is not a trustworthy
+    reference; the check is never used, a warning says why, and the
+    privacy scan is skipped.
+  - **advisory** (the default) — an injected broker without a tty:
+    the check is on when the broker's session is private, off
+    otherwise.
 - The check's state is logged once at handover: at `info` when the
   mode is advisory (`session check on` / `session check off:
   <reason>`), a `warn` with the reason in off mode, and an `error`

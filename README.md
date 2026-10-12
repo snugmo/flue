@@ -230,9 +230,10 @@ identical to the image's own.
    refused. For an interactive `flue enter` (injected broker with a
    tty) the check is required: if it cannot be enabled, `flue` aborts
    the session rather than serve it without the check. With
-   `--no-inject-broker` the broker is untrusted code and the check is
-   not used (a warning is logged); in other modes its state is logged
-   at `info` when the session starts.
+   `--no-inject-broker` or in the `flue exec` passthrough the broker is
+   untrusted code and the check is not used (a warning is logged); in
+   the remaining mode (an injected broker without a tty) its state is
+   logged at `info` when the session starts.
 5. Lifetime is driven by the process tree, not the control channel (which
    carries a single listener-fd message). In wrapper mode, when the wrapped
    command exits, `flue-broker` exits, the `podman exec` returns, and
@@ -276,10 +277,11 @@ other processes (older runtimes), this check does not apply. The check's
 mode depends on how the broker was started: for an interactive `flue
 enter` (injected broker with a tty) it is required — if it cannot be
 enabled, the session is aborted rather than served without the check;
-with `--no-inject-broker` it is not used at all, because the broker is
-then untrusted code that could hand over a listener from any session it
-controls (a warning is logged); otherwise it is advisory and its state
-is logged at `info` when the session starts. Refusal warnings are
+with `--no-inject-broker` or in the `flue exec` passthrough it is not
+used at all, because the broker is then untrusted code that could hand
+over a listener from any session it controls (a warning is logged);
+otherwise (an injected broker without a tty) it is advisory and its
+state is logged at `info` when the session starts. Refusal warnings are
 rate-limited (the first of a burst in full, a summary every 30 s, the
 rest flushed at session end), and `--log-file` sends log output to a
 file instead of the terminal.

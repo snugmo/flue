@@ -46,12 +46,13 @@
 // the check required — if it cannot be enabled (no broker credentials in
 // the handover, the broker's session unreadable, or its session not
 // private), flue aborts the session, failing closed rather than silently
-// serving one without the second gate. Without injection the broker is
-// untrusted code that could hand over a listener from any session it
-// controls, so the check is not used (a warning is logged). In all other
-// cases (an injected broker without a tty, standalone mode) the check is
-// advisory: on when the broker's session is private, off otherwise; its
-// state is logged at info at handover.
+// serving one without the second gate. Without injection — an enter with
+// --no-inject-broker, or the flue exec passthrough, where the broker runs
+// unmodified from the image — the broker is untrusted code that could
+// hand over a listener from any session it controls, so the check is not
+// used (a warning is logged). In the remaining case (an injected broker
+// without a tty) the check is advisory: on when the broker's session is
+// private, off otherwise; its state is logged at info at handover.
 //
 // flue is a cobra CLI with three subcommands. The global flags (--sock,
 // --allow-key, --log-level, --log-file) are persistent: place them
@@ -568,7 +569,8 @@ func stdinIsTTY() bool {
 // runPassthrough is the classic mode: the caller passes a command (after
 // `--`) that is expected to receive the control socketpair (flue-broker,
 // or a wrapper that preserves fd 3). The broker runs unmodified from the
-// image, so the session check is advisory here.
+// image, so it is untrusted code (like --no-inject-broker) and the
+// session check is off here: a warning says why.
 func runPassthrough(args []string, sockPath string) int {
 	cmdPath := args[0]
 	if !strings.Contains(cmdPath, "/") {
@@ -578,7 +580,7 @@ func runPassthrough(args []string, sockPath string) int {
 		}
 	}
 
-	return runChildWithAgent(cmdPath, args[1:], sockPath, nil, sessionCheckAdvisory)
+	return runChildWithAgent(cmdPath, args[1:], sockPath, nil, sessionCheckOff)
 }
 
 // runChildWithAgent starts a child (program plus args), hands one end of
@@ -1265,20 +1267,20 @@ func sessionIDOfPID(pid int) (int, error) {
 type sessionCheckMode int
 
 const (
-	// sessionCheckAdvisory is the default: best effort. The check is on
-	// when the broker's session is private, off otherwise; its state is
-	// logged at info at handover. Used for an injected broker without a
-	// tty and for standalone mode.
+	// sessionCheckAdvisory: best effort. The check is on when the
+	// broker's session is private, off otherwise; its state is logged at
+	// info at handover. Used for an injected broker without a tty.
 	sessionCheckAdvisory sessionCheckMode = iota
 	// sessionCheckRequired: flue knows it ran an injected broker with a
 	// tty (`flue enter` from a terminal) — the interactive session the
 	// check exists to protect. If the check cannot be enabled, the
 	// session is aborted (fail closed).
 	sessionCheckRequired
-	// sessionCheckOff: the broker was not injected, so it is untrusted
-	// code that could hand over a listener from any session it controls;
-	// the session it reports is not a trustworthy reference, and the
-	// check is never used (a warning is logged).
+	// sessionCheckOff: the broker was not injected — an enter with
+	// --no-inject-broker, or the flue exec passthrough — so it is
+	// untrusted code that could hand over a listener from any session it
+	// controls; the session it reports is not a trustworthy reference,
+	// and the check is never used (a warning is logged).
 	sessionCheckOff
 )
 
