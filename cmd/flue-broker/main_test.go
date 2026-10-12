@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/signal"
 	"reflect"
 	"runtime"
 	"strings"
@@ -106,6 +107,16 @@ func newControlSocketpair(t *testing.T) (host, broker net.Conn) {
 	return h, b
 }
 
+// notifyTestSignals registers the broker's termination signals and returns
+// the channel, the same one run() provides when it calls runChild or
+// waitForHost; the subscription is stopped in cleanup.
+func notifyTestSignals(t *testing.T) <-chan os.Signal {
+	t.Helper()
+	sigc := notifySignals()
+	t.Cleanup(func() { signal.Stop(sigc) })
+	return sigc
+}
+
 // TestRunChildExitCode verifies that runChild spawns the given command and
 // returns its exit status. The control channel is left open (the "host" end
 // stays up), so the child-exit path is what ends runChild.
@@ -121,7 +132,7 @@ func TestRunChildExitCode(t *testing.T) {
 			_, broker := newControlSocketpair(t)
 			sockPath := t.TempDir() + "/flue.sock"
 
-			got := runChild([]string{"sh", "-c", tc.script}, sockPath, broker)
+			got := runChild([]string{"sh", "-c", tc.script}, sockPath, broker, notifyTestSignals(t))
 			if got != tc.want {
 				t.Fatalf("runChild: got exit code %d, want %d", got, tc.want)
 			}
@@ -251,7 +262,7 @@ func TestRunChildForwardsSIGTERM(t *testing.T) {
 		_ = unix.Kill(os.Getpid(), unix.SIGTERM)
 	}()
 	script := `trap 'exit 9' TERM; while :; do sleep 0.05; done`
-	if got := runChild([]string{"sh", "-c", script}, t.TempDir()+"/s.sock", broker); got != 9 {
+	if got := runChild([]string{"sh", "-c", script}, t.TempDir()+"/s.sock", broker, notifyTestSignals(t)); got != 9 {
 		t.Fatalf("runChild: got exit code %d, want 9", got)
 	}
 }
@@ -265,7 +276,7 @@ func TestWaitForHostSIGTERM(t *testing.T) {
 		_ = unix.Kill(os.Getpid(), unix.SIGTERM)
 	}()
 	done := make(chan int, 1)
-	go func() { done <- waitForHost(broker) }()
+	go func() { done <- waitForHost(broker, notifyTestSignals(t)) }()
 	select {
 	case code := <-done:
 		if code != 0 {
@@ -280,7 +291,7 @@ func TestWaitForHostSIGTERM(t *testing.T) {
 // reported shell-style as 128+signal rather than -1/255.
 func TestRunChildSignalExitCode(t *testing.T) {
 	_, broker := newControlSocketpair(t)
-	if got := runChild([]string{"sh", "-c", "kill -9 $$"}, t.TempDir()+"/s.sock", broker); got != 137 {
+	if got := runChild([]string{"sh", "-c", "kill -9 $$"}, t.TempDir()+"/s.sock", broker, notifyTestSignals(t)); got != 137 {
 		t.Fatalf("runChild: got exit code %d, want 137", got)
 	}
 }

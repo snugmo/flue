@@ -1,9 +1,10 @@
 # flue — a narrow channel from your host's SSH agent into a container
 #
 # Builds flue-broker (container-side) and flue (host-side): a filtered SSH
-# agent bridge. flue-broker forwards client connection fds to the host over a
-# socketpair control channel; flue relays each to the real agent with
-# key-allowlist filtering.
+# agent bridge. flue-broker listens on a Unix socket inside the container
+# and hands that listening fd to the host over a socketpair control
+# channel; flue accepts client connections on it and proxies each to the
+# real agent with key-allowlist filtering.
 #
 # Build:
 #   ./build.sh                          # Build only

@@ -194,6 +194,13 @@ func run() int {
 		return failf("flue-broker: %v", err)
 	}
 
+	// Subscribe to the termination signals before the socket is created,
+	// so a signal landing in any window (socket creation, handover, child
+	// startup) is relayed instead of taking the default disposition and
+	// killing the broker with defers unrun and the socket left behind.
+	sigc := notifySignals()
+	defer signal.Stop(sigc)
+
 	// When -sock is empty (unset, or set to the empty value), generate a
 	// per-session socket path (random name in the best available runtime
 	// directory) so concurrent `flue enter` sessions don't collide on a
@@ -243,9 +250,9 @@ func run() int {
 	// returned to main so the defers above (remove socket, close control)
 	// run before the process exits with it.
 	if args := flag.Args(); len(args) > 0 {
-		return runChild(args, *sockPath, ctrl)
+		return runChild(args, *sockPath, ctrl, sigc)
 	}
-	return waitForHost(ctrl)
+	return waitForHost(ctrl, sigc)
 }
 
 // listenPrivate listens on a Unix socket at path with mode 0600 from the
@@ -260,12 +267,11 @@ func listenPrivate(path string) (net.Listener, error) {
 	return net.Listen("unix", path)
 }
 
-// waitForHost blocks until the control channel reports the host going away
-// (EOF / reset) and returns 0 for a clean shutdown. This is the standalone
-// (no-argument) mode.
-func waitForHost(ctrl net.Conn) int {
-	sigc := notifySignals()
-	defer signal.Stop(sigc)
+// waitForHost blocks until the control channel reports the host going
+// away (EOF / reset) or a termination signal arrives on sigc (the channel
+// run() registered before the socket was created), and returns 0 for a
+// clean shutdown. This is the standalone (no-argument) mode.
+func waitForHost(ctrl net.Conn, sigc <-chan os.Signal) int {
 	select {
 	case <-watchHostGone(ctrl, nil):
 		log.Info("flue-broker: host gone, shutting down")
@@ -278,7 +284,9 @@ func waitForHost(ctrl net.Conn) int {
 
 // notifySignals subscribes to the termination signals the broker handles
 // itself, so that it unwinds (removing its socket) instead of dying with
-// the file left behind.
+// the file left behind. run calls it once, before the socket is created,
+// and passes the channel to waitForHost or runChild; both only read from
+// it and never stop it (run's defer does).
 func notifySignals() chan os.Signal {
 	c := make(chan os.Signal, 4)
 	signal.Notify(c, unix.SIGTERM, unix.SIGHUP, unix.SIGINT)
@@ -324,8 +332,10 @@ func watchHostGone(ctrl net.Conn, shuttingDown *atomic.Bool) <-chan struct{} {
 // container, wires its stdio through, and points SSH_AUTH_SOCK at the
 // broker's socket so ssh / git in the child reach the host agent through
 // flue. It blocks until the child exits (returning the child's exit status)
-// or the host goes away first (killing the child and returning 1).
-func runChild(args []string, sockPath string, ctrl net.Conn) int {
+// or the host goes away first (killing the child and returning 1). sigc is
+// the termination-signal channel run() registered before the socket was
+// created; the forwarder below reads from it.
+func runChild(args []string, sockPath string, ctrl net.Conn, sigc <-chan os.Signal) int {
 	cmdPath := args[0]
 	if !strings.Contains(cmdPath, "/") {
 		if resolved, err := exec.LookPath(cmdPath); err == nil {
@@ -362,13 +372,12 @@ func runChild(args []string, sockPath string, ctrl net.Conn) int {
 	childDone := make(chan error, 1)
 	go func() { childDone <- cmd.Wait() }()
 
-	// SIGTERM and SIGHUP aimed at the broker are forwarded to the child,
-	// which decides how to react; the broker keeps running until the child
-	// exits and then cleans up as usual. SIGINT is swallowed: on a tty the
-	// child already receives its own copy via the foreground process group,
-	// and the broker must outlive it to remove the socket.
-	sigc := notifySignals()
-	defer signal.Stop(sigc)
+	// SIGTERM and SIGHUP aimed at the broker (relayed on sigc) are
+	// forwarded to the child, which decides how to react; the broker
+	// keeps running until the child exits and then cleans up as usual.
+	// SIGINT is swallowed: on a tty the child already receives its own
+	// copy via the foreground process group, and the broker must outlive
+	// it to remove the socket.
 	stopFwd := make(chan struct{})
 	defer close(stopFwd)
 	go func() {
@@ -486,10 +495,14 @@ func randHex(n int) string {
 // child started afterwards does not inherit the broker's socket fds. The
 // broker itself keeps using those fds — CLOEXEC only affects the exec'd
 // child. It enumerates open descriptors via /proc/self/fd (the broker is
-// Linux-only).
+// Linux-only). Failures are logged, not fatal: an fd that closed between
+// the enumeration and the fcntl (EBADF) is already gone and so uninherited;
+// any other failure would let the child inherit a fd this call exists to
+// withhold, which is worth a warning.
 func markCloexecAll() {
 	ents, err := os.ReadDir("/proc/self/fd")
 	if err != nil {
+		log.Warn("flue-broker: markCloexecAll: /proc/self/fd unreadable; a child may inherit the control fd or the listener", "err", err)
 		return
 	}
 	for _, e := range ents {
@@ -497,7 +510,12 @@ func markCloexecAll() {
 		if err != nil || fd < 3 {
 			continue
 		}
-		_, _ = unix.FcntlInt(uintptr(fd), unix.F_SETFD, unix.FD_CLOEXEC)
+		if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, unix.FD_CLOEXEC); err != nil {
+			if errors.Is(err, unix.EBADF) {
+				continue // fd closed between enumeration and fcntl; nothing to inherit
+			}
+			log.Warn("flue-broker: markCloexecAll: set CLOEXEC failed; a child may inherit this fd", "fd", fd, "err", err)
+		}
 	}
 }
 
