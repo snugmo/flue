@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"log/slog"
 	"net"
 	"sync"
 	"testing"
@@ -371,5 +372,87 @@ func TestFilterExtension(t *testing.T) {
 	_, err = f.Extension("some-unknown-extension", []byte{})
 	if err != agent.ErrExtensionUnsupported {
 		t.Errorf("expected ErrExtensionUnsupported, got %v", err)
+	}
+}
+
+// TestAgentOpLogHasKeyType verifies the debug trace of an op about a
+// specific key carries the key type alongside its fingerprint (allowed
+// and denied alike), while summary records keep the detail field.
+func TestAgentOpLogHasKeyType(t *testing.T) {
+	initTestKeys(t)
+	// Allow only fp1: key 2's ops are denied and key 1's allowed, so
+	// both directions of the per-key record are exercised.
+	f := newTestFilter(t, map[string]struct{}{testKeys.fp1: {}})
+
+	pub1, err := ssh.ParsePublicKey(testKeys.blob1)
+	if err != nil {
+		t.Fatalf("parse pub1: %v", err)
+	}
+	pub2, err := ssh.ParsePublicKey(testKeys.blob2)
+	if err != nil {
+		t.Fatalf("parse pub2: %v", err)
+	}
+
+	oldLog := log
+	h := &captureHandler{}
+	log = slog.New(h)
+	defer func() { log = oldLog }()
+
+	f.List()
+	f.Sign(pub1, []byte("ok"))
+	f.Sign(pub2, []byte("no"))
+	f.Remove(pub1)
+
+	recs := h.snapshot()
+	type want struct {
+		op, keyType, fingerprint, detail string
+		allowed                          bool
+		hasKey                           bool // true: type+fingerprint fields
+	}
+	wants := []want{
+		{"list", "ssh-ed25519", testKeys.fp2, "", false, true},
+		{"list", "", "", "1 of 2 keys allowed", true, false},
+		{"sign", "ssh-ed25519", testKeys.fp1, "", true, true},
+		{"sign", "ssh-ed25519", testKeys.fp2, "", false, true},
+		{"remove", "ssh-ed25519", testKeys.fp1, "", false, true},
+	}
+	if len(recs) != len(wants) {
+		t.Fatalf("got %d log records, want %d", len(recs), len(wants))
+	}
+	for i, w := range wants {
+		r := recs[i]
+		if r.Message != "flue: agent op" {
+			t.Fatalf("record %d: message %q, want %q", i, r.Message, "flue: agent op")
+		}
+		var op, ktype, fp, detail string
+		allowed, hasAllowed := false, false
+		r.Attrs(func(a slog.Attr) bool {
+			switch a.Key {
+			case "op":
+				op = a.Value.String()
+			case "type":
+				ktype = a.Value.String()
+			case "fingerprint":
+				fp = a.Value.String()
+			case "detail":
+				detail = a.Value.String()
+			case "allowed":
+				allowed, hasAllowed = a.Value.Bool(), true
+			}
+			return true
+		})
+		if !hasAllowed || allowed != w.allowed {
+			t.Fatalf("record %d: allowed=%v (present=%v), want %v", i, allowed, hasAllowed, w.allowed)
+		}
+		if op != w.op {
+			t.Fatalf("record %d: op=%q, want %q", i, op, w.op)
+		}
+		if w.hasKey {
+			if ktype != w.keyType || fp != w.fingerprint {
+				t.Fatalf("record %d: type=%q fingerprint=%q, want %q %q", i, ktype, fp, w.keyType, w.fingerprint)
+			}
+		} else if ktype != "" || fp != "" || detail != w.detail {
+			t.Fatalf("record %d: summary record = type %q fp %q detail %q, want detail %q", i, ktype, fp, detail, w.detail)
+		}
 	}
 }

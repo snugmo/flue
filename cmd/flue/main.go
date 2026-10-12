@@ -823,10 +823,16 @@ func (f *agentFilter) isAllowed(fp string) bool {
 }
 
 // logf traces one agent operation at debug level (enable with
-// --log-level=debug; the former -verbose flag). The detail argument is a
-// key fingerprint for sign-style ops and a summary (or empty) otherwise.
-func (f *agentFilter) logf(op, detail string, allowed bool) {
-	log.Debug("flue: agent op", "op", op, "detail", detail, "allowed", allowed)
+// --log-level=debug; the former -verbose flag). For ops about a specific
+// key, ktype is the key type (e.g. ssh-ed25519) and detail the key
+// fingerprint, logged as the type and fingerprint fields; for the rest,
+// ktype is empty and detail a summary (or empty).
+func (f *agentFilter) logf(op, ktype, detail string, allowed bool) {
+	if ktype != "" {
+		log.Debug("flue: agent op", "op", op, "type", ktype, "fingerprint", detail, "allowed", allowed)
+	} else {
+		log.Debug("flue: agent op", "op", op, "detail", detail, "allowed", allowed)
+	}
 }
 
 // keyFingerprint computes the SHA256: fingerprint of an ssh.PublicKey the
@@ -855,6 +861,19 @@ func keyFingerprintFromBlob(blob []byte) string {
 	return "SHA256:" + base64.RawStdEncoding.EncodeToString(h[:])
 }
 
+// keyTypeFromBlob returns the wire type of a raw key blob for logging.
+// For a certificate that is the certificate's own type (e.g.
+// ssh-ed25519-cert-v01@openssh.com), so certificate use is visible in the
+// trace (the fingerprint, in contrast, is normalized to the underlying
+// key — see keyFingerprintFromBlob). An unparsable blob yields "unknown".
+func keyTypeFromBlob(blob []byte) string {
+	key, err := ssh.ParsePublicKey(blob)
+	if err != nil {
+		return "unknown"
+	}
+	return key.Type()
+}
+
 // List returns keys, filtered by allowlist if one is set.
 func (f *agentFilter) List() ([]*agent.Key, error) {
 	keys, err := f.upstream.List()
@@ -862,7 +881,7 @@ func (f *agentFilter) List() ([]*agent.Key, error) {
 		return nil, err
 	}
 	if len(f.pol.allow) == 0 {
-		f.logf("list", fmt.Sprintf("%d keys", len(keys)), true)
+		f.logf("list", "", fmt.Sprintf("%d keys", len(keys)), true)
 		return keys, nil
 	}
 	var out []*agent.Key
@@ -871,10 +890,10 @@ func (f *agentFilter) List() ([]*agent.Key, error) {
 		if f.isAllowed(fp) {
 			out = append(out, k)
 		} else {
-			f.logf("list", fp, false)
+			f.logf("list", keyTypeFromBlob(k.Blob), fp, false)
 		}
 	}
-	f.logf("list", fmt.Sprintf("%d of %d keys allowed", len(out), len(keys)), true)
+	f.logf("list", "", fmt.Sprintf("%d of %d keys allowed", len(out), len(keys)), true)
 	return out, nil
 }
 
@@ -882,10 +901,10 @@ func (f *agentFilter) List() ([]*agent.Key, error) {
 func (f *agentFilter) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error) {
 	fp := keyFingerprint(key)
 	if !f.isAllowed(fp) {
-		f.logf("sign", fp, false)
+		f.logf("sign", key.Type(), fp, false)
 		return nil, fmt.Errorf("signing denied for key %s", fp)
 	}
-	f.logf("sign", fp, true)
+	f.logf("sign", key.Type(), fp, true)
 	return f.upstream.Sign(key, data)
 }
 
@@ -893,46 +912,46 @@ func (f *agentFilter) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, erro
 func (f *agentFilter) SignWithFlags(key ssh.PublicKey, data []byte, flags agent.SignatureFlags) (*ssh.Signature, error) {
 	fp := keyFingerprint(key)
 	if !f.isAllowed(fp) {
-		f.logf("sign(flags)", fp, false)
+		f.logf("sign(flags)", key.Type(), fp, false)
 		return nil, fmt.Errorf("signing denied for key %s", fp)
 	}
-	f.logf("sign(flags)", fp, true)
+	f.logf("sign(flags)", key.Type(), fp, true)
 	return f.upstream.SignWithFlags(key, data, flags)
 }
 
 // Add is always denied.
 func (f *agentFilter) Add(k agent.AddedKey) error {
-	f.logf("add", "", false)
+	f.logf("add", "", "", false)
 	return fmt.Errorf("adding keys is not allowed through flue")
 }
 
 // Remove is always denied.
 func (f *agentFilter) Remove(key ssh.PublicKey) error {
-	f.logf("remove", keyFingerprint(key), false)
+	f.logf("remove", key.Type(), keyFingerprint(key), false)
 	return fmt.Errorf("removing keys is not allowed through flue")
 }
 
 // RemoveAll is always denied.
 func (f *agentFilter) RemoveAll() error {
-	f.logf("remove-all", "", false)
+	f.logf("remove-all", "", "", false)
 	return fmt.Errorf("removing all keys is not allowed through flue")
 }
 
 // Lock is always denied.
 func (f *agentFilter) Lock(passphrase []byte) error {
-	f.logf("lock", "", false)
+	f.logf("lock", "", "", false)
 	return fmt.Errorf("locking the agent is not allowed through flue")
 }
 
 // Unlock is always denied.
 func (f *agentFilter) Unlock(passphrase []byte) error {
-	f.logf("unlock", "", false)
+	f.logf("unlock", "", "", false)
 	return fmt.Errorf("unlocking the agent is not allowed through flue")
 }
 
 // Signers returns signers for the given key blob.
 func (f *agentFilter) Signers() ([]ssh.Signer, error) {
-	f.logf("signers", "", false)
+	f.logf("signers", "", "", false)
 	return nil, fmt.Errorf("signers request is not allowed through flue")
 }
 

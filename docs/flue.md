@@ -104,7 +104,9 @@ listener.
   - `Add`, `Remove`, `RemoveAll`, `Lock`, `Unlock`, `Signers`: always
     denied.
   - `Extension`: only `session-bind@openssh.com` is forwarded.
-- Per-request agent trace is emitted at `debug` (`--log-level debug`).
+- Per-request agent trace is emitted at `debug` (`--log-level debug`):
+  an op about a specific key carries the key type and its fingerprint
+  (for a certificate, the certificate's own type), other ops a summary.
 
 ## Session check
 
