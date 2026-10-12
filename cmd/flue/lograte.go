@@ -11,10 +11,11 @@ import (
 // summarized. It is a variable so tests can shorten it.
 var refusalWindow = 30 * time.Second
 
-// refusalLimiter rate-limits the per-client refusal warnings of the
-// session check. flue's stderr is the user's tty, and any process in
-// the container can connect in a loop to fill it with "refusing"
-// lines; so the first refusal of a burst is logged in full, the rest
+// refusalLimiter rate-limits the per-client refusal warnings (the
+// session check and the live-connection cap). flue's stderr is the
+// user's tty, and any process in the container can connect in a loop
+// to fill it with "refusing" lines; so the first refusal of a burst is
+// logged in full, the rest
 // are counted and summarized once per refusalWindow ("N more in the
 // last 30 s"), and whatever is left over is flushed when the session
 // ends. Each window therefore starts with one in-full refusal and

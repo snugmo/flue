@@ -162,7 +162,8 @@ listener.
   whose session is unknown (no peer credentials, or the pid already
   gone) or different from the broker's is refused: a warn is logged
   with both session ids and the connection is closed. Every failure
-  direction closes. Refusal warnings are rate-limited
+  direction closes. Refusal warnings — session-check refusals and the
+  live-connection cap ("too many clients") — are rate-limited
   (`refusalLimiter`, `lograte.go`): the first of a burst is logged in
   full, the rest are summarized once every 30 s
   (`flue: client refusals`, `more=N`) and whatever is left is flushed

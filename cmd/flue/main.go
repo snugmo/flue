@@ -1158,7 +1158,10 @@ func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listen
 				continue
 			}
 			if !clients.add(conn) {
-				log.Warn("flue: rejecting client connection (too many clients or shutting down)")
+				// Rate-limited like the session-check refusals
+				// (lograte.go): a container process can connect in a
+				// loop to flood the user's terminal.
+				pol.refusals.reject(slog.LevelWarn, "flue: rejecting client connection (too many clients or shutting down)")
 				closeQuiet(conn)
 				continue
 			}

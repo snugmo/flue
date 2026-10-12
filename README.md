@@ -286,10 +286,10 @@ state is logged at `info` when the session starts.
 `enter --session-check=required|advisory|off` overrides the choice (an
 explicit choice is logged at `info`) — the escape hatch for runtimes
 whose execs share a session, where an interactive session's required
-check would otherwise always abort. Refusal warnings are
-rate-limited (the first of a burst in full, a summary every 30 s, the
-rest flushed at session end), and `--log-file` sends log output to a
-file instead of the terminal.
+check would otherwise always abort. Refusal warnings (session-check refusals and the live-connection
+cap) are rate-limited (the first of a burst in full, a summary every
+30 s, the rest flushed at session end), and `--log-file` sends log
+output to a file instead of the terminal.
 
 ## Integration check (manual)
 
