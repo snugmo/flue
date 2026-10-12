@@ -102,6 +102,31 @@ listener.
   - `Extension`: only `session-bind@openssh.com` is forwarded.
 - Per-request agent trace is emitted at `debug` (`--log-level debug`).
 
+## Session check
+
+- At handover, the broker's credentials (`SCM_CREDENTIALS`, see the
+  control channel above) give the host the broker's pid (root
+  namespace) and session id (`/proc/<pid>/stat` field 6, via
+  `sessionIDOfPID`).
+- The check is active only when the broker is the leader of its own
+  session (session id == pid): what `podman exec -t` creates, and the
+  case for an interactive `flue enter` — everything run from that
+  terminal shares the session. Without a tty (standalone mode, scripted
+  `enter`) the broker is not a session leader and the check is off
+  (logged at `debug` at handover).
+- Each accepted connection is checked before it is proxied:
+  `getsockopt(SO_PEERCRED)` on the accepted connection yields the
+  client's pid — the kernel records it at connect time, and it is the
+  root-namespace pid even for a client in a container pid namespace —
+  and its session id is read the same way as the broker's. A client
+  whose session is unknown (no peer credentials, or the pid already
+  gone) or different from the broker's is refused: a warn is logged
+  with both session ids and the connection is closed. Every failure
+  direction closes.
+- `SO_PEERPIDFD` (Linux 6.5+) would pin the client against exit, but
+  there is no practical way to recover a session id from a pidfd, so
+  the pid-vanishing race stays fail-closed instead.
+
 ## Embedded broker
 
 - `cmd/flue/embed.go` declares `//go:embed flue-broker.bin`: the complete

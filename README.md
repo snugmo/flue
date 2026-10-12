@@ -220,8 +220,11 @@ identical to the image's own.
    connections directly; for each one it dials a fresh connection to
    `$SSH_AUTH_SOCK` and runs `agent.ServeAgent(filter, clientConn)` —
    the filter wraps the upstream agent client and enforces the key
-   allowlist. From the handover message's `SCM_CREDENTIALS` it learns the
-   broker's session id, the reference for the client session check.
+   allowlist. From the handover message's `SCM_CREDENTIALS` it learns
+   the broker's session id. When the broker is the leader of that
+   session (the case for an interactive `flue enter`), each accepted
+   client must share it (`SO_PEERCRED` → `/proc`); clients from another
+   session are refused.
 5. Lifetime is driven by the process tree, not the control channel (which
    carries a single listener-fd message). In wrapper mode, when the wrapped
    command exits, `flue-broker` exits, the `podman exec` returns, and
@@ -254,6 +257,13 @@ carries the per-operation detail), and it never sees a path or fd to the
 host agent socket, its directory, or `$XDG_RUNTIME_DIR`. The trust boundary
 is the allowlist, not the container.
 
+When the broker is the session leader — the case for an interactive
+`flue enter` — a second gate applies: every client must share the broker's
+session, so a rogue process that starts its own session (for example via
+`setsid`) cannot even reach the agent, and a client whose session cannot
+be verified is refused. Without a tty (scripted `flue enter`, standalone
+mode) the broker is not a session leader and this check does not apply.
+
 ## Integration check (manual)
 
 Run these against a real container to verify the full path works. They all
@@ -278,6 +288,10 @@ flue --allow-key SHA256:... enter <container> ssh-add -l
 
 # 6. Two concurrent sessions get distinct sockets and both work
 flue enter <container> -- sh -c 'ssh-add -l' & flue enter <container> -- sh -c 'ssh-add -l'; wait
+
+# 7. (run from a terminal, so the broker is a session leader) a client
+#    that starts its own session is refused
+flue enter <container> -- setsid sh -c 'ssh-add -l 2>&1'  # expect an agent error, not a key list
 ```
 
 ---

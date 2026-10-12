@@ -25,6 +25,15 @@
 //   - Add, Remove, RemoveAll, Lock, Unlock, Signers: always denied.
 //   - Extension: only session-bind@openssh.com is forwarded.
 //
+// A second gate is the session check. When the broker is the session
+// leader that `podman exec -t` creates (its session id equals its
+// root-namespace pid — the case for an interactive `flue enter`), flue
+// verifies that each client shares the broker's session (SO_PEERCRED on
+// the accepted connection, session id from /proc) and refuses clients in
+// any other session, failing closed when a session cannot be
+// determined. Without a tty the broker is not a session leader and the
+// check is off.
+//
 // flue is a cobra CLI with three subcommands. The global flags (--sock,
 // --allow-key, --log-level) are persistent: place them before the
 // subcommand. The subcommand's arguments follow the subcommand name; a --
@@ -678,13 +687,14 @@ func (a *allowKeyFlag) describe() string {
 
 // policy is the session-wide agent policy: the --allow-key set (empty
 // means allow all), the path of the host agent socket that each client
-// dials, and the broker's session id (0 = unknown) learned from the
-// handover message. It is built once in runChildWithAgent and shared
-// across all per-client agentFilter values; brokerSession is set once
-// more, by receiveListener.
+// dials, and the broker's pid and session id (0 = unknown) learned from
+// the handover message's credentials. It is built once in
+// runChildWithAgent and shared across all per-client agentFilter values;
+// the broker fields are set once more, by receiveListener.
 type policy struct {
 	allow         map[string]struct{} // empty = allow all
 	sock          string              // host agent socket to dial per client
+	brokerPID     int                 // broker's pid in the root ns (0 = unknown)
 	brokerSession int                 // broker's session id (0 = unknown)
 }
 
@@ -907,11 +917,20 @@ func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listen
 	// broker's root-namespace pid, from which we read its session id for
 	// the client session check. Unknown (0) when absent or gone.
 	if cred, cerr := receivedUcreds(oob[:oobn]); cerr == nil && cred.Pid > 0 {
+		pol.brokerPID = int(cred.Pid)
 		if sess, serr := sessionIDOfPID(int(cred.Pid)); serr != nil {
 			log.Warn("flue: broker session", "pid", cred.Pid, "err", serr)
 		} else {
 			pol.brokerSession = sess
 			log.Info("flue: broker session", "pid", cred.Pid, "session", sess)
+			if sess != int(cred.Pid) {
+				// Not the leader of its own session (e.g. no tty at
+				// exec): the "same session as the broker" invariant
+				// does not hold, so the client session check stays
+				// off (sessionCheckActive).
+				log.Debug("flue: session check off: broker is not a session leader",
+					"pid", cred.Pid, "session", sess)
+			}
 		}
 	} else if cerr != nil {
 		log.Warn("flue: no broker credentials in handover message", "err", cerr)
@@ -1004,6 +1023,10 @@ func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listen
 				continue
 			}
 			delay = 0
+			if !checkClientSession(conn, pol) {
+				closeQuiet(conn)
+				continue
+			}
 			if !clients.add(conn) {
 				log.Warn("flue: rejecting client connection (too many clients or shutting down)")
 				closeQuiet(conn)
@@ -1139,6 +1162,82 @@ func sessionIDOfPID(pid int) (int, error) {
 		return 0, err
 	}
 	return sessionIDFromStatLine(string(data))
+}
+
+// sessionCheckActive reports whether the client session check is in
+// effect: the broker's session must be known and the broker must be the
+// leader of that session (session id == its root-namespace pid). That is
+// the situation `podman exec -t` creates — `flue enter` from a terminal —
+// where every process run from that terminal shares the broker's
+// session, so sharing is what "legitimate" means. A broker without a tty
+// (standalone mode, scripted enter) is not a session leader, so the
+// check is off for it.
+func sessionCheckActive(pol *policy) bool {
+	return pol.brokerSession > 0 && pol.brokerSession == pol.brokerPID
+}
+
+// peerSessionID returns the session id of the peer of a connected Unix
+// socket. getsockopt(SO_PEERCRED) yields the peer's pid in the root (host)
+// pid namespace — the kernel records it at connect time, so it works on
+// accepted connections without SO_PASSCRED — and the session is read from
+// /proc (sessionIDOfPID). A peer that already exited is an error, not a
+// guess: the caller fails closed. (SO_PEERPIDFD, Linux 6.5+, would pin
+// the peer against exit, but there is no practical way to recover a
+// session id from a pidfd, so the race stays fail-closed instead.)
+func peerSessionID(c net.Conn) (int, error) {
+	uc, ok := c.(*net.UnixConn)
+	if !ok {
+		return 0, errors.New("not a Unix connection")
+	}
+	rc, err := uc.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+	var ucred *unix.Ucred
+	err = rc.Control(func(fd uintptr) {
+		ucred, err = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
+	})
+	if err != nil {
+		return 0, err
+	}
+	if ucred == nil || ucred.Pid <= 0 {
+		return 0, errors.New("no peer credentials")
+	}
+	return sessionIDOfPID(int(ucred.Pid))
+}
+
+// clientSessionAllowed decides one session comparison: brokerSession is
+// the reference (0 = check not active), clientSession the client's value
+// (0 = unknown). Unknown client or a different session refuse; the
+// equal case allows.
+func clientSessionAllowed(brokerSession, clientSession int) bool {
+	if brokerSession <= 0 {
+		return true
+	}
+	return clientSession == brokerSession
+}
+
+// checkClientSession enforces the session check on an accepted client
+// connection and reports whether it may be proxied. It fails closed in
+// both directions of the comparison: a client whose session cannot be
+// determined (not a Unix socket, no peer credentials, or a pid that
+// vanished before /proc could be read) and a client in a different
+// session are both refused.
+func checkClientSession(client net.Conn, pol *policy) bool {
+	if !sessionCheckActive(pol) {
+		return true
+	}
+	sess, err := peerSessionID(client)
+	if err != nil {
+		log.Warn("flue: client session unknown; refusing", "err", err)
+		return false
+	}
+	if !clientSessionAllowed(pol.brokerSession, sess) {
+		log.Warn("flue: client session differs from the broker's; refusing",
+			"client-session", sess, "broker-session", pol.brokerSession)
+		return false
+	}
+	return true
 }
 
 // closedChannel returns an already-closed channel, used as a sentinel
