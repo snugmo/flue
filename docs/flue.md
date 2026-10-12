@@ -163,9 +163,21 @@ listener.
   when the session ends — a process that connects in a loop can count
   but not flood the user's terminal (and `--log-file` keeps all of it
   out of the terminal anyway).
-- `SO_PEERPIDFD` (Linux 6.5+) would pin the client against exit, but
-  there is no practical way to recover a session id from a pidfd, so
-  the pid-vanishing race stays fail-closed instead.
+- Against the pid-reuse race (the peer exits and its pid is reused
+  before the `/proc` read), `SO_PEERPIDFD` (Linux 6.5+) hands out a
+  pidfd for the peer **as recorded at connect time**: the kernel keeps
+  a reference to the original task, not a pid number, so a reused pid
+  cannot be confused with it. After reading `/proc`, `peerSessionID`
+  checks the pidfd is still alive (`pidfd_send_signal(pidfd, 0)` —
+  `0` or `EPERM` means alive, `ESRCH` means gone); the read-then-check
+  order is what makes it sound: if the pidfd is alive at check time,
+  the original peer was alive across the whole read window, so the
+  session read is the client's; a gone peer is refused. On kernels
+  without the option the getsockopt fails with `ENOPROTOOPT` and the
+  check is skipped (the `/proc` read stands best-effort: the window is
+  tiny, and an attacker cannot easily arrange for a reused pid to land
+  in the user's session); any other getsockopt failure (the peer's
+  task is already gone, or none was recorded) refuses the connection.
 
 ## Embedded broker
 

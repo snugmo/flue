@@ -2,12 +2,14 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"syscall"
 	"testing"
 	"time"
 
@@ -19,9 +21,12 @@ import (
 // Environment variables used when a test re-runs its own binary to
 // play a role (the session-check test's broker child).
 const (
-	envSessionRole = "FLUE_SESSION_TEST_ROLE" // "broker" marks the child copy
-	envSessionCtrl = "FLUE_SESSION_TEST_CTRL" // control socket path the child dials
-	envSessionSock = "FLUE_SESSION_TEST_SOCK" // path of the child's agent listener
+	envSessionRole  = "FLUE_SESSION_TEST_ROLE"  // "broker" marks the child copy
+	envSessionCtrl  = "FLUE_SESSION_TEST_CTRL"  // control socket path the child dials
+	envSessionSock  = "FLUE_SESSION_TEST_SOCK"  // path of the child's agent listener
+	envDeadPeerRole = "FLUE_DEADPEER_TEST_ROLE" // "client" marks the child copy
+	envDeadPeerSock = "FLUE_DEADPEER_TEST_SOCK" // listener path the child dials
+	envDeadPeerStay = "FLUE_DEADPEER_TEST_STAY" // "1" makes the child stay alive
 )
 
 // TestReceiveListenerBrokerCredentials verifies that when the host end has
@@ -354,6 +359,165 @@ func TestPeerSessionID(t *testing.T) {
 		t.Fatal("peerSessionID(net.Pipe) = ok, want an error (fail closed)")
 	}
 	p1.Close()
+}
+
+// runDeadPeerChild handles the re-executed child role for the dead-peer
+// tests: dial the listener, then either exit (the peer dies) or block
+// (the peer stays alive). Never returns; the process is killed by the
+// parent's cleanup when it should stay alive.
+func runDeadPeerChild(t *testing.T) {
+	if os.Getenv(envDeadPeerRole) != "client" {
+		return
+	}
+	if _, err := net.Dial("unix", os.Getenv(envDeadPeerSock)); err != nil {
+		fmt.Fprintf(os.Stderr, "dead-peer client: dial: %v\n", err)
+		os.Exit(1)
+	}
+	if os.Getenv(envDeadPeerStay) != "1" {
+		os.Exit(0)
+	}
+	// Stay alive: block until the parent kills this process.
+	select {}
+}
+
+// TestPeerSessionIDDeadPeer verifies the fail-closed behavior against a
+// peer that has exited: the SO_PEERCRED pid is the original process's,
+// and its /proc entry may be gone or already reused, so the session
+// read cannot be trusted. The SO_PEERPIDFD liveness check (the kernel
+// pins the peer's task at connect time, so a reused pid cannot be
+// confused with it) must refuse the connection. A child copy of this
+// binary connects to the listener and exits before the parent's
+// getsockopt, exactly that race.
+func TestPeerSessionIDDeadPeer(t *testing.T) {
+	runDeadPeerChild(t)
+	if runtime.GOOS != "linux" {
+		t.Skip("session ids come from /proc")
+	}
+
+	l, err := net.Listen("unix", filepath.Join(t.TempDir(), "l.sock"))
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { l.Close() })
+
+	client := exec.Command(os.Args[0], "-test.run="+t.Name())
+	client.Env = append(os.Environ(),
+		envDeadPeerRole+"=client",
+		envDeadPeerSock+"="+l.Addr().String())
+	if err := client.Start(); err != nil {
+		t.Fatalf("start client child: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Process.Kill() })
+	// Wait for the child to fully exit, so the peer is gone before the
+	// getsockopt below (the pid may already be reusable).
+	if err := client.Wait(); err != nil {
+		t.Fatalf("client child: %v", err)
+	}
+
+	conn, err := l.Accept()
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	defer conn.Close()
+	if _, err := peerSessionID(conn); err == nil {
+		t.Fatal("peerSessionID(dead peer) = ok, want an error (fail closed)")
+	}
+}
+
+// hasPeerPidfd reports whether the kernel supports SO_PEERPIDFD, by
+// attempting the getsockopt and distinguishing ENOPROTOOPT (option
+// unknown) from a returned pidfd or another error. It closes any
+// pidfd it obtains.
+func hasPeerPidfd(rc syscall.RawConn) (bool, error) {
+	var pidfd int
+	var gerr error
+	if cerr := rc.Control(func(fd uintptr) {
+		pidfd, gerr = unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_PEERPIDFD)
+	}); cerr != nil {
+		return false, cerr
+	}
+	if gerr != nil {
+		if e, ok := gerr.(unix.Errno); ok && (e == unix.ENOPROTOOPT || e == unix.EOPNOTSUPP) {
+			return false, nil
+		}
+		return false, gerr
+	}
+	unix.Close(pidfd)
+	return true, nil
+}
+
+// TestPeerPidfdLiveness exercises the SO_PEERPIDFD liveness check in
+// isolation from the /proc read: a live peer (a child that stays
+// alive) reports alive; a dead peer (a child that exited) reports an
+// error on kernels that have the option, and "alive" (best-effort) on
+// kernels that don't. A child copy of this binary plays the peer in
+// each case.
+func TestPeerPidfdLiveness(t *testing.T) {
+	runDeadPeerChild(t)
+	if runtime.GOOS != "linux" {
+		t.Skip("session ids come from /proc")
+	}
+
+	for _, tc := range []struct {
+		stay bool
+	}{
+		{stay: true},
+		{stay: false},
+	} {
+		l, err := net.Listen("unix", filepath.Join(t.TempDir(), "l.sock"))
+		if err != nil {
+			t.Fatalf("listen: %v", err)
+		}
+		t.Cleanup(func() { l.Close() })
+
+		child := exec.Command(os.Args[0], "-test.run="+t.Name())
+		env := []string{envDeadPeerRole + "=client", envDeadPeerSock + "=" + l.Addr().String()}
+		if tc.stay {
+			env = append(env, envDeadPeerStay+"=1")
+		}
+		child.Env = append(os.Environ(), env...)
+		if err := child.Start(); err != nil {
+			t.Fatalf("start client child: %v", err)
+		}
+		t.Cleanup(func() { _ = child.Process.Kill() })
+		if tc.stay {
+			time.Sleep(100 * time.Millisecond) // let the connect complete
+		} else {
+			if err := child.Wait(); err != nil { // let the peer exit
+				t.Fatalf("client child: %v", err)
+			}
+		}
+
+		conn, err := l.Accept()
+		if err != nil {
+			t.Fatalf("accept: %v", err)
+		}
+		defer conn.Close()
+		rc, err := conn.(*net.UnixConn).SyscallConn()
+		if err != nil {
+			t.Fatalf("SyscallConn: %v", err)
+		}
+		hasOption, herr := hasPeerPidfd(rc)
+		if herr != nil {
+			t.Fatalf("hasPeerPidfd: %v", herr)
+		}
+
+		ok, lerr := peerPidfdLiveness(rc)
+		switch {
+		case tc.stay:
+			if !ok {
+				t.Fatalf("peerPidfdLiveness(live) = false, want true (err=%v)", lerr)
+			}
+		case hasOption:
+			if ok || lerr == nil {
+				t.Fatalf("peerPidfdLiveness(dead, kernel has SO_PEERPIDFD) = alive, want an error")
+			}
+		default:
+			if !ok || lerr != nil {
+				t.Fatalf("peerPidfdLiveness(dead, kernel lacks SO_PEERPIDFD) = %v, %v; want alive (best-effort)", ok, lerr)
+			}
+		}
+	}
 }
 
 // emptyAgent is a stub upstream agent for the session-check test: it has

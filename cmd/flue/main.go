@@ -34,7 +34,8 @@
 // looks like, with or without a tty (the broker is its leader, or the
 // per-exec helper that led it has already exited). flue then verifies
 // that each client shares the broker's session (SO_PEERCRED on the
-// accepted connection, session id from /proc) and refuses clients in any
+// accepted connection, session id from /proc, and a SO_PEERPIDFD
+// liveness check against the pid-reuse race) and refuses clients in any
 // other session, failing closed when a session cannot be determined. An
 // exec whose process shares a session with the container's other
 // processes (e.g. the container's init session) is not private, and the
@@ -1371,12 +1372,28 @@ func sessionCheckOffReason(pol *policy) string {
 
 // peerSessionID returns the session id of the peer of a connected Unix
 // socket. getsockopt(SO_PEERCRED) yields the peer's pid in flue's pid
-// namespace — the kernel records it at connect time, so it works on
-// accepted connections without SO_PASSCRED — and the session is read from
-// /proc (sessionIDOfPID). A peer that already exited is an error, not a
-// guess: the caller fails closed. (SO_PEERPIDFD, Linux 6.5+, would pin
-// the peer against exit, but there is no practical way to recover a
-// session id from a pidfd, so the race stays fail-closed instead.)
+// namespace — the kernel records the connecting task at connect time,
+// so it works on accepted connections without SO_PASSCRED — and the
+// session is read from /proc (sessionIDOfPID).
+//
+// The pid is only as trustworthy as the window between connect and the
+// /proc read: if the peer exits and its pid is reused before the read,
+// the stat line describes a different process. SO_PEERPIDFD (Linux
+// 6.5+) hands out a pidfd for the peer as recorded at connect time:
+// the kernel keeps a reference to the original task, not a pid number,
+// so a reused pid cannot be confused with it. After the read, the
+// pidfd is checked for liveness (pidfd_send_signal(pidfd, 0): 0 or
+// EPERM means alive, ESRCH means gone). The read-then-check order is
+// what makes it sound: if the pidfd is alive at check time, the
+// original peer was alive across the whole read window, so the session
+// read is the client's; a peer that is gone (or whose session could
+// not be read) is an error, not a guess, and the caller fails closed.
+// If the getsockopt itself fails with ENOPROTOOPT the kernel predates
+// the option and the check is skipped: the window is tiny, and an
+// attacker cannot easily arrange for a reused pid to land in the
+// user's session. Any other getsockopt failure (the peer's task is
+// already gone, or none was recorded) means the read cannot be
+// verified: refuse.
 func peerSessionID(c net.Conn) (int, error) {
 	uc, ok := c.(*net.UnixConn)
 	if !ok {
@@ -1396,7 +1413,46 @@ func peerSessionID(c net.Conn) (int, error) {
 	if ucred == nil || ucred.Pid <= 0 {
 		return 0, errors.New("no peer credentials")
 	}
-	return sessionIDOfPID(int(ucred.Pid))
+	sess, err := sessionIDOfPID(int(ucred.Pid))
+	if err != nil {
+		return 0, err
+	}
+	// Liveness check (see above): if the peer's task is gone, the
+	// /proc read above may describe a reused pid, so refuse.
+	if _, lerr := peerPidfdLiveness(rc); lerr != nil {
+		return 0, lerr
+	}
+	return sess, nil
+}
+
+// peerPidfdLiveness checks the liveness of the peer of a Unix
+// connection via SO_PEERPIDFD (see peerSessionID): the pidfd is a
+// reference to the peer's task as recorded at connect time, so a
+// reused pid cannot be confused with it. It reports (true, nil) when
+// the peer is alive, and also when the kernel predates the option
+// (getsockopt fails with ENOPROTOOPT: the /proc read stands,
+// best-effort); any other outcome (the peer's task is gone, or none
+// was recorded) is an error and the caller fails closed.
+func peerPidfdLiveness(rc syscall.RawConn) (bool, error) {
+	var pidfd int
+	var gerr error
+	cerr := rc.Control(func(fd uintptr) {
+		pidfd, gerr = unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_PEERPIDFD)
+	})
+	if cerr != nil {
+		return false, fmt.Errorf("pidfd getsockopt failed: %w", cerr)
+	}
+	if gerr != nil {
+		if e, ok := gerr.(unix.Errno); ok && (e == unix.ENOPROTOOPT || e == unix.EOPNOTSUPP) {
+			return true, nil
+		}
+		return false, fmt.Errorf("peer process no longer verifiable: %v", gerr)
+	}
+	defer unix.Close(pidfd)
+	if err := unix.PidfdSendSignal(pidfd, 0, nil, 0); err != nil && err != unix.EPERM {
+		return false, fmt.Errorf("peer exited before its session could be verified: %w", err)
+	}
+	return true, nil
 }
 
 // clientSessionAllowed decides one session comparison: brokerSession is
