@@ -53,7 +53,8 @@
 // state is logged at info at handover.
 //
 // flue is a cobra CLI with three subcommands. The global flags (--sock,
-// --allow-key, --log-level) are persistent: place them before the
+// --allow-key, --log-level, --log-file) are persistent: place them
+// before the
 // subcommand. The subcommand's arguments follow the subcommand name; a --
 // separates them from the target command so the target's own flags are
 // passed through verbatim (cobra/pflag, unlike stdlib flag, keeps scanning
@@ -146,6 +147,7 @@ import (
 var (
 	sockArg   string
 	logLevel  string
+	logFile   string
 	allowKeys = newAllowKeyFlag()
 	sockPath  string
 	// enterInjectBroker holds the --inject-broker value for `enter`
@@ -186,8 +188,8 @@ var handoverTimeout = 30 * time.Second
 var procRoot = "/proc"
 
 // log is the package-level slog logger. The default is rebuilt by the root
-// PersistentPreRun from the --log-level flag; the declaration-time default
-// keeps tests (which never call main) working.
+// PersistentPreRun from the --log-level and --log-file flags; the
+// declaration-time default keeps tests (which never call main) working.
 var log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 // rootCmd is the top-level `flue` command. It carries the persistent
@@ -299,6 +301,8 @@ func init() {
 		"agent socket path to proxy to (default $SSH_AUTH_SOCK)")
 	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "",
 		"log level: debug, info, warn, or error (default: $FLUE_LOG_LEVEL, else info)")
+	rootCmd.PersistentFlags().StringVar(&logFile, "log-file", "",
+		"append log output to this file instead of stderr (e.g. to keep refusal warnings off the user's terminal)")
 	rootCmd.PersistentFlags().Var(allowKeys, "allow-key",
 		"SHA256 fingerprint to allow (repeatable)")
 	enterCmd.Flags().BoolVar(&enterInjectBroker, "inject-broker", true,
@@ -315,7 +319,17 @@ func init() {
 		if lvl, err := parseLevel(resolveLogLevel()); err != nil {
 			fatalf("flue: %v", err)
 		} else {
-			log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
+			// --log-file moves the logs (including refusal warnings)
+			// somewhere other than the user's tty; stderr otherwise.
+			var out io.Writer = os.Stderr
+			if logFile != "" {
+				f, ferr := os.OpenFile(logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+				if ferr != nil {
+					fatalf("flue: open log file %s: %v", logFile, ferr)
+				}
+				out = f
+			}
+			log = slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{Level: lvl}))
 		}
 		if cmd.Annotations[needsAgentAnnotation] == "" {
 			return // this subcommand does not proxy the agent socket
@@ -631,6 +645,7 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preser
 		allow:            allowKeys.toSet(),
 		sock:             sockPath,
 		sessionCheckMode: checkMode,
+		refusals:         &refusalLimiter{},
 	}
 
 	log.Info("flue: agent", "sock", sockPath, "filter", allowKeys.describe(), "exec", append([]string{cmdPath}, cmdArgs...))
@@ -664,6 +679,9 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preser
 	<-acceptDone
 	clients.closeAll()
 	clients.Wait()
+	// Report any suppressed refusal warnings: the last word on how many
+	// clients the session check refused.
+	pol.refusals.flush()
 
 	if checkErr != nil {
 		return 1
@@ -741,6 +759,7 @@ type policy struct {
 	brokerSession       int                 // broker's session id (0 = unknown)
 	sessionPrivate      bool                // broker's session had no other live member at handover
 	sessionPrivateKnown bool                // the privacy scan ran (false = could not be determined)
+	refusals            *refusalLimiter     // rate-limits the refusal warnings (lograte.go)
 }
 
 // agentFilter wraps one upstream ssh agent client (one per client
@@ -1405,11 +1424,13 @@ func checkClientSession(client net.Conn, pol *policy) bool {
 	}
 	sess, err := peerSessionID(client)
 	if err != nil {
-		log.Warn("flue: client session unknown; refusing", "err", err)
+		// Rate-limited: a container process can connect in a loop to
+		// flood the user's terminal (lograte.go).
+		pol.refusals.reject(slog.LevelWarn, "flue: client session unknown; refusing", "err", err)
 		return false
 	}
 	if !clientSessionAllowed(pol.brokerSession, sess) {
-		log.Warn("flue: client session differs from the broker's; refusing",
+		pol.refusals.reject(slog.LevelWarn, "flue: client session differs from the broker's; refusing",
 			"client-session", sess, "broker-session", pol.brokerSession)
 		return false
 	}

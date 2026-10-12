@@ -94,7 +94,8 @@ flue enter --no-inject-broker <container>       # or --inject-broker=false
 FLUE_INJECT_BROKER=0 flue enter <container>     # via the environment
 ```
 
-Global flags (`--sock`, `--allow-key`, `--log-level`) go before the
+Global flags (`--sock`, `--allow-key`, `--log-level`, `--log-file`) go
+before the
 subcommand: `flue --allow-key SHA256:… enter <container>`. (The subcommand
 `--` separator above is for your *target command's* flags.)
 
@@ -107,6 +108,7 @@ subcommand: `flue --allow-key SHA256:… enter <container>`. (The subcommand
 | `--sock`      | `$SSH_AUTH_SOCK`               | Agent socket path to proxy to                                                                                                                                                                            |
 | `--allow-key` | (none = all keys)              | Repeatable. Only keys with this SHA256 fingerprint are listed and can sign. Fingerprints are compared the way `ssh-add -l` prints them — for a certificate, that is the fingerprint of its underlying key|
 | `--log-level` | `$FLUE_LOG_LEVEL`, else `info` | Log level: `debug`, `info`, `warn`, or `error`. `debug` logs every agent request (operation, fingerprint, allowed/denied). When the flag is unset, `$FLUE_LOG_LEVEL` is read; a set flag wins            |
+| `--log-file`  | `stderr`                       | Append log output to this file (created if needed, mode `0600`) instead of stderr — keeps session-check refusal warnings off the user's terminal                                                                                              |
 
 **enter** (enter-scoped flag and arguments):
 
@@ -277,7 +279,10 @@ enabled, the session is aborted rather than served without the check;
 with `--no-inject-broker` it is not used at all, because the broker is
 then untrusted code that could hand over a listener from any session it
 controls (a warning is logged); otherwise it is advisory and its state
-is logged at `info` when the session starts.
+is logged at `info` when the session starts. Refusal warnings are
+rate-limited (the first of a burst in full, a summary every 30 s, the
+rest flushed at session end), and `--log-file` sends log output to a
+file instead of the terminal.
 
 ## Integration check (manual)
 

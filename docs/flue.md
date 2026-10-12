@@ -7,7 +7,8 @@ agent needs when changing the code.
 ## Modes
 
 flue is a cobra CLI with three subcommands. The global flags (`--sock`,
-`--allow-key`, `--log-level`) are persistent on the root and go before the
+`--allow-key`, `--log-level`, `--log-file`) are persistent on the root
+and go before the
 subcommand; a subcommand's arguments follow the subcommand name, and a `--`
 separates them from the target command so the target's own flags pass
 through verbatim (pflag, unlike stdlib flag, keeps scanning for flags after
@@ -48,7 +49,8 @@ positionals — which is why the `--` is needed for commands with flags).
 The two agent subcommands share the socketpair machinery in
 `runChildWithAgent`, which returns the child's exit code. The root
 `PersistentPreRun` resolves the log level (a set `--log-level`, else
-`$FLUE_LOG_LEVEL`, else `info`) for every subcommand, but
+`$FLUE_LOG_LEVEL`, else `info`) and the log destination (a set
+`--log-file`, else stderr) for every subcommand, but
 resolves the agent socket path only for the ones annotated with
 `needsAgentAnnotation` (`exec`, `enter`) — so `extract-broker` runs
 without `SSH_AUTH_SOCK` being set. A bare `flue` (no subcommand) is a
@@ -154,7 +156,13 @@ listener.
   whose session is unknown (no peer credentials, or the pid already
   gone) or different from the broker's is refused: a warn is logged
   with both session ids and the connection is closed. Every failure
-  direction closes.
+  direction closes. Refusal warnings are rate-limited
+  (`refusalLimiter`, `lograte.go`): the first of a burst is logged in
+  full, the rest are summarized once every 30 s
+  (`flue: client refusals`, `more=N`) and whatever is left is flushed
+  when the session ends — a process that connects in a loop can count
+  but not flood the user's terminal (and `--log-file` keeps all of it
+  out of the terminal anyway).
 - `SO_PEERPIDFD` (Linux 6.5+) would pin the client against exit, but
   there is no practical way to recover a session id from a pidfd, so
   the pid-vanishing race stays fail-closed instead.
@@ -208,8 +216,11 @@ help/completion) + stdlib `go:embed` (the embedded broker — no
 dependency). Test-only: `go.uber.org/goleak` (goroutine leak
 detection) + `github.com/google/go-cmp` (readable test diffs).
 
-Logging is `log/slog` (stdlib) to stderr, set by `--log-level` (else `$FLUE_LOG_LEVEL`, else `info`; parsed in
-the root `PersistentPreRun`). Fatal setup errors (no agent socket, bad log
+Logging is `log/slog` (stdlib) to stderr — or to the file named by
+`--log-file` (created if needed, opened in append mode, mode 0600),
+useful to keep refusal warnings off the user's terminal — set by
+`--log-level` (else `$FLUE_LOG_LEVEL`, else `info`; both parsed in the
+root `PersistentPreRun`). Fatal setup errors (no agent socket, bad log
 level, socketpair/control-fd/child-start failures) are plain text on
 stderr and exit 1, via `fatalf` — not slog records. Flag and argument
 errors are reported by cobra and exit 1 from `main`.
