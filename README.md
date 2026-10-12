@@ -1,3 +1,5 @@
+<img src="assets/flue-agent.webp" alt="A cheerful cartoon key in a black beanie and night-vision goggles, carrying a rope and a sack, climbs into a smiling brick chimney on a snowy rooftop under a full moon." width="100%" />
+
 # flue
 
 A narrow channel from your host's SSH agent into a container, with host-side
