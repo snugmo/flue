@@ -70,3 +70,66 @@ subject that fixed it). Update this file when an item is addressed.
     `writableDir`, `extract.go`, `inject.go`; SA9009 in `embed.go`) —
     **fixed**; `golangci-lint run ./...` reports 0 issues. The broker's
     `fatalf` became unused and was folded into `failf`.
+
+## Design review 2026-10-11
+
+Findings from the 2026-10-11 design review
+([design-review-2026-10-11.md](design-review-2026-10-11.md)), recorded
+here so the two review documents share one tracking file. Numbering
+continues from the items above.
+
+19. **Host wrapped an unvalidated listener fd (review item 1)** —
+    **fixed** (`🛡️ fix: validate the listener fd the container hands
+    over`, 797b945). `receiveListener` wrapped whatever listening socket
+    the container sent (including TCP); a compromised container could have
+    served the agent over a TCP listener. The fd is now validated
+    (`SO_DOMAIN` `AF_UNIX`, `SO_TYPE` `SOCK_STREAM`, `SO_ACCEPTCONN` 1)
+    and type-asserted to `*net.UnixListener`.
+20. **Certificate fingerprints didn't match `ssh-add -l` (review item
+    2)** — **fixed** (`🐛 fix: match certificate fingerprints to
+    ssh-add -l`, 8995e22). `List` fingerprinted the whole certificate
+    blob, so an `--allow-key` value copied from `ssh-add -l` (the
+    underlying key's fingerprint) never matched. `keyFingerprintFromBlob`
+    now parses and fingerprints `cert.Key`.
+21. **Stale standalone-mode socket examples (review item 3)** —
+    **fixed** (`📝 docs: fix stale standalone-mode socket examples`,
+    dfcfaa3). The broker generates a per-session path, but the AGENTS.md /
+    Containerfile / `exec` help examples set `SSH_AUTH_SOCK` without
+    pinning `-sock`. The examples, the `-sock` default and help, and the
+    socket-path-coupling rule were all corrected.
+22. **Memfd fallback and kernel comments off (review item 4)** —
+    **fixed** (`🐛 fix: retry memfd fallback only on EINVAL; correct
+    docs`, a7d4912). The fallback retried on any error, so an `EACCES`
+    from `vm.memfd_noexec=2` produced a non-executable memfd and a
+    confusing in-container failure; it now retries only on `EINVAL` and
+    reports the refusal clearly. Corrected `MFD_EXEC` to Linux 6.3 /
+    `vm.memfd_noexec` (not 5.17 / MDWE).
+23. **Broker showed as `4` in `ps` (review item 5)** — **fixed**
+    (`🏷️ chore: broker sets its process name to flue-broker`, 5696911).
+    `setProcName` uses `PR_SET_NAME` (a NUL-terminated buffer) so
+    `ps` and `/proc/<pid>/comm` show `flue-broker`.
+24. **README Security section undersold the tool (review item 6)** —
+    **fixed** (`📝 docs: state the actual security guarantee in README`,
+    78d5e5c). Replaced the "trusted containers only" framing with the
+    real guarantee (the allowlist is the trust boundary); the session-check
+    guarantee was added to the same section by task 10.
+25. **`agentFilter` served as both policy and per-client filter (review
+    smaller 1)** — **fixed** (`♻️ refactor: separate agent policy from
+    the per-client filter`, f14e8a6). A `policy{allow, sock}` struct holds
+    the session-wide state; `agentFilter` is now always a per-client value
+    with a real upstream.
+26. **`pickSocketDir` accepted `$XDG_RUNTIME_DIR` without checking
+    writability (review smaller 2)** — **fixed** (`🐛 fix: fall through
+    when XDG_RUNTIME_DIR is not writable`, 35c3d6c). It now requires
+    `writableDir` like the other candidates and falls through on failure.
+27. **Comments drifting from the code (review smaller 3)** — **fixed**
+    (`🧹 chore: trim comments to the ones that earn their place`,
+    3e7e064). Kept the *why* comments; cut *what* narration that restated
+    the code.
+28. **Session check (review "next step")** — **fixed** (`🔍 feat: learn
+    the broker's session id via SCM_CREDENTIALS`, 8d62851; `🔒 feat:
+    refuse client connections from a different session`, f8c6203). When
+    the broker is a session leader (interactive `flue enter`), each client
+    must share the broker's session (`SO_PEERCRED` on the accepted
+    connection, session id from `/proc`); an unknown or different session
+    is refused, failing closed.

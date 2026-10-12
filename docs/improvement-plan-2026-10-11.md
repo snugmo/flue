@@ -19,6 +19,8 @@ Status: each task is marked with its fixing commit as it lands.
 
 ## Task 1 — Host: validate the listener fd the container sends
 
+> **Fixed** in `797b945` — `🛡️ fix: validate the listener fd the container hands over`
+
 Review item 1 (hardening; prerequisite for the session check).
 
 - **Where**: `cmd/flue/main.go`, `receiveListener`.
@@ -46,6 +48,8 @@ Review item 1 (hardening; prerequisite for the session check).
 
 ## Task 2 — Host: certificate fingerprints must match `ssh-add -l`
 
+> **Fixed** in `8995e22` — `🐛 fix: match certificate fingerprints to ssh-add -l`
+
 Review item 2 (correctness bug).
 
 - **Where**: `cmd/flue/main.go`, `keyFingerprintFromBlob` (used by
@@ -69,6 +73,8 @@ Review item 2 (correctness bug).
 - **Size**: S
 
 ## Task 3 — Docs: fix the stale standalone-mode socket examples
+
+> **Fixed** in `dfcfaa3` — `📝 docs: fix stale standalone-mode socket examples`
 
 Review item 3. Since the broker generates a per-session socket path,
 standalone mode examples that set `SSH_AUTH_SOCK=/tmp/flue.sock` without
@@ -106,6 +112,8 @@ pinning `-sock /tmp/flue.sock` describe a socket that does not exist.
 
 ## Task 4 — Memfd: fix the fallback and the kernel/MDWE comments
 
+> **Fixed** in `a7d4912` — `🐛 fix: retry memfd fallback only on EINVAL; correct docs`
+
 Review item 4.
 
 - **Where**: `cmd/flue/inject.go` (`injectBrokerMemfd`), `docs/flue.md`
@@ -131,6 +139,8 @@ Review item 4.
 
 ## Task 5 — Broker: set the process name
 
+> **Fixed** in `5696911` — `🏷️ chore: broker sets its process name to flue-broker`
+
 Review item 5.
 
 - **Where**: `cmd/flue-broker/main.go`, `run()` (after flag parsing,
@@ -148,6 +158,8 @@ Review item 5.
 - **Size**: S
 
 ## Task 6 — README: state the actual security guarantee
+
+> **Fixed** in `78d5e5c` — `📝 docs: state the actual security guarantee in README`
 
 Review item 6. No code changes.
 
@@ -167,6 +179,8 @@ Review item 6. No code changes.
 - **Size**: S
 
 ## Task 7 — Host: split the shared policy out of `agentFilter`
+
+> **Fixed** in `f14e8a6` — `♻️ refactor: separate agent policy from the per-client filter`
 
 Review "smaller points" item 1 (refactor that makes the session check
 cleaner).
@@ -188,6 +202,8 @@ cleaner).
 
 ## Task 8 — Broker: check that XDG_RUNTIME_DIR is writable
 
+> **Fixed** in `35c3d6c` — `🐛 fix: fall through when XDG_RUNTIME_DIR is not writable`
+
 Review "smaller points" item 2.
 
 - **Where**: `cmd/flue-broker/main.go`, `pickSocketDir`.
@@ -203,6 +219,8 @@ Review "smaller points" item 2.
 - **Size**: S
 
 ## Task 9 — Session check (new feature), part 1: learn the broker's session
+
+> **Fixed** in `8d62851` — `🔍 feat: learn the broker's session id via SCM_CREDENTIALS`
 
 Review "next step" 1–2. Depends on task 7 (state goes on the policy).
 
@@ -233,6 +251,8 @@ Review "next step" 1–2. Depends on task 7 (state goes on the policy).
 - **Size**: M
 
 ## Task 10 — Session check, part 2: verify each client's session
+
+> **Fixed** in `f8c6203` — `🔒 feat: refuse client connections from a different session`
 
 Review "next step" 3. Depends on tasks 1 and 9.
 
@@ -275,6 +295,8 @@ Review "next step" 3. Depends on tasks 1 and 9.
 
 ## Task 11 — Comment hygiene: shrink the drift surface
 
+> **Fixed** in `3e7e064` — `🧹 chore: trim comments to the ones that earn their place`
+
 Review "smaller points" item 3. Do this **last**, after the functional
 changes, so we trim the final text rather than rework it.
 
@@ -290,6 +312,8 @@ changes, so we trim the final text rather than rework it.
 - **Size**: M
 
 ## Task 12 — Close-out: record outcomes
+
+> **Fixed** in this commit — `📝 docs: record design-review outcomes in code-quality.md`
 
 - Add the design-review findings to `docs/code-quality.md` (continuing
   its numbering, with **fixed** status and commit subjects) so the two
