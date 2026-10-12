@@ -65,7 +65,10 @@ func TestReceiveListenerBrokerCredentials(t *testing.T) {
 
 	var pol policy
 	var cs clientSet
-	listener, acceptDone := receiveListener(host, &pol, &cs)
+	listener, acceptDone, rerr := receiveListener(host, &pol, &cs)
+	if rerr != nil {
+		t.Fatalf("receiveListener: %v", rerr)
+	}
 	if listener == nil {
 		t.Fatal("receiveListener returned a nil listener")
 	}
@@ -210,6 +213,84 @@ func TestSessionIsPrivate(t *testing.T) {
 	procRoot = filepath.Join(tt, "no-such-dir")
 	if private, err := sessionIsPrivate(100, 100); private || err == nil {
 		t.Fatalf("sessionIsPrivate on a broken /proc = %v, %v; want false, error", private, err)
+	}
+}
+
+// TestReceiveListenerCheckModes verifies the mode handling at handover:
+// in required mode (injected broker with a tty), a handover that leaves
+// the check disabled is a session failure (fail closed — the caller
+// aborts); in off mode (no injection) the check is never enabled even
+// when the handover carries broker credentials, because the broker is
+// untrusted code; in advisory mode (the default) everything passes with
+// the check simply off.
+func TestReceiveListenerCheckModes(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		mode       sessionCheckMode
+		passCred   bool
+		wantErr    bool
+		wantActive bool
+	}{
+		{"required without credentials fails closed", sessionCheckRequired, false, true, false},
+		{"off ignores the broker's credentials", sessionCheckOff, true, false, false},
+		{"off without credentials", sessionCheckOff, false, false, false},
+		{"advisory without credentials", sessionCheckAdvisory, false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host, broker := makeControlPair(t)
+			if tc.passCred {
+				// Enable SO_PASSCRED on the host end, exactly as
+				// runChildWithAgent does, so the message carries the
+				// sender's credentials.
+				rc, err := host.(*net.UnixConn).SyscallConn()
+				if err != nil {
+					t.Fatalf("syscall conn: %v", err)
+				}
+				var hfd int
+				_ = rc.Control(func(fd uintptr) { hfd = int(fd) })
+				if err := unix.SetsockoptInt(hfd, unix.SOL_SOCKET, unix.SO_PASSCRED, 1); err != nil {
+					t.Fatalf("setsockopt SO_PASSCRED: %v", err)
+				}
+			}
+
+			// Hand over a real Unix listener, exactly as the broker does.
+			l, err := net.Listen("unix", "")
+			if err != nil {
+				t.Fatalf("listen: %v", err)
+			}
+			t.Cleanup(func() { l.Close() })
+
+			lf, err := l.(*net.UnixListener).File()
+			if err != nil {
+				t.Fatalf("listener file: %v", err)
+			}
+			oob := unix.UnixRights(int(lf.Fd()))
+			if _, _, err := broker.(*net.UnixConn).WriteMsgUnix([]byte{0}, oob, nil); err != nil {
+				lf.Close()
+				t.Fatalf("write msg: %v", err)
+			}
+			lf.Close() // close only the dup; l keeps the path
+			broker.Close()
+
+			var pol policy
+			pol.sessionCheckMode = tc.mode
+			var cs clientSet
+			listener, acceptDone, err := receiveListener(host, &pol, &cs)
+			t.Cleanup(func() {
+				cs.closeAll()
+				cs.Wait()
+				if listener != nil {
+					listener.Close()
+				}
+				<-acceptDone
+			})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("receiveListener: err = %v, wantErr = %v", err, tc.wantErr)
+			}
+			if active := sessionCheckActive(&pol); active != tc.wantActive {
+				t.Fatalf("sessionCheckActive = %v, want %v", active, tc.wantActive)
+			}
+		})
 	}
 }
 
@@ -393,7 +474,10 @@ func TestReceiveListenerSessionCheck(t *testing.T) {
 	var pol policy
 	pol.sock = agentL.Addr().String()
 	var cs clientSet
-	listener, acceptDone := receiveListener(ctrl, &pol, &cs)
+	listener, acceptDone, rerr := receiveListener(ctrl, &pol, &cs)
+	if rerr != nil {
+		t.Fatalf("receiveListener: %v", rerr)
+	}
 	t.Cleanup(func() {
 		cs.closeAll()
 		cs.Wait()

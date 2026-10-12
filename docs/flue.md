@@ -124,8 +124,27 @@ listener.
   shares a session with the container's other processes — the
   container's init session, the classic no-tty case — is not private,
   and the check is off.
-- The check's state is logged once, at `info`, at handover
-  (`session check on` / `session check off: <reason>`).
+- The check's **mode** depends on how the broker was started
+  (`sessionCheckMode`):
+  - **required** — `flue enter` from a terminal (injected broker +
+    tty): the check must be enabled; if it cannot be (no broker
+    credentials in the handover, the broker's session unreadable, or
+    its session not private), flue aborts the session — closing the
+    control connection, which makes the broker kill the wrapped
+    command — rather than serve a session without the second gate
+    (fail closed).
+  - **off** — `--no-inject-broker`: the broker is untrusted code that
+    could hand over a listener from any session it controls, so the
+    session it reports is not a trustworthy reference; the check is
+    never used, a warning says why, and the privacy scan is skipped.
+  - **advisory** (the default) — an injected broker without a tty,
+    and standalone mode: the check is on when the broker's session is
+    private, off otherwise.
+- The check's state is logged once at handover: at `info` when the
+  mode is advisory (`session check on` / `session check off:
+  <reason>`), a `warn` with the reason in off mode, and an `error`
+  that aborts the session in required mode when the check cannot be
+  enabled.
 - Each accepted connection is checked before it is proxied:
   `getsockopt(SO_PEERCRED)` on the accepted connection yields the
   client's pid in flue's pid namespace — the kernel records it at

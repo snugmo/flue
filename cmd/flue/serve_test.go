@@ -65,7 +65,10 @@ func TestReceiveListener(t *testing.T) {
 
 	var wg clientSet
 	pol := &policy{}
-	listener, acceptDone := receiveListener(host, pol, &wg)
+	listener, acceptDone, rerr := receiveListener(host, pol, &wg)
+	if rerr != nil {
+		t.Fatalf("receiveListener: %v", rerr)
+	}
 
 	if listener == nil {
 		t.Fatal("receiveListener returned a nil listener")
@@ -173,7 +176,10 @@ func TestReceiveListenerRejectsWrongFds(t *testing.T) {
 			closeRef() // drop the test's reference before the leak check
 
 			var cs clientSet
-			listener, acceptDone := receiveListener(host, &policy{}, &cs)
+			listener, acceptDone, rerr := receiveListener(host, &policy{}, &cs)
+			if rerr != nil {
+				t.Fatalf("receiveListener: %v", rerr)
+			}
 			if listener != nil {
 				t.Fatalf("receiveListener accepted a %s fd", tc.name)
 			}
@@ -224,7 +230,10 @@ func TestReceiveListenerTimeout(t *testing.T) {
 	var cs clientSet
 	done := make(chan net.Listener, 1)
 	go func() {
-		l, _ := receiveListener(host, &policy{}, &cs)
+		l, _, rerr := receiveListener(host, &policy{}, &cs)
+		if rerr != nil {
+			t.Errorf("receiveListener: %v", rerr)
+		}
 		done <- l
 	}()
 	select {

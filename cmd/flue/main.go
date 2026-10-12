@@ -38,7 +38,19 @@
 // other session, failing closed when a session cannot be determined. An
 // exec whose process shares a session with the container's other
 // processes (e.g. the container's init session) is not private, and the
-// check is off for it; the state is logged at info at handover.
+// check is off for it.
+//
+// The check's mode depends on how the broker was started (sessionCheckMode):
+// an injected broker run with a tty (`flue enter` from a terminal) makes
+// the check required — if it cannot be enabled (no broker credentials in
+// the handover, the broker's session unreadable, or its session not
+// private), flue aborts the session, failing closed rather than silently
+// serving one without the second gate. Without injection the broker is
+// untrusted code that could hand over a listener from any session it
+// controls, so the check is not used (a warning is logged). In all other
+// cases (an injected broker without a tty, standalone mode) the check is
+// advisory: on when the broker's session is private, off otherwise; its
+// state is logged at info at handover.
 //
 // flue is a cobra CLI with three subcommands. The global flags (--sock,
 // --allow-key, --log-level) are persistent: place them before the
@@ -458,7 +470,22 @@ func runEnter(args []string, sockPath string) int {
 		fatalf("flue: enter: find podman: %v", err)
 	}
 
-	return runChildWithAgent(podman, execArgs, sockPath, preserved)
+	// The session check's mode: an injected broker with a tty is the
+	// interactive session the check exists to protect, so the check is
+	// required (a session without it is aborted); without injection the
+	// broker is untrusted code and the check is not used; otherwise
+	// (an injected broker without a tty) it is advisory.
+	var checkMode sessionCheckMode
+	switch {
+	case tty && enterInjectBroker:
+		checkMode = sessionCheckRequired
+	case !enterInjectBroker:
+		checkMode = sessionCheckOff
+	default:
+		checkMode = sessionCheckAdvisory
+	}
+
+	return runChildWithAgent(podman, execArgs, sockPath, preserved, checkMode)
 }
 
 // enterTarget splits the `flue enter` arguments into the container name
@@ -525,7 +552,8 @@ func stdinIsTTY() bool {
 
 // runPassthrough is the classic mode: the caller passes a command (after
 // `--`) that is expected to receive the control socketpair (flue-broker,
-// or a wrapper that preserves fd 3).
+// or a wrapper that preserves fd 3). The broker runs unmodified from the
+// image, so the session check is advisory here.
 func runPassthrough(args []string, sockPath string) int {
 	cmdPath := args[0]
 	if !strings.Contains(cmdPath, "/") {
@@ -535,7 +563,7 @@ func runPassthrough(args []string, sockPath string) int {
 		}
 	}
 
-	return runChildWithAgent(cmdPath, args[1:], sockPath, nil)
+	return runChildWithAgent(cmdPath, args[1:], sockPath, nil, sessionCheckAdvisory)
 }
 
 // runChildWithAgent starts a child (program plus args), hands one end of
@@ -546,7 +574,7 @@ func runPassthrough(args []string, sockPath string) int {
 // lifetime model — the control connection stays open until the broker is
 // gone, and the block is on the child, not the channel — is in the file
 // header.
-func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preserved []*os.File) int {
+func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preserved []*os.File, checkMode sessionCheckMode) int {
 	// The container takes end B (fd 3); the host keeps end A.
 	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
@@ -558,8 +586,9 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preser
 	// sender's credentials (SCM_CREDENTIALS — the broker's pid in flue's
 	// pid namespace) to the handover message, so
 	// receiveListener can learn the broker's session id for the client
-	// session check. If this fails, the session stays unknown (0) and
-	// the check fails open.
+	// session check. If this fails, the broker's session stays unknown
+	// (0): in advisory mode the session check is off (logged at info),
+	// in required mode the session is aborted (fail closed).
 	if err := unix.SetsockoptInt(a, unix.SOL_SOCKET, unix.SO_PASSCRED, 1); err != nil {
 		log.Warn("flue: enable SO_PASSCRED", "err", err)
 	}
@@ -599,20 +628,32 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preser
 	}
 
 	pol := &policy{
-		allow: allowKeys.toSet(),
-		sock:  sockPath,
+		allow:            allowKeys.toSet(),
+		sock:             sockPath,
+		sessionCheckMode: checkMode,
 	}
 
 	log.Info("flue: agent", "sock", sockPath, "filter", allowKeys.describe(), "exec", append([]string{cmdPath}, cmdArgs...))
 
 	clients := clientSet{max: maxClients}
-	listener, acceptDone := receiveListener(ctrl, pol, &clients)
+	listener, acceptDone, checkErr := receiveListener(ctrl, pol, &clients)
+
+	// The session check was required but cannot be enabled: fail closed.
+	// Close the control connection now — before the wait below, which
+	// would otherwise deadlock: the broker keeps its wrapped command
+	// alive until the host goes away — so the broker kills the command
+	// and exits, and this session is never served without the check.
+	if checkErr != nil {
+		log.Error("flue: session aborted", "err", checkErr)
+		closeQuiet(ctrl)
+	}
 
 	err = cmd.Wait()
 
 	// The broker is gone: close the one-shot control connection (kept open
 	// for the child's lifetime so the broker never sees a premature "host
-	// gone"), stop the accept loop, and close the remaining client
+	// gone"; already closed in the abort case above, where this is a
+	// no-op), stop the accept loop, and close the remaining client
 	// connections. The command is gone, so nothing legitimate is left to
 	// serve, and a lingering container process holding a connection open
 	// would otherwise block the wait below forever.
@@ -624,6 +665,9 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preser
 	clients.closeAll()
 	clients.Wait()
 
+	if checkErr != nil {
+		return 1
+	}
 	if err == nil {
 		return 0
 	}
@@ -692,6 +736,7 @@ func (a *allowKeyFlag) describe() string {
 type policy struct {
 	allow               map[string]struct{} // empty = allow all
 	sock                string              // host agent socket to dial per client
+	sessionCheckMode    sessionCheckMode    // how the session check is enforced (see its type)
 	brokerPID           int                 // broker's pid in flue's pid ns (0 = unknown)
 	brokerSession       int                 // broker's session id (0 = unknown)
 	sessionPrivate      bool                // broker's session had no other live member at handover
@@ -883,7 +928,11 @@ func closeFile(f *os.File) {
 // caller keeps it open until the broker is gone, so the broker (which reads
 // its own end) does not observe a premature "host gone". The caller closes
 // ctrl.
-func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listener, <-chan struct{}) {
+// The returned error is non-nil only in sessionCheckRequired mode when
+// the check cannot be enabled; the listener is then nil and the session
+// must be aborted (the caller closes the control connection, which makes
+// the broker kill its wrapped command).
+func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listener, <-chan struct{}, error) {
 	buf := make([]byte, 4096)
 	oob := make([]byte, 4096)
 
@@ -903,7 +952,7 @@ func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listen
 		default:
 			log.Warn("flue: control read", "err", err)
 		}
-		return nil, closedChannel()
+		return nil, closedChannel(), nil
 	}
 	// The sender is the container side. Whatever fds arrived are ours to
 	// close, including when the message is malformed or truncated.
@@ -918,7 +967,13 @@ func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listen
 	// or gone.
 	if cred, cerr := receivedUcreds(oob[:oobn]); cerr == nil && cred.Pid > 0 {
 		pol.brokerPID = int(cred.Pid)
-		if sess, serr := sessionIDOfPID(int(cred.Pid)); serr != nil {
+		if pol.sessionCheckMode == sessionCheckOff {
+			// The broker is untrusted code: the session it reports is
+			// not a trustworthy reference (a modified broker could
+			// hand over a listener from any session it controls), so
+			// the privacy scan is skipped and the check stays off.
+			log.Debug("flue: broker session", "pid", cred.Pid)
+		} else if sess, serr := sessionIDOfPID(int(cred.Pid)); serr != nil {
 			log.Warn("flue: broker session", "pid", cred.Pid, "err", serr)
 		} else {
 			pol.brokerSession = sess
@@ -933,11 +988,24 @@ func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listen
 	} else if cerr != nil {
 		log.Warn("flue: no broker credentials in handover message", "err", cerr)
 	}
-	// The state of the client session check for this session, logged
-	// once here so the user can see whether the second gate applies.
-	if sessionCheckActive(pol) {
+	// The state of the client session check for this session, decided
+	// once here so the user can see whether the second gate applies. In
+	// required mode (injected broker with a tty) a check that cannot be
+	// enabled is a session failure: the caller aborts (fail closed).
+	switch {
+	case pol.sessionCheckMode == sessionCheckOff:
+		log.Warn("flue: session check off: the broker was not injected, so it is untrusted code: a modified broker could hand over a listener from any session it controls and make the check a no-op")
+	case sessionCheckActive(pol):
 		log.Info("flue: session check on", "session", pol.brokerSession)
-	} else {
+	case pol.sessionCheckMode == sessionCheckRequired:
+		// The received fds (if any) would be closed later only on the
+		// normal path; close them here since the session ends now.
+		for _, fd := range fds {
+			closeFD(fd)
+		}
+		return nil, closedChannel(),
+			fmt.Errorf("session check is required (injected broker with a tty) but could not be enabled: %s", sessionCheckOffReason(pol))
+	default:
 		log.Info("flue: session check off", "reason", sessionCheckOffReason(pol))
 	}
 	if flags&unix.MSG_CTRUNC != 0 {
@@ -948,7 +1016,7 @@ func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listen
 		for _, fd := range fds {
 			closeFD(fd)
 		}
-		return nil, closedChannel()
+		return nil, closedChannel(), nil
 	}
 	// Expect exactly one listener fd; use the first, close any extras.
 	listenFd := -1
@@ -961,7 +1029,7 @@ func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listen
 	}
 	if listenFd < 0 {
 		log.Warn("flue: no listener fd received")
-		return nil, closedChannel()
+		return nil, closedChannel(), nil
 	}
 
 	// The received fd must be what the broker hands over: a listening Unix
@@ -978,7 +1046,7 @@ func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listen
 			"domain", domain, "type", typ, "acceptconn", acceptConn,
 			"err", errors.Join(eDomain, eType, eAccept))
 		closeFD(listenFd)
-		return nil, closedChannel()
+		return nil, closedChannel(), nil
 	}
 
 	// Wrap the received listener fd in a *net.UnixListener so Accept works.
@@ -992,13 +1060,13 @@ func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listen
 	closeFile(lf)
 	if err != nil {
 		log.Warn("flue: listener fd", "err", err)
-		return nil, closedChannel()
+		return nil, closedChannel(), nil
 	}
 	listener, ok := fileListener.(*net.UnixListener)
 	if !ok {
 		closeListener(fileListener)
 		log.Warn("flue: listener fd did not wrap as a Unix listener")
-		return nil, closedChannel()
+		return nil, closedChannel(), nil
 	}
 	log.Debug("flue: accepting on handed-over listener")
 
@@ -1044,7 +1112,7 @@ func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listen
 		}
 	}()
 
-	return listener, acceptDone
+	return listener, acceptDone, nil
 }
 
 // clientSet tracks the live client connections so shutdown can close them
@@ -1172,9 +1240,35 @@ func sessionIDOfPID(pid int) (int, error) {
 	return sessionIDFromStatLine(string(data))
 }
 
+// sessionCheckMode decides what flue does when the client session check
+// is, or is not, enabled (see the file header for the rationale).
+type sessionCheckMode int
+
+const (
+	// sessionCheckAdvisory is the default: best effort. The check is on
+	// when the broker's session is private, off otherwise; its state is
+	// logged at info at handover. Used for an injected broker without a
+	// tty and for standalone mode.
+	sessionCheckAdvisory sessionCheckMode = iota
+	// sessionCheckRequired: flue knows it ran an injected broker with a
+	// tty (`flue enter` from a terminal) — the interactive session the
+	// check exists to protect. If the check cannot be enabled, the
+	// session is aborted (fail closed).
+	sessionCheckRequired
+	// sessionCheckOff: the broker was not injected, so it is untrusted
+	// code that could hand over a listener from any session it controls;
+	// the session it reports is not a trustworthy reference, and the
+	// check is never used (a warning is logged).
+	sessionCheckOff
+)
+
 // sessionCheckActive reports whether the client session check is in
 // effect: the broker's session must be known and it must have been
-// private at handover time (see sessionIsPrivate).
+// private at handover time (see sessionIsPrivate). In
+// sessionCheckOff mode it is false even in principle, because the
+// privacy scan is skipped (see receiveListener); in
+// sessionCheckRequired mode a false return is a session failure, handled
+// by the caller.
 func sessionCheckActive(pol *policy) bool {
 	return pol.brokerSession > 0 && pol.sessionPrivate
 }
@@ -1302,10 +1396,12 @@ func clientSessionAllowed(brokerSession, clientSession int) bool {
 // both directions of the comparison: a client whose session cannot be
 // determined (not a Unix socket, no peer credentials, or a pid that
 // vanished before /proc could be read) and a client in a different
-// session are both refused.
+// session are both refused. In required mode an inactive check is also
+// refused — a belt-and-braces; receiveListener aborts the session
+// before this can matter.
 func checkClientSession(client net.Conn, pol *policy) bool {
 	if !sessionCheckActive(pol) {
-		return true
+		return pol.sessionCheckMode != sessionCheckRequired
 	}
 	sess, err := peerSessionID(client)
 	if err != nil {
