@@ -25,14 +25,20 @@
 //   - Add, Remove, RemoveAll, Lock, Unlock, Signers: always denied.
 //   - Extension: only session-bind@openssh.com is forwarded.
 //
-// A second gate is the session check. When the broker is the session
-// leader that `podman exec -t` creates (its session id equals its
-// root-namespace pid — the case for an interactive `flue enter`), flue
-// verifies that each client shares the broker's session (SO_PEERCRED on
-// the accepted connection, session id from /proc) and refuses clients in
-// any other session, failing closed when a session cannot be
-// determined. Without a tty the broker is not a session leader and the
-// check is off.
+// A second gate is the session check. At handover, flue checks that the
+// broker's session (learned from the handover message's credentials) is
+// private: the only live process in it is the broker itself, which has
+// not yet forked its wrapped command. Session membership is inherited by
+// fork only, so such a session can later hold only the broker and its
+// descendants — which is what an exec that created its own session
+// looks like, with or without a tty (the broker is its leader, or the
+// per-exec helper that led it has already exited). flue then verifies
+// that each client shares the broker's session (SO_PEERCRED on the
+// accepted connection, session id from /proc) and refuses clients in any
+// other session, failing closed when a session cannot be determined. An
+// exec whose process shares a session with the container's other
+// processes (e.g. the container's init session) is not private, and the
+// check is off for it; the state is logged at info at handover.
 //
 // flue is a cobra CLI with three subcommands. The global flags (--sock,
 // --allow-key, --log-level) are persistent: place them before the
@@ -162,6 +168,10 @@ var (
 // handoverTimeout bounds how long flue waits for the broker's listener fd.
 // It is a variable so tests can shorten it.
 var handoverTimeout = 30 * time.Second
+
+// procRoot is the root of the /proc tree the session check reads from.
+// It is a variable so tests can point it at a temporary tree.
+var procRoot = "/proc"
 
 // log is the package-level slog logger. The default is rebuilt by the root
 // PersistentPreRun from the --log-level flag; the declaration-time default
@@ -680,10 +690,12 @@ func (a *allowKeyFlag) describe() string {
 // runChildWithAgent and shared across all per-client agentFilter values;
 // the broker fields are set once more, by receiveListener.
 type policy struct {
-	allow         map[string]struct{} // empty = allow all
-	sock          string              // host agent socket to dial per client
-	brokerPID     int                 // broker's pid in flue's pid ns (0 = unknown)
-	brokerSession int                 // broker's session id (0 = unknown)
+	allow               map[string]struct{} // empty = allow all
+	sock                string              // host agent socket to dial per client
+	brokerPID           int                 // broker's pid in flue's pid ns (0 = unknown)
+	brokerSession       int                 // broker's session id (0 = unknown)
+	sessionPrivate      bool                // broker's session had no other live member at handover
+	sessionPrivateKnown bool                // the privacy scan ran (false = could not be determined)
 }
 
 // agentFilter wraps one upstream ssh agent client (one per client
@@ -911,17 +923,22 @@ func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listen
 		} else {
 			pol.brokerSession = sess
 			log.Info("flue: broker session", "pid", cred.Pid, "session", sess)
-			if sess != int(cred.Pid) {
-				// Not the leader of its own session (e.g. no tty at
-				// exec): the "same session as the broker" invariant
-				// does not hold, so the client session check stays
-				// off (sessionCheckActive).
-				log.Debug("flue: session check off: broker is not a session leader",
-					"pid", cred.Pid, "session", sess)
+			if private, perr := sessionIsPrivate(pol.brokerPID, sess); perr != nil {
+				log.Warn("flue: broker session", "pid", cred.Pid, "session", sess, "privacy-scan", perr)
+			} else {
+				pol.sessionPrivate = private
+				pol.sessionPrivateKnown = true
 			}
 		}
 	} else if cerr != nil {
 		log.Warn("flue: no broker credentials in handover message", "err", cerr)
+	}
+	// The state of the client session check for this session, logged
+	// once here so the user can see whether the second gate applies.
+	if sessionCheckActive(pol) {
+		log.Info("flue: session check on", "session", pol.brokerSession)
+	} else {
+		log.Info("flue: session check off", "reason", sessionCheckOffReason(pol))
 	}
 	if flags&unix.MSG_CTRUNC != 0 {
 		log.Warn("flue: control message truncated; discarding")
@@ -1148,7 +1165,7 @@ func sessionIDFromStatLine(line string) (int, error) {
 // directly comparable even when the two processes live in container
 // pid namespaces.
 func sessionIDOfPID(pid int) (int, error) {
-	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	data, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "stat"))
 	if err != nil {
 		return 0, err
 	}
@@ -1156,15 +1173,87 @@ func sessionIDOfPID(pid int) (int, error) {
 }
 
 // sessionCheckActive reports whether the client session check is in
-// effect: the broker's session must be known and the broker must be the
-// leader of that session (session id == its root-namespace pid). That is
-// the situation `podman exec -t` creates — `flue enter` from a terminal —
-// where every process run from that terminal shares the broker's
-// session, so sharing is what "legitimate" means. A broker without a tty
-// (standalone mode, scripted enter) is not a session leader, so the
-// check is off for it.
+// effect: the broker's session must be known and it must have been
+// private at handover time (see sessionIsPrivate).
 func sessionCheckActive(pol *policy) bool {
-	return pol.brokerSession > 0 && pol.brokerSession == pol.brokerPID
+	return pol.brokerSession > 0 && pol.sessionPrivate
+}
+
+// sessionIsPrivate reports whether no process other than brokerPID is
+// alive in session (both ids in the namespace of the /proc flue reads).
+//
+// A session's members are the leader and its (transitive) descendants:
+// membership is inherited by fork, and setsid only ever creates a new
+// session — a process can never join an existing one. So a session
+// whose only live member at handover time — before the broker forks its
+// wrapped command — is the broker itself can later contain only the
+// broker and its descendants. That is exactly the "legitimate client"
+// set the session check protects: a client connecting from the session
+// this exec created, and nothing from another exec or the container's
+// init tree.
+//
+// The gate the code previously used — the broker is the session leader
+// (session id == its own pid) — is a special case of this: a leader
+// with no other live member is private. But a per-exec session whose
+// leader has already exited is private without the broker being a
+// leader, and that is what recent podman/crun setups produce for every
+// exec, with or without a tty (the exec'd process is a member, not the
+// leader, of a session a short-lived helper created), so the leader
+// test left the check off there. A session with other live members —
+// the container's init session, where older runtimes place an exec
+// without its own session — is not private, and the check stays off:
+// every process in the container would look "the same session".
+//
+// The scan reads the /proc directory and every process's stat line
+// once; it runs once per session, at handover, so the cost is a few
+// milliseconds.
+func sessionIsPrivate(brokerPID, session int) (bool, error) {
+	if brokerPID <= 0 || session <= 0 {
+		return false, nil
+	}
+	d, err := os.Open(procRoot)
+	if err != nil {
+		return false, err
+	}
+	defer d.Close()
+	for {
+		entries, err := d.Readdir(256)
+		for _, e := range entries {
+			pid, err := strconv.Atoi(e.Name())
+			if err != nil || pid == brokerPID {
+				continue // not a process directory, or the broker itself
+			}
+			other, err := sessionIDOfPID(pid)
+			if err != nil {
+				continue // process exited during the scan; a reused pid
+				// cannot land in this session (membership is by fork)
+			}
+			if other == session {
+				return false, nil
+			}
+		}
+		if err == io.EOF {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+	}
+}
+
+// sessionCheckOffReason explains why the session check is not in effect
+// for this session (for the state log at handover).
+func sessionCheckOffReason(pol *policy) string {
+	switch {
+	case pol.brokerPID == 0:
+		return "no broker credentials in the handover message (SO_PASSCRED not in effect, or the sender's pid is not visible in flue's pid namespace)"
+	case pol.brokerSession == 0:
+		return "the broker's session id could not be read from /proc (its pid is not visible in flue's pid namespace)"
+	case !pol.sessionPrivateKnown:
+		return "the broker's session could not be checked for privacy (the /proc scan failed)"
+	default:
+		return fmt.Sprintf("the broker's session %d is shared with other live processes (not private to this session)", pol.brokerSession)
+	}
 }
 
 // peerSessionID returns the session id of the peer of a connected Unix

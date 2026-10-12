@@ -107,15 +107,25 @@ listener.
 ## Session check
 
 - At handover, the broker's credentials (`SCM_CREDENTIALS`, see the
-  control channel above) give the host the broker's pid (root
-  namespace) and session id (`/proc/<pid>/stat` field 6, via
-  `sessionIDOfPID`).
-- The check is active only when the broker is the leader of its own
-  session (session id == pid): what `podman exec -t` creates, and the
-  case for an interactive `flue enter` — everything run from that
-  terminal shares the session. Without a tty (standalone mode, scripted
-  `enter`) the broker is not a session leader and the check is off
-  (logged at `debug` at handover).
+  control channel above) give flue the broker's pid (in flue's pid
+  namespace) and session id (`/proc/<pid>/stat` field 6 — the session
+  leader's pid in the namespace of `/proc` — via `sessionIDOfPID`).
+- The check is active when the broker's session is **private**: its
+  only live member at handover time (before the broker forks its
+  wrapped command) is the broker itself (`sessionIsPrivate` scans
+  `/proc` once to decide). Session membership is inherited by fork
+  only — a process can never join an existing session — so a private
+  session can later contain only the broker and its descendants, which
+  is exactly the "legitimate client" set. A session is private when
+  this exec created it: the broker is its leader (older runtimes, with
+  `-t`: the pty setup does the `setsid` in the exec'd process), or it
+  was led by a short-lived per-exec helper that has already exited
+  (recent runtimes, with or without a tty). An exec whose process
+  shares a session with the container's other processes — the
+  container's init session, the classic no-tty case — is not private,
+  and the check is off.
+- The check's state is logged once, at `info`, at handover
+  (`session check on` / `session check off: <reason>`).
 - Each accepted connection is checked before it is proxied:
   `getsockopt(SO_PEERCRED)` on the accepted connection yields the
   client's pid in flue's pid namespace — the kernel records it at

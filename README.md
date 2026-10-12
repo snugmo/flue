@@ -221,10 +221,12 @@ identical to the image's own.
    `$SSH_AUTH_SOCK` and runs `agent.ServeAgent(filter, clientConn)` —
    the filter wraps the upstream agent client and enforces the key
    allowlist. From the handover message's `SCM_CREDENTIALS` it learns
-   the broker's session id. When the broker is the leader of that
-   session (the case for an interactive `flue enter`), each accepted
-   client must share it (`SO_PEERCRED` → `/proc`); clients from another
-   session are refused.
+   the broker's session id. When that session is private (its only
+   live member at handover — what an exec that created its own session
+   looks like, with or without a tty), each accepted client must share
+   it (`SO_PEERCRED` → `/proc`); clients from another session are
+   refused. The check's state is logged at `info` when the session
+   starts.
 5. Lifetime is driven by the process tree, not the control channel (which
    carries a single listener-fd message). In wrapper mode, when the wrapped
    command exits, `flue-broker` exits, the `podman exec` returns, and
@@ -257,12 +259,15 @@ carries the per-operation detail), and it never sees a path or fd to the
 host agent socket, its directory, or `$XDG_RUNTIME_DIR`. The trust boundary
 is the allowlist, not the container.
 
-When the broker is the session leader — the case for an interactive
-`flue enter` — a second gate applies: every client must share the broker's
-session, so a rogue process that starts its own session (for example via
-`setsid`) cannot even reach the agent, and a client whose session cannot
-be verified is refused. Without a tty (scripted `flue enter`, standalone
-mode) the broker is not a session leader and this check does not apply.
+When the broker's session is private — its only live member at
+handover time, what an exec that created its own session looks like,
+with or without a tty — a second gate applies: every client must share
+the broker's session, so a rogue process that starts its own session
+(for example via `setsid`) or comes from another `podman exec` cannot
+even reach the agent, and a client whose session cannot be verified is
+refused. When the exec's process shares a session with the container's
+other processes (older runtimes), this check does not apply; its state
+is logged at `info` when the session starts.
 
 ## Integration check (manual)
 

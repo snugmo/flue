@@ -130,27 +130,86 @@ func TestSessionIDFromStatLine(t *testing.T) {
 }
 
 // TestSessionCheckGate reports whether the client session check is in
-// effect: the broker's session must be known and the broker must be the
-// leader of that session (session id == pid).
+// effect: the broker's session must be known and private (see
+// sessionIsPrivate) — whether the broker leads it or not.
 func TestSessionCheckGate(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		pid     int
 		session int
+		private bool
+		known   bool
 		want    bool
 	}{
-		{"no credentials", 0, 0, false},
-		{"pid but unknown session", 4242, 0, false},
-		{"session leader", 4242, 4242, true},
-		{"not a session leader", 4242, 7, false},
+		{"no credentials", 0, 0, false, false, false},
+		{"pid but unknown session", 4242, 0, false, false, false},
+		{"private session, broker is the leader", 4242, 4242, true, true, true},
+		{"private session, led by an exited helper", 4242, 7, true, true, true},
+		{"shared session (e.g. the container's init)", 4242, 7, false, true, false},
+		{"privacy scan failed", 4242, 7, false, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pol := &policy{brokerPID: tc.pid, brokerSession: tc.session}
+			pol := &policy{
+				brokerPID: tc.pid, brokerSession: tc.session,
+				sessionPrivate: tc.private, sessionPrivateKnown: tc.known,
+			}
 			if got := sessionCheckActive(pol); got != tc.want {
-				t.Fatalf("sessionCheckActive = %v, want %v (pid %d, session %d)",
-					got, tc.want, tc.pid, tc.session)
+				t.Fatalf("sessionCheckActive = %v, want %v (pid %d, session %d, private %v)",
+					got, tc.want, tc.pid, tc.session, tc.private)
 			}
 		})
+	}
+}
+
+// TestSessionIsPrivate verifies the private-session scan against a fake
+// /proc tree: a session whose only live member is the broker is private;
+// any other live process in it is not; an unreadable /proc is an error.
+func TestSessionIsPrivate(t *testing.T) {
+	tt := t.TempDir()
+	// writeStat mirrors the real /proc layout: a per-pid directory
+	// holding a "stat" file.
+	writeStat := func(name, line string) {
+		t.Helper()
+		dir := filepath.Join(tt, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "stat"), []byte(line+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	oldProcRoot := procRoot
+	procRoot = tt
+	defer func() { procRoot = oldProcRoot }()
+
+	// broker pid 100 in session 100; pid 101 in a different session.
+	writeStat("100", "100 (broker) S 1 100 100 0")
+	writeStat("101", "101 (other) S 1 101 200 0")
+	writeStat("not-a-pid", "x (y) S 1 2 3 0")
+
+	if private, err := sessionIsPrivate(100, 100); err != nil || !private {
+		t.Fatalf("sessionIsPrivate(100, 100) = %v, %v; want true, nil", private, err)
+	}
+
+	// A second live member in the broker's session: not private.
+	writeStat("102", "102 (member) S 1 101 100 0")
+	if private, err := sessionIsPrivate(100, 100); err != nil || private {
+		t.Fatalf("sessionIsPrivate(100, 100) = %v, %v; want false, nil", private, err)
+	}
+
+	// Unknown broker pid or session: not private, no error.
+	if private, err := sessionIsPrivate(0, 100); private || err != nil {
+		t.Fatalf("sessionIsPrivate(0, 100) = %v, %v; want false, nil", private, err)
+	}
+	if private, err := sessionIsPrivate(100, 0); private || err != nil {
+		t.Fatalf("sessionIsPrivate(100, 0) = %v, %v; want false, nil", private, err)
+	}
+
+	// A broken /proc root: an error (the caller fails closed).
+	procRoot = filepath.Join(tt, "no-such-dir")
+	if private, err := sessionIsPrivate(100, 100); private || err == nil {
+		t.Fatalf("sessionIsPrivate on a broken /proc = %v, %v; want false, error", private, err)
 	}
 }
 
@@ -233,15 +292,15 @@ func (emptyAgent) Signers() ([]ssh.Signer, error) { return nil, nil }
 
 // TestReceiveListenerSessionCheck is the end-to-end test of the session
 // check. A child copy of this test binary plays the broker: it calls
-// setsid (what `podman exec -t` does to the process it runs — the process
+// setsid (what a pty setup does to the process it runs — the process
 // becomes the leader of a new session), creates and hands over a
 // listener, and then dials its own socket as a client of that new
 // session. The parent accepts the handover — learning the child's
-// session id, which equals the child's pid, so the check is active — and
-// asserts that (a) a client from a different session (the parent's own
-// dial) is refused before any agent traffic, and (b) a client from the
-// broker's own session (the child's dial) is accepted and proxied
-// through a stub upstream agent.
+// session, whose only live member is the child, so it is private and
+// the check is active — and asserts that (a) a client from a different
+// session (the parent's own dial) is refused before any agent traffic,
+// and (b) a client from the broker's own session (the child's dial) is
+// accepted and proxied through a stub upstream agent.
 func TestReceiveListenerSessionCheck(t *testing.T) {
 	if os.Getenv(envSessionRole) == "broker" {
 		runSessionBroker() // does not return
@@ -347,8 +406,8 @@ func TestReceiveListenerSessionCheck(t *testing.T) {
 		t.Fatal("receiveListener returned a nil listener")
 	}
 	if !sessionCheckActive(&pol) {
-		t.Fatalf("check is not active (pid %d, session %d); the broker must be its own session leader",
-			pol.brokerPID, pol.brokerSession)
+		t.Fatalf("check is not active (pid %d, session %d, private %v); the broker leads its own session and is its only member, so it must be private",
+			pol.brokerPID, pol.brokerSession, pol.sessionPrivate)
 	}
 
 	// (a) A client from a different session — this test process — must
