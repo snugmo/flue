@@ -80,10 +80,13 @@ buildah build \
 # to the go:embed path cmd/flue/flue-broker.bin, because flue embeds the
 # built broker (see cmd/flue/embed.go); the root flue-broker is a copy of
 # that same file.
+# The version is stamped into both binaries from the image tag (git tag
+# for a clean tag, else describe/latest), so `flue version` /
+# `flue-broker -version` match what the image was tagged with.
 printf '>> Building flue-broker (embed source for flue) ...\n'
-CGO_ENABLED=0 go build -ldflags="-s -w" -o "${PROJECT_ROOT}/cmd/flue/flue-broker.bin" "${PROJECT_ROOT}/cmd/flue-broker"
+CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${TAG}" -o "${PROJECT_ROOT}/cmd/flue/flue-broker.bin" "${PROJECT_ROOT}/cmd/flue-broker"
 printf '>> Building flue (host-side helper) ...\n'
-CGO_ENABLED=0 go build -ldflags="-s -w" -o "${PROJECT_ROOT}/flue" "${PROJECT_ROOT}/cmd/flue"
+CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${TAG}" -o "${PROJECT_ROOT}/flue" "${PROJECT_ROOT}/cmd/flue"
 cp "${PROJECT_ROOT}/cmd/flue/flue-broker.bin" "${PROJECT_ROOT}/flue-broker"
 
 printf '>> Build complete: %s\n' "${FULL_IMAGE}"

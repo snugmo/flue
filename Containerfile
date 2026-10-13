@@ -18,6 +18,10 @@
 
 ARG BASE_IMAGE=ghcr.io/snugmo/cote:latest-base
 FROM ${BASE_IMAGE} AS go-build
+# Stamped into both binaries with -ldflags "-X main.version=..." (shown by
+# `flue version` / `flue-broker -version`); the final stage re-declares it
+# for the image labels.
+ARG VERSION=latest
 ENV GOPATH=/go \
     GOROOT=/opt/go \
     PATH=/go/bin:/opt/go/bin:$PATH
@@ -38,8 +42,8 @@ COPY cmd/ cmd/
 # broker is built first, to the embed path. The *same file* is then copied
 # to /usr/local/bin/flue-broker, so the image's flue extract-broker output
 # is byte-identical to the image's own flue-broker.
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/flue/cmd/flue/flue-broker.bin ./cmd/flue-broker \
- && CGO_ENABLED=0 go build -ldflags="-s -w" -o /usr/local/bin/flue ./cmd/flue \
+RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION}" -o /build/flue/cmd/flue/flue-broker.bin ./cmd/flue-broker \
+ && CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION}" -o /usr/local/bin/flue ./cmd/flue \
  && cp /build/flue/cmd/flue/flue-broker.bin /usr/local/bin/flue-broker
 
 FROM ${BASE_IMAGE}
