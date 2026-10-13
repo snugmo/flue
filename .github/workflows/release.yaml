@@ -53,11 +53,15 @@ jobs:
   build:
     needs: [test]
     runs-on: ubuntu-latest
-    # The Attest broker step needs id-token: write (mint the OIDC token
-    # exchanged for the Sigstore signing certificate) and
-    # attestations: write (persist the attestation in GitHub's store).
-    # This job-level block replaces the top-level permissions for this job.
+    # This job-level block replaces the top-level permissions for this job,
+    # so it must list everything the job needs:
+    #   actions: write         upload the build artifact
+    #   contents: read        checkout the source
+    #   id-token: write       mint the OIDC token exchanged for the Sigstore
+    #                         signing certificate (Attest broker step)
+    #   attestations: write   persist the attestation in GitHub's store
     permissions:
+      actions: write
       contents: read
       id-token: write
       attestations: write
@@ -146,6 +150,8 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     permissions:
+      # Download the build artifacts the release is made from.
+      actions: read
       contents: write
       # Required by create_attestations (the release job signs the
       # artifacts' attestation statements with the runner's OIDC token).
