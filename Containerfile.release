@@ -1,0 +1,58 @@
+# flue — a narrow channel from your host's SSH agent into a container
+#
+# Release image: ships the pre-built flue and flue-broker binaries that the
+# release workflow built and sigstore-attested (SLSA provenance in GitHub's
+# attestation store) on the cote base image. Nothing is compiled here — the
+# image's bytes are exactly the attested bytes; the dev path (Containerfile
+# + build.sh) is the one that compiles from source.
+#
+# Build (release workflow; the context carries one binary per architecture
+# under dist/<arch>/):
+#   buildx build --platform linux/amd64,linux/arm64 \
+#     --build-arg BASE_IMAGE=ghcr.io/snugmo/cote:<tag>-base \
+#     --build-arg VERSION=<tag> \
+#     --build-arg REVISION=<commit sha> \
+#     --build-arg CREATED=<rfc3339> \
+#     -f Containerfile.release -t ghcr.io/snugmo/flue:<tag> .
+#
+# Usage:
+#   flue exec -- podman exec \
+#     --preserve-fds 1 \
+#     -e SSH_AUTH_SOCK=/tmp/flue.sock \
+#     <container> flue-broker -sock /tmp/flue.sock
+
+ARG BASE_IMAGE=ghcr.io/snugmo/cote:latest-base
+FROM ${BASE_IMAGE}
+
+# BuildKit fills TARGETARCH in per build platform, so each platform's
+# build copies only its own architecture's binaries from the context.
+ARG TARGETARCH
+# Stamped into the OCI well-known labels below (the binaries already carry
+# the version, stamped by the release workflow's build job).
+ARG VERSION=latest
+ARG REVISION=unknown
+ARG CREATED=
+# Re-declared after the FROM so the base.name label can reference it.
+ARG BASE_IMAGE=ghcr.io/snugmo/cote:latest-base
+
+# --chown because COPY keeps the local context files' ownership (the
+# runner's user); the image's binaries must be root-owned, like the dev
+# image's.
+COPY --chown=root:root dist/flue_${TARGETARCH} /usr/local/bin/flue
+COPY --chown=root:root dist/flue-broker_${TARGETARCH} /usr/local/bin/flue-broker
+
+# The final stage keeps the base image's non-root user, so the shipped
+# container still runs unprivileged (as the dev image does).
+LABEL org.opencontainers.image.title="flue" \
+      org.opencontainers.image.description="Filtered SSH agent bridge from host to container via SCM_RIGHTS control channel" \
+      org.opencontainers.image.authors="Joakim Nohlgård" \
+      org.opencontainers.image.vendor="Snugmo" \
+      org.opencontainers.image.licenses="AGPL-3.0" \
+      org.opencontainers.image.url="https://github.com/snugmo/flue" \
+      org.opencontainers.image.documentation="https://github.com/snugmo/flue" \
+      org.opencontainers.image.source="https://github.com/snugmo/flue.git" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.created="${CREATED}" \
+      org.opencontainers.image.base.name="${BASE_IMAGE}" \
+      io.openshift.tags="dev,ssh,agent,proxy"
