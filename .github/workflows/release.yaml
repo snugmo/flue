@@ -76,6 +76,23 @@ jobs:
           go build -ldflags="-s -w -X main.version=${ver#v}" -o "${out}/flue" ./cmd/flue
           cp cmd/flue/flue-broker.bin "${out}/flue-broker"
           tar -czf "flue_${ver}_linux_${arch}.tar.gz" -C "${out}" .
+      - name: Verify extract-broker identity
+        run: |
+          set -euo pipefail
+          out="dist/flue_${GITHUB_REF_NAME}_linux_${GOARCH}"
+          # The tarball's flue-broker (a cp of the embed source) and the
+          # broker embedded in the tarball's flue must be the same binary:
+          # extract it with the built flue itself and compare sha256s.
+          # The Go tests only cover the embed blob, not this cp'd artifact.
+          tmp="$(mktemp -d)"
+          "${out}/flue" extract-broker "${tmp}/flue-broker"
+          want="$(sha256sum "${out}/flue-broker" | awk '{print $1}')"
+          got="$(sha256sum "${tmp}/flue-broker" | awk '{print $1}')"
+          if [ "${want}" != "${got}" ]; then
+            printf 'extract-broker does not match the release flue-broker:\n  release:   %s\n  extracted: %s\n' "${want}" "${got}"
+            exit 1
+          fi
+          echo "extract-broker sha256 matches: ${got}"
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
