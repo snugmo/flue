@@ -237,6 +237,36 @@ identical to the image's own.
 | `DEV_VERSION`    | git tag                  | Image tag            |
 | `DEV_BASE_IMAGE` | auto                     | Base image reference |
 
+### Release image
+
+Pushing a `v*` tag publishes `ghcr.io/snugmo/flue:<tag>` (and `:latest`)
+to GHCR: a multi-arch image on the `cote` base at the same release tag,
+shipping the exact binaries the release build attested (no second
+compilation — `Containerfile.release` only copies them). Override the
+base with the `FLUE_BASE_IMAGE` repository variable.
+
+Every release image carries two signed claims, keyed to the image's
+manifest-list digest, so they cover all of its tags:
+
+- a **Sigstore keyless signature** (cosign, under the GitHub identity of
+  the release workflow), and
+- a **SLSA build provenance attestation** (in GitHub's attestation
+  store, with a copy pushed into the registry).
+
+Verify from any machine:
+
+```sh
+tag=1.2.3   # the release tag, without the leading v
+
+# 1. Signature: built by the release workflow under this identity
+cosign verify ghcr.io/snugmo/flue:$tag \
+  --certificate-identity "<account that pushed the tag>" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+
+# 2. Provenance: built by snugmo/flue's release workflow
+gh attestation verify ghcr.io/snugmo/flue:$tag --source snugmo/flue
+```
+
 ## How it works
 
 1. `flue` creates a `SOCK_SEQPACKET` Unix socketpair.

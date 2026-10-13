@@ -48,3 +48,34 @@ Two stages:
 The standalone `BASE_IMAGE` ARG defaults to
 `ghcr.io/snugmo/cote:latest-base` when the Containerfile is invoked
 without `build.sh`.
+
+## Release image (Release workflow)
+
+`Containerfile.release` is the release path: a single stage that
+`COPY`s the two pre-built binaries (no `go-build` stage, no
+compilation, no QEMU — the final stage runs nothing). The Release
+workflow's `image` job places the binaries the `build` job built and
+attested into the context as
+`dist/<arch>/{flue,flue-broker}`, and BuildKit's auto-populated
+`ARG TARGETARCH` selects each platform's pair at `COPY` time.
+`--chown=root:root` pins the ownership, because a context `COPY` would
+otherwise keep the runner user's uid; the final stage keeps the base
+image's non-root user, as the dev image does.
+
+The image job then:
+
+- pushes `ghcr.io/snugmo/flue:<tag>` and `:latest` (buildx,
+  `linux/amd64,linux/arm64`);
+- attests the image with `actions/attest` (SLSA build provenance, the
+  same toolkit as the binary attestations): stored in GitHub's
+  attestation store, pushed to the registry as a cosign attestation,
+  and registered as an artifact storage record;
+- signs it with a Sigstore keyless cosign signature (one signature per
+  manifest-list digest, so all tags are covered).
+
+The base image keeps `build.sh`'s coupling — the `cote` release at the
+same tag, which must be published (multi-arch) before the job runs —
+and can be overridden with the `FLUE_BASE_IMAGE` repository variable.
+
+The dev path (`build.sh` + `Containerfile`) is unchanged: it compiles
+from source; release images ship the attested bytes.

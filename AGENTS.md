@@ -16,6 +16,7 @@ cmd/flue/           host side: socketpair control channel, filtered agent proxy
 cmd/flue-broker/    container side: thin listener + one-shot listener-fd handoff
 docs/               on-demand details: flue.md, flue-broker.md, build.md, duplication-policy.md
 Containerfile       two-stage build of the static binaries
+Containerfile.release single stage: ships the attested release binaries (no compile)
 build.sh            buildah wrapper (registry / tag config)
 README.md           usage, flags, how-it-works, security
 ```
@@ -80,4 +81,6 @@ README.md           usage, flags, how-it-works, security
 - **New protocol support** (e.g. GPG agent): extend `agentFilter` or add
   a new command under `cmd/`.
 - **New image variant**: add a Containerfile stage or a `build.sh`
-  target.
+  target (the release image is `Containerfile.release` — pre-built
+  binaries, no compile; keep its `dist/<arch>` context layout in sync
+  with the Release workflow's `image` job).
