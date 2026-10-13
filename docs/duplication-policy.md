@@ -6,14 +6,14 @@ keep each binary a self-contained static main (the broker is
 shared `internal/` package:
 
 - **Between the two binaries**: `parseLevel`, `fatalf` (flue-broker's counterpart is `failf`, which
-  returns the exit code so `run`'s defers still execute), `closeQuiet`, and
-  the `log` variable plus its re-initialization from the log-level flag
-  (the root `PersistentPreRun` in flue, `main` in flue-broker)
-  are duplicated in both. They are small and stable; a shared package
-  would need to parameterize the program-name log prefixes and fatalf
-  semantics for ~25 saved lines. **If one changes, apply the paired edit
-  to the other** (the slog switch and the fatalf format fix both did
-  this).
+  returns the exit code so `run`'s defers still execute), `closeQuiet`,
+  `exitStatus` (the 128+signal mapping), and the `log` variable plus its
+  re-initialization from the log-level flag (the root `PersistentPreRun`
+  in flue, `main` in flue-broker) are duplicated in both. They are small
+  and stable; a shared package would need to parameterize the program-name
+  log prefixes and fatalf semantics for ~25 saved lines. **If one
+  changes, apply the paired edit to the other** (the slog switch and the
+  fatalf format fix both did this).
 - **Within `cmd/flue`**: `closeQuiet` (net.Conn) and `closeListener`
   (net.Listener) are near-identical but stay separate per-type helpers; a
   unified helper would need an interface and name plumbing that hurts
