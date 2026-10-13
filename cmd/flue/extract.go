@@ -53,7 +53,9 @@ var brokerSha256Cmd = &cobra.Command{
 		if err != nil {
 			fatalf("flue: broker-sha256: %v", err)
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), sum)
+		if _, err := fmt.Fprintln(cmd.OutOrStdout(), sum); err != nil {
+			fatalf("flue: broker-sha256: %v", err)
+		}
 	},
 }
 

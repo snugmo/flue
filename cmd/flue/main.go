@@ -1636,7 +1636,7 @@ func sessionIsPrivate(brokerPID, session int) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer d.Close()
+	defer closeFile(d)
 	for {
 		entries, err := d.Readdir(256)
 		for _, e := range entries {
@@ -1761,7 +1761,7 @@ func peerPidfdLiveness(rc syscall.RawConn) (bool, error) {
 	// the pidfs rewrite) and this close makes it airtight — a pidfd
 	// must never reach a child process. Keep that in mind when a
 	// child is added here (the desktop endpoint).
-	defer unix.Close(pidfd)
+	defer closeFD(pidfd)
 	if err := unix.PidfdSendSignal(pidfd, 0, nil, 0); err != nil && err != unix.EPERM {
 		return false, fmt.Errorf("peer exited before its session could be verified: %w", err)
 	}
