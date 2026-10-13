@@ -140,6 +140,10 @@ jobs:
         #
         #   flue extract-broker ./flue-broker
         #   gh attestation verify ./flue-broker --source snugmo/flue
+      - name: Attest flue
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ github.workspace }}/dist/flue_${{ github.ref_name }}_linux_${{ matrix.goarch }}
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -152,12 +156,8 @@ jobs:
     permissions:
       # Download the build artifacts the release is made from.
       actions: read
+      # Publish the release and upload the assets.
       contents: write
-      # Required by create_attestations (the release job signs the
-      # artifacts' attestation statements with the runner's OIDC token).
-      id-token: write
-      # Posting the attestation statements to GitHub's attestation store.
-      attestations: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -173,9 +173,3 @@ jobs:
             flue_*
             SHA256SUMS
           generate_release_notes: true
-          # Provenance statement embedded in the release notes (who/what
-          # built this, from which commit and workflow run); attestation
-          # statements for the assets (verifiable with gh attestation /
-          # sigstore tools). Both require generate_release_notes.
-          create_provenance: true
-          create_attestations: true
