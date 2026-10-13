@@ -48,14 +48,10 @@ Two stages:
   is copied to `/usr/local/bin/flue-broker`: so a `flue` from this image
   extracts (via `flue extract-broker`) a broker byte-identical to the
   image's own.
-- **final**: copies just the two binaries (~19 MB uncompressed; `flue`
-  now carries the embedded broker, so it is larger than before) and keeps
+- **final**: copies just the two binaries (~18 MB uncompressed; `flue`
+  carries the embedded broker, so it is the larger of the two) and keeps
   the base image's non-root user, so the shipped container runs
   unprivileged.
-
-The standalone `BASE_IMAGE` ARG defaults to
-`ghcr.io/snugmo/cote:latest-base` when the Containerfile is built
-directly.
 
 ## Release image (Release workflow)
 
