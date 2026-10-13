@@ -144,11 +144,17 @@ jobs:
         uses: actions/attest@v4
         with:
           subject-path: ${{ github.workspace }}/dist/flue_${{ github.ref_name }}_linux_${{ matrix.goarch }}
+      # The broker goes in the artifact too (the image job packages both
+      # binaries), but it is still not a release asset: the release job's
+      # `flue_*` globs match only the underscore names, so `flue-broker_*`
+      # stays out of the release download list and out of SHA256SUMS.
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: flue_${{ github.ref_name }}_${{ matrix.goarch }}
-          path: dist/flue_${{ github.ref_name }}_linux_${{ matrix.goarch }}
+          path: |
+            dist/flue_${{ github.ref_name }}_linux_${{ matrix.goarch }}
+            dist/flue-broker_${{ github.ref_name }}_linux_${{ matrix.goarch }}
 
   release:
     needs: [build]
