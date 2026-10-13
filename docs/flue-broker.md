@@ -8,14 +8,16 @@ connections. The file header in `main.go` is the authoritative overview.
 ## Modes
 
 - **Standalone** (no arguments): hands the listener to the host, blocks
-  until the control channel reports the host gone (EOF), removes the
-  socket, and exits.
+  until the control channel reports the host gone (EOF) or a termination
+  signal (SIGTERM/SIGHUP/SIGINT) arrives, removes the socket, and exits.
 - **Wrapper** (`flue-broker [cmd] [args...]`): hands the listener over,
   then runs the command as a child process with `SSH_AUTH_SOCK` pointed
   at the broker's socket, and exits with the child's exit status. The
   child's stdio is wired straight through, so an interactive shell works.
   Host departure (detected best-effort via the control channel) kills the
-  child and the broker exits 1.
+  child and the broker exits 1. SIGTERM/SIGHUP reaching the broker are
+  forwarded to the child; SIGINT is swallowed (on a tty the child already
+  gets its own copy).
 
 ## Mechanics
 
