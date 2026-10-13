@@ -93,6 +93,23 @@ jobs:
             exit 1
           fi
           echo "extract-broker sha256 matches: ${got}"
+      - name: Verify broker-sha256
+        run: |
+          set -euo pipefail
+          out="dist/flue_${GITHUB_REF_NAME}_linux_${GOARCH}"
+          # The hash the binary reports for its own embed must match the
+          # other two sources of the broker: the embed-source file and
+          # the release flue-broker copy. Together with the extract check
+          # above, all three are pairwise tied.
+          got="$("${out}/flue" broker-sha256)"
+          for f in cmd/flue/flue-broker.bin "${out}/flue-broker"; do
+            want="$(sha256sum "${f}" | awk '{print $1}')"
+            if [ "${got}" != "${want}" ]; then
+              printf 'broker-sha256 does not match %s:\n  reported: %s\n  actual:   %s\n' "${f}" "${got}" "${want}"
+              exit 1
+            fi
+          done
+          echo "broker-sha256 matches both controls: ${got}"
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
