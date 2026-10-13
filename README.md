@@ -193,6 +193,17 @@ the same architecture as your `flue`, and identical to the image's own
 broker when `flue` comes from the flue image. Unlike `exec` and `enter`,
 `extract-broker` needs no agent socket and takes no flags.
 
+`flue broker-sha256` prints the SHA256 of the embedded broker as a bare
+hex digest — the value `sha256sum` of the extracted binary — so it can be
+compared against another source without writing the binary out:
+
+```sh
+$ flue broker-sha256
+8ea5d136dd59…
+$ sha256sum /usr/local/bin/flue-broker   # from a container or a separate build
+8ea5d136dd59…                            # a match means the same broker
+```
+
 ### Version
 
 Both binaries carry their build version: `flue version` (or

@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"os"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -21,6 +24,7 @@ func TestCobraSubcommands(t *testing.T) {
 		"exec":           "exec [command [args...]]",
 		"enter":          "enter [container] [command [args...]]",
 		"extract-broker": "extract-broker <filename>",
+		"broker-sha256":  "broker-sha256",
 		"version":        "version",
 	} {
 		c, ok := byName[name]
@@ -53,6 +57,31 @@ func TestCobraVersion(t *testing.T) {
 	}
 	if got, want := buf.String(), versionLine()+"\n"; got != want {
 		t.Errorf("--version output = %q, want %q", got, want)
+	}
+}
+
+// TestCobraBrokerSha256 runs the broker-sha256 subcommand and checks the
+// printed line: it must be the hex SHA256 of the embed source file — the
+// value `sha256sum` of any binary identical to the embedded broker.
+func TestCobraBrokerSha256(t *testing.T) {
+	data, err := os.ReadFile("flue-broker.bin")
+	if err != nil {
+		t.Fatalf("read embed source: %v", err)
+	}
+	sum := sha256.Sum256(data)
+	want := hex.EncodeToString(sum[:]) + "\n"
+	buf := &bytes.Buffer{}
+	// The subcommand carries no needs-agent annotation, so the
+	// PersistentPreRun does not require an agent socket.
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"broker-sha256"})
+	t.Cleanup(func() { rootCmd.SetArgs(nil) })
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute([broker-sha256]) = %v", err)
+	}
+	if got := buf.String(); got != want {
+		t.Errorf("output = %q, want %q", got, want)
 	}
 }
 

@@ -68,7 +68,7 @@
 // enter, --session-check=required|advisory|off overrides the choice (an
 // explicit choice is logged at info; the default at handover).
 //
-// flue is a cobra CLI with four subcommands. The global flags (--sock,
+// flue is a cobra CLI with five subcommands. The global flags (--sock,
 // --allow-key, --allow-key-type, --log-level, --log-file) are persistent:
 // place them before
 // the subcommand. The subcommand's arguments follow the subcommand name;
@@ -126,6 +126,17 @@
 // The result is a byte-identical copy of the built flue-broker (mode
 // 0755). It needs no agent socket: the root PersistentPreRun resolves
 // the agent socket only for the subcommands that proxy it (exec, enter).
+//
+// broker-sha256 — prints the SHA256 of the embedded flue-broker (the
+// same bytes extract-broker writes) as a bare hex digest:
+//
+//	flue broker-sha256
+//
+// That is the value `sha256sum` of the extracted (or release tarball's)
+// flue-broker, so the embedded broker can be compared against any other
+// source — a separately built flue-broker, an image's
+// /usr/local/bin/flue-broker, another flue's embed — without writing the
+// binary out. Like extract-broker it needs no agent socket.
 //
 // version — prints the build version (the same one-line string the root
 // --version flag prints):
@@ -259,7 +270,7 @@ separates them from the target command, so the target command's own flags
 are passed through verbatim.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// No subcommand given: the classic usage-error case.
-		fmt.Fprintln(os.Stderr, `flue: missing subcommand (want "exec", "enter", "extract-broker", or "version")`)
+		fmt.Fprintln(os.Stderr, `flue: missing subcommand (want "exec", "enter", "extract-broker", "broker-sha256", or "version")`)
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, cmd.Root().UsageString())
 		os.Exit(1)
@@ -409,7 +420,7 @@ func init() {
 			}
 		}
 	}
-	rootCmd.AddCommand(execCmd, enterCmd, extractCmd, versionCmd)
+	rootCmd.AddCommand(execCmd, enterCmd, extractCmd, brokerSha256Cmd, versionCmd)
 }
 
 // parseLevel maps a --log-level flag value to a slog.Level.

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -33,6 +35,38 @@ Unlike exec and enter, this subcommand needs no agent socket.`,
 			fatalf("flue: extract-broker: %v", err)
 		}
 	},
+}
+
+// brokerSha256Cmd is the broker-sha256 subcommand: it prints the SHA256
+// of the embedded flue-broker (the same bytes extract-broker writes) as a
+// bare hex digest — the value `sha256sum` of the extracted binary — so the
+// embedded broker can be compared against any other source (a separately
+// built flue-broker, an image's /usr/local/bin/flue-broker, another
+// flue's embed) without writing the binary out. Like extract-broker it
+// needs no agent socket.
+var brokerSha256Cmd = &cobra.Command{
+	Use:   "broker-sha256",
+	Short: "Print the SHA256 of the embedded flue-broker",
+	Args:  cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		sum, err := embeddedBrokerSha256()
+		if err != nil {
+			fatalf("flue: broker-sha256: %v", err)
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), sum)
+	},
+}
+
+// embeddedBrokerSha256 returns the hex SHA256 of the embedded flue-broker
+// bytes, or the same error writeEmbeddedBroker returns when the embedded
+// blob is not a Linux ELF binary (the symptom of building flue without
+// building flue-broker first, see embed.go).
+func embeddedBrokerSha256() (string, error) {
+	if !looksLikeELF(flueBrokerBin) {
+		return "", errors.New("embedded flue-broker is not a Linux ELF binary: build flue-broker (to cmd/flue/flue-broker.bin) before building flue, then rebuild")
+	}
+	sum := sha256.Sum256(flueBrokerBin)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // writeEmbeddedBroker writes the embedded flue-broker binary to path,
