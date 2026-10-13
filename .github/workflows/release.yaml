@@ -1,0 +1,100 @@
+# Release — build the static flue / flue-broker binaries when a git tag is
+# pushed, and publish them as a GitHub Release.
+#
+# Trigger: push a tag like `v1.2.3` (any tag matching `v*`).
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # flue go:embeds the built broker (cmd/flue/embed.go), so the broker
+      # must be built to its embed path before any package load succeeds.
+      - name: Build broker (embed source)
+        env:
+          CGO_ENABLED: 0
+        run: go build -ldflags="-s -w" -o cmd/flue/flue-broker.bin ./cmd/flue-broker
+      - name: Test
+        run: go test ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build broker (embed source)
+        env:
+          CGO_ENABLED: 0
+        run: go build -ldflags="-s -w" -o cmd/flue/flue-broker.bin ./cmd/flue-broker
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
+
+  build:
+    needs: [test]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [amd64, arm64]
+    env:
+      CGO_ENABLED: 0
+      GOARCH: ${{ matrix.goarch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME}"
+          arch="${GOARCH}"
+          # The broker is built first, to the go:embed path, because flue
+          # embeds it; the release flue-broker is a copy of that same file,
+          # so `flue extract-broker` stays byte-identical to flue-broker.
+          # The tag (minus the leading v) is stamped into both binaries,
+          # shown by `flue version` / `flue-broker -version`.
+          go build -ldflags="-s -w -X main.version=${ver#v}" -o cmd/flue/flue-broker.bin ./cmd/flue-broker
+          out="dist/flue_${ver}_linux_${arch}"
+          mkdir -p "${out}"
+          go build -ldflags="-s -w -X main.version=${ver#v}" -o "${out}/flue" ./cmd/flue
+          cp cmd/flue/flue-broker.bin "${out}/flue-broker"
+          tar -czf "flue_${ver}_linux_${arch}.tar.gz" -C "${out}" .
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flue_${{ github.ref_name }}_${{ matrix.goarch }}
+          path: flue_${{ github.ref_name }}_linux_${{ matrix.goarch }}.tar.gz
+
+  release:
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Flatten
+        run: find artifacts -name '*.tar.gz' -exec mv {} . \;
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: flue_*.tar.gz
+          generate_release_notes: true
