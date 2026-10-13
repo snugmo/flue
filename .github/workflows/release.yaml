@@ -1,5 +1,8 @@
-# Release — build the static flue / flue-broker binaries when a git tag is
-# pushed, and publish them as a GitHub Release.
+# Release — build the static flue binary when a git tag is pushed and
+# publish it as a GitHub Release. The flue-broker is embedded in the flue
+# binary (recoverable via `flue extract-broker`), so it is not a separate
+# release asset; this workflow still builds it (to the go:embed path) and
+# verifies the embed matches the build source.
 #
 # Trigger: push a tag like `v1.2.3` (any tag matching `v*`).
 name: Release
@@ -66,31 +69,30 @@ jobs:
           ver="${GITHUB_REF_NAME}"
           arch="${GOARCH}"
           # The broker is built first, to the go:embed path, because flue
-          # embeds it; the release flue-broker is a copy of that same file,
-          # so `flue extract-broker` stays byte-identical to flue-broker.
+          # embeds it; consumers get it back via `flue extract-broker`,
+          # so it is not published as a separate release asset.
           # The tag (minus the leading v) is stamped into both binaries,
           # shown by `flue version` / `flue-broker -version`.
           go build -ldflags="-s -w -X main.version=${ver#v}" -o cmd/flue/flue-broker.bin ./cmd/flue-broker
           out="dist"
-          # Flat, version+arch-named release assets (no tgz wrapper):
+          # Flat, version+arch-named release asset (no tgz wrapper):
           # download, chmod +x, run.
           mkdir -p "${out}"
           go build -ldflags="-s -w -X main.version=${ver#v}" -o "${out}/flue_${ver}_linux_${arch}" ./cmd/flue
-          cp cmd/flue/flue-broker.bin "${out}/flue-broker_${ver}_linux_${arch}"
       - name: Verify extract-broker identity
         run: |
           set -euo pipefail
           flue="dist/flue_${GITHUB_REF_NAME}_linux_${GOARCH}"
-          # The release flue-broker (a cp of the embed source) and the
-          # broker embedded in the release flue must be the same binary:
-          # extract it with the built flue itself and compare sha256s.
-          # The Go tests only cover the embed blob, not this cp'd artifact.
+          # The broker embedded in the release flue must be the same binary
+          # as the one built into it: extract it with the built flue itself
+          # and compare against the embed-source file's sha256. The Go
+          # tests only cover the embed blob, not the extracted artifact.
           tmp="$(mktemp -d)"
           "${flue}" extract-broker "${tmp}/flue-broker"
-          want="$(sha256sum "dist/flue-broker_${GITHUB_REF_NAME}_linux_${GOARCH}" | awk '{print $1}')"
+          want="$(sha256sum cmd/flue/flue-broker.bin | awk '{print $1}')"
           got="$(sha256sum "${tmp}/flue-broker" | awk '{print $1}')"
           if [ "${want}" != "${got}" ]; then
-            printf 'extract-broker does not match the release flue-broker:\n  release:   %s\n  extracted: %s\n' "${want}" "${got}"
+            printf 'extract-broker does not match the embed source:\n  embed:     %s\n  extracted: %s\n' "${want}" "${got}"
             exit 1
           fi
           echo "extract-broker sha256 matches: ${got}"
@@ -99,25 +101,22 @@ jobs:
           set -euo pipefail
           flue="dist/flue_${GITHUB_REF_NAME}_linux_${GOARCH}"
           # The hash the binary reports for its own embed must match the
-          # other two sources of the broker: the embed-source file and
-          # the release flue-broker copy. Together with the extract check
-          # above, all three are pairwise tied.
+          # build-time embed source. Together with the extract check above,
+          # the embed is tied to the source by two independent paths
+          # (extract writes the bytes out, broker-sha256 hashes them
+          # in-process).
           got="$("${flue}" broker-sha256)"
-          for f in cmd/flue/flue-broker.bin "dist/flue-broker_${GITHUB_REF_NAME}_linux_${GOARCH}"; do
-            want="$(sha256sum "${f}" | awk '{print $1}')"
-            if [ "${got}" != "${want}" ]; then
-              printf 'broker-sha256 does not match %s:\n  reported: %s\n  actual:   %s\n' "${f}" "${got}" "${want}"
-              exit 1
-            fi
-          done
-          echo "broker-sha256 matches both controls: ${got}"
+          want="$(sha256sum cmd/flue/flue-broker.bin | awk '{print $1}')"
+          if [ "${got}" != "${want}" ]; then
+            printf 'broker-sha256 does not match the embed source:\n  reported: %s\n  actual:   %s\n' "${got}" "${want}"
+            exit 1
+          fi
+          echo "broker-sha256 matches the embed source: ${got}"
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: flue_${{ github.ref_name }}_${{ matrix.goarch }}
-          path: |
-            dist/flue_${{ github.ref_name }}_linux_${{ matrix.goarch }}
-            dist/flue-broker_${{ github.ref_name }}_linux_${{ matrix.goarch }}
+          path: dist/flue_${{ github.ref_name }}_linux_${{ matrix.goarch }}
 
   release:
     needs: [build]
@@ -134,13 +133,12 @@ jobs:
       - name: Flatten
         run: find artifacts -type f -exec mv {} . \;
       - name: Generate SHA256SUMS
-        run: sha256sum flue_* flue-broker_* > SHA256SUMS
+        run: sha256sum flue_* > SHA256SUMS
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             flue_*
-            flue-broker_*
             SHA256SUMS
           generate_release_notes: true
           # Provenance statement embedded in the release notes (who/what
