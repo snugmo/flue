@@ -71,7 +71,6 @@ jobs:
         goarch: [amd64, arm64]
     env:
       CGO_ENABLED: 0
-      GOARCH: ${{ matrix.goarch }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -81,26 +80,39 @@ jobs:
         run: |
           set -euo pipefail
           ver="${GITHUB_REF_NAME}"
-          arch="${GOARCH}"
+          arch="${{ matrix.goarch }}"
           # The broker is built first, to the go:embed path, because flue
           # embeds it; consumers get it back via `flue extract-broker`,
           # so it is not published as a separate release asset.
           # The tag (minus the leading v) is stamped into both binaries,
           # shown by `flue version` / `flue-broker -version`.
-          go build -ldflags="-s -w -X main.version=${ver#v}" -o cmd/flue/flue-broker.bin ./cmd/flue-broker
+          # GOARCH applies only to the release artifacts: the cross-built
+          # flue cannot run on this runner when the matrix arch differs,
+          # so a native-arch pair is built as well, for the verification
+          # steps (which check the embed, not the arch).
+          GOARCH="${arch}" go build -ldflags="-s -w -X main.version=${ver#v}" -o cmd/flue/flue-broker.bin ./cmd/flue-broker
           out="dist"
+          mkdir -p "${out}"
+          # The exact bytes that get embedded in this arch's flue, kept
+          # aside for the attestation (the embed path is reused below
+          # for the native verification build).
+          cp cmd/flue/flue-broker.bin "${out}/flue-broker_${ver}_linux_${arch}"
           # Flat, version+arch-named release asset (no tgz wrapper):
           # download, chmod +x, run.
-          mkdir -p "${out}"
-          go build -ldflags="-s -w -X main.version=${ver#v}" -o "${out}/flue_${ver}_linux_${arch}" ./cmd/flue
+          GOARCH="${arch}" go build -ldflags="-s -w -X main.version=${ver#v}" -o "${out}/flue_${ver}_linux_${arch}" ./cmd/flue
+          go build -ldflags="-s -w -X main.version=${ver#v}" -o cmd/flue/flue-broker.bin ./cmd/flue-broker
+          go build -ldflags="-s -w -X main.version=${ver#v}" -o "${out}/flue-check" ./cmd/flue
       - name: Verify extract-broker identity
         run: |
           set -euo pipefail
-          flue="dist/flue_${GITHUB_REF_NAME}_linux_${GOARCH}"
-          # The broker embedded in the release flue must be the same binary
-          # as the one built into it: extract it with the built flue itself
-          # and compare against the embed-source file's sha256. The Go
-          # tests only cover the embed blob, not the extracted artifact.
+          flue="dist/flue-check"
+          # The broker embedded in flue must be the same binary as the
+          # one built into it: extract it with a native build of the
+          # same source and compare against the embed-source file's
+          # sha256. (The release artifact for this arch is cross-built
+          # and cannot run here; the embed identity is arch-independent.)
+          # The Go tests only cover the embed blob, not the extracted
+          # artifact.
           tmp="$(mktemp -d)"
           "${flue}" extract-broker "${tmp}/flue-broker"
           want="$(sha256sum cmd/flue/flue-broker.bin | awk '{print $1}')"
@@ -113,7 +125,7 @@ jobs:
       - name: Verify broker-sha256
         run: |
           set -euo pipefail
-          flue="dist/flue_${GITHUB_REF_NAME}_linux_${GOARCH}"
+          flue="dist/flue-check"
           # The hash the binary reports for its own embed must match the
           # build-time embed source. Together with the extract check above,
           # the embed is tied to the source by two independent paths
@@ -129,7 +141,7 @@ jobs:
       - name: Attest broker
         uses: actions/attest@v4
         with:
-          subject-path: ${{ github.workspace }}/cmd/flue/flue-broker.bin
+          subject-path: ${{ github.workspace }}/dist/flue-broker_${{ github.ref_name }}_linux_${{ matrix.goarch }}
         # The broker is not a release asset, but it is still attested here —
         # in the job that built it — with a SLSA build-provenance predicate
         # signed by a short-lived Sigstore certificate (public-good instance
