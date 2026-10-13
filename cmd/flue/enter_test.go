@@ -180,8 +180,9 @@ func TestEnterDefaultCmd(t *testing.T) {
 }
 
 // TestEnterExecArgs verifies the podman exec argument list built for
-// enter mode: the tty/non-tty variants, the fixed SSH_AUTH_SOCK, and the
-// flue-broker wrapper with the command appended.
+// enter mode without broker injection: the tty/non-tty variants, and the
+// flue-broker wrapper with the command appended (no -e — the broker sets
+// SSH_AUTH_SOCK itself and generates its per-session socket path).
 func TestEnterExecArgs(t *testing.T) {
 	t.Run("tty", func(t *testing.T) {
 		got := enterExecArgs("c", []string{"/bin/sh"}, true, false)

@@ -10,10 +10,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// TestCobraSubcommands guards the CLI surface: the two subcommands must be
-// registered on the root with their expected names and use-lines. This
-// catches accidental renames (e.g. dropping the exec subcommand or retyping
-// a use-line) that the pure-function tests (enterTarget, enterExecArgs) do
+// TestCobraSubcommands guards the CLI surface: every subcommand must be
+// registered on the root with its expected name and use-line. This
+// catches accidental renames (e.g. dropping a subcommand or retyping a
+// use-line) that the pure-function tests (enterTarget, enterExecArgs) do
 // not cover.
 func TestCobraSubcommands(t *testing.T) {
 	byName := map[string]*cobra.Command{}

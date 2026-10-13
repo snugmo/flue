@@ -69,13 +69,12 @@
 // explicit choice is logged at info; the default at handover).
 //
 // flue is a cobra CLI with five subcommands. The global flags (--sock,
-// --allow-key, --allow-key-type, --log-level, --log-file) are persistent:
-// place them before
-// the subcommand. The subcommand's arguments follow the subcommand name;
-// a --
+// --allow-key, --allow-key-type, --log-level, --log-file) are
+// persistent: place them before the subcommand. The subcommand's
+// arguments follow the subcommand name, and a --
 // separates them from the target command so the target's own flags are
-// passed through verbatim (cobra/pflag, unlike stdlib flag, keeps scanning
-// for flags after positional arguments).
+// passed through verbatim (cobra/pflag, unlike stdlib flag, keeps
+// scanning for flags after positional arguments).
 //
 // Two flags also read environment variables as a fallback when the flag
 // itself is not set on the command line: --log-level reads $FLUE_LOG_LEVEL,
