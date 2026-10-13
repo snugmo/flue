@@ -68,7 +68,7 @@
 // enter, --session-check=required|advisory|off overrides the choice (an
 // explicit choice is logged at info; the default at handover).
 //
-// flue is a cobra CLI with three subcommands. The global flags (--sock,
+// flue is a cobra CLI with four subcommands. The global flags (--sock,
 // --allow-key, --allow-key-type, --log-level, --log-file) are persistent:
 // place them before
 // the subcommand. The subcommand's arguments follow the subcommand name;
@@ -126,6 +126,15 @@
 // The result is a byte-identical copy of the built flue-broker (mode
 // 0755). It needs no agent socket: the root PersistentPreRun resolves
 // the agent socket only for the subcommands that proxy it (exec, enter).
+//
+// version — prints the build version (the same one-line string the root
+// --version flag prints):
+//
+//	flue version
+//
+// The version is a package variable stamped at link time with
+// -ldflags "-X main.version=<version>" (build.sh, the Containerfile, and
+// the release workflow all do this); a plain `go build` reports "dev".
 //
 // flue also embeds a complete copy of the flue-broker built at the same
 // time (see embed.go): go:embed reads cmd/flue/flue-broker.bin, which the
@@ -218,14 +227,27 @@ var procRoot = "/proc"
 // declaration-time default keeps tests (which never call main) working.
 var log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
+// version is the build version of this flue binary. It is a package
+// variable so the build can stamp it at link time with
+// -ldflags "-X main.version=<version>" (build.sh, the Containerfile, and
+// the release workflow all do this); a plain `go build` leaves it at
+// "dev". Shown by the root --version flag and the version subcommand.
+var version = "dev"
+
+// versionLine is the one-line version string both the root --version flag
+// (cobra prints it) and the version subcommand print.
+func versionLine() string { return fmt.Sprintf("flue version %s", version) }
+
 // rootCmd is the top-level `flue` command. It carries the persistent
-// (global) flags shared by both subcommands, and a PersistentPreRun that
-// sets up logging and resolves the agent socket path once, for whichever
+// (global) flags shared by the subcommands, the build version (cobra
+// turns it into the --version flag), and a PersistentPreRun that sets up
+// logging and resolves the agent socket path once, for whichever
 // subcommand runs. Invoked with no subcommand it prints a usage error and
 // exits 1 (the traditional bare-`flue` behavior).
 var rootCmd = &cobra.Command{
-	Use:   "flue",
-	Short: "Filtered SSH agent bridge from the host into a container",
+	Use:     "flue",
+	Short:   "Filtered SSH agent bridge from the host into a container",
+	Version: version,
 	Long: `flue proxies your host's SSH agent into a container with a key
 allowlist. It creates a control socketpair, hands one end to the container
 (as fd 3), receives the broker's listening socket, and proxies each client
@@ -237,7 +259,7 @@ separates them from the target command, so the target command's own flags
 are passed through verbatim.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// No subcommand given: the classic usage-error case.
-		fmt.Fprintln(os.Stderr, `flue: missing subcommand (want "exec", "enter", or "extract-broker")`)
+		fmt.Fprintln(os.Stderr, `flue: missing subcommand (want "exec", "enter", "extract-broker", or "version")`)
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, cmd.Root().UsageString())
 		os.Exit(1)
@@ -325,6 +347,16 @@ When the command exits, enter returns its exit code.`,
 	},
 }
 
+// versionCmd is the version subcommand: it prints this flue's build
+// version — the same one-line string the root --version flag prints.
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Print the version",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println(versionLine())
+	},
+}
+
 // init wires the persistent flags and subcommands onto rootCmd, and sets up
 // the shared PersistentPreRun (log-level parse + agent-socket resolution).
 func init() {
@@ -377,7 +409,7 @@ func init() {
 			}
 		}
 	}
-	rootCmd.AddCommand(execCmd, enterCmd, extractCmd)
+	rootCmd.AddCommand(execCmd, enterCmd, extractCmd, versionCmd)
 }
 
 // parseLevel maps a --log-level flag value to a slog.Level.

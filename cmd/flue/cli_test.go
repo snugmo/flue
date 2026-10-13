@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -20,6 +21,7 @@ func TestCobraSubcommands(t *testing.T) {
 		"exec":           "exec [command [args...]]",
 		"enter":          "enter [container] [command [args...]]",
 		"extract-broker": "extract-broker <filename>",
+		"version":        "version",
 	} {
 		c, ok := byName[name]
 		if !ok {
@@ -28,6 +30,29 @@ func TestCobraSubcommands(t *testing.T) {
 		if c.Use != wantUse {
 			t.Errorf("subcommand %q: Use = %q, want %q", name, c.Use, wantUse)
 		}
+	}
+}
+
+// TestCobraVersion guards the version surface: the root carries the build
+// version (so cobra registers the --version flag from it), and executing
+// --version prints the one-line version string without running any
+// subcommand logic.
+func TestCobraVersion(t *testing.T) {
+	if rootCmd.Version != version {
+		t.Fatalf("rootCmd.Version = %q, want %q (the build version)", rootCmd.Version, version)
+	}
+	buf := &bytes.Buffer{}
+	// --version short-circuits before Run and PersistentPreRun, so
+	// executing the shared root (which needs no agent socket) is safe.
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"--version"})
+	t.Cleanup(func() { rootCmd.SetArgs(nil) })
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute([--version]) = %v", err)
+	}
+	if got, want := buf.String(), versionLine()+"\n"; got != want {
+		t.Errorf("--version output = %q, want %q", got, want)
 	}
 }
 

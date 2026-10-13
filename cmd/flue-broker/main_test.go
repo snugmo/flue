@@ -55,6 +55,36 @@ func TestSetProcName(t *testing.T) {
 	}
 }
 
+// TestVersionFlag verifies that -version prints the one-line build version
+// and exits 0 before any other setup: no agent socket, no control fd, no
+// log configuration.
+func TestVersionFlag(t *testing.T) {
+	oldArgs := os.Args
+	t.Cleanup(func() { os.Args = oldArgs })
+	os.Args = []string{"flue-broker", "-version"}
+
+	f, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatalf("create temp stdout: %v", err)
+	}
+	oldStdout := os.Stdout
+	os.Stdout = f
+	code := run()
+	os.Stdout = oldStdout
+	f.Close()
+
+	if code != 0 {
+		t.Fatalf("run() with -version = %d, want 0", code)
+	}
+	data, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatalf("read captured stdout: %v", err)
+	}
+	if want := fmt.Sprintf("flue-broker version %s\n", version); string(data) != want {
+		t.Errorf("output = %q, want %q", data, want)
+	}
+}
+
 // TestMarkCloexecAll verifies the invariant that runChild relies on: after
 // markCloexecAll, no fd above 2 survives into a wrapped child, so the control
 // socketpair and listener are never leaked to processes like bash.

@@ -48,6 +48,11 @@
 //	flue exec -- podman exec --preserve-fds 1 \
 //	  -e SSH_AUTH_SOCK=/tmp/flue.sock <container> \
 //	  flue-broker -sock /tmp/flue.sock
+//
+// -version prints the build version and exits. The version is a package
+// variable stamped at link time with -ldflags "-X main.version=<version>"
+// (build.sh, the Containerfile, and the release workflow all do this); a
+// plain `go build` reports "dev".
 package main
 
 import (
@@ -78,7 +83,16 @@ var (
 		"File descriptor number of the preserved control socket (default 3)")
 	logLevel = flag.String("log-level", "info",
 		"log level: debug, info, warn, or error")
+	showVersion = flag.Bool("version", false,
+		"print the build version and exit")
 )
+
+// version is the build version of this flue-broker binary. It is a package
+// variable so the build can stamp it at link time with
+// -ldflags "-X main.version=<version>" (build.sh, the Containerfile, and
+// the release workflow all do this); a plain `go build` leaves it at
+// "dev". Printed by the -version flag.
+var version = "dev"
 
 // log is the package-level slog logger. The default is rebuilt in main
 // from the -log-level flag; the declaration-time default keeps tests
@@ -183,6 +197,12 @@ func setProcName(name string) {
 // run is the broker proper; it returns the process exit code.
 func run() int {
 	flag.Parse()
+	if *showVersion {
+		// Short-circuit before any other setup: -version needs no agent
+		// socket, no control fd, and no log configuration.
+		fmt.Printf("flue-broker version %s\n", version)
+		return 0
+	}
 	setProcName("flue-broker")
 
 	if lvl, err := parseLevel(*logLevel); err != nil {

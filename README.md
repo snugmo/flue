@@ -119,6 +119,7 @@ subcommand: `flue --allow-key SHA256:… enter <container>`. (The subcommand
 | `--allow-key-type` | (none = all types)          | Repeatable. Only keys of this type (the wire type name, e.g. `ssh-ed25519`, `ecdsa-sha2-nistp256`, `rsa`) are listed and can sign. A certificate matches both its certificate type and its underlying key's type, so a cert-only list denies static (uncertified) keys; secure-enclave keys have their own `sk-` type names |
 | `--log-level` | `$FLUE_LOG_LEVEL`, else `info` | Log level: `debug`, `info`, `warn`, or `error`. `debug` logs every agent request (operation, key type, fingerprint, allowed/denied — and, when an allowlist denies a key, which list did, as a `reason` field). When the flag is unset, `$FLUE_LOG_LEVEL` is read; a set flag wins            |
 | `--log-file`  | `stderr`                       | Append log output to this file (created if needed, mode `0600`) instead of stderr — keeps session-check refusal warnings off the user's terminal                                                                                              |
+| `--version`   | -                              | Print the build version and exit. The version is stamped at build time (`-ldflags "-X main.version=<v>"`); a plain `go build` reports `dev`. The `flue version` subcommand prints the same line |
 
 **enter** (enter-scoped flag and arguments):
 
@@ -135,6 +136,7 @@ subcommand: `flue --allow-key SHA256:… enter <container>`. (The subcommand
 | `-sock`      | unique per session (`flue-<8hex>.sock`) | Unix socket path to listen on. When unset (or empty), a unique path is generated in the first writable of `$XDG_RUNTIME_DIR`, `/run/user/<uid>`, `/run`, `/tmp`; set it (e.g. to `/tmp/flue.sock`) to pin a fixed path |
 | `-fd`        | `3`                                   | File descriptor number of the preserved control socket                                                                                                                                                                           |
 | `-log-level` | `info`                                | Log level: `debug`, `info`, `warn`, or `error`                                                                                                                                                                                   |
+| `-version`   | -                                     | Print the build version and exit (no agent socket or control fd needed)                                                                                                                                                |
 
 After the flags, an optional command starts wrapper mode: `flue-broker
 [command] [args…]` runs that command as a child with `SSH_AUTH_SOCK` set to
@@ -190,6 +192,15 @@ podman cp /tmp/flue-broker <container>:/usr/local/bin/flue-broker
 the same architecture as your `flue`, and identical to the image's own
 broker when `flue` comes from the flue image. Unlike `exec` and `enter`,
 `extract-broker` needs no agent socket and takes no flags.
+
+### Version
+
+Both binaries carry their build version: `flue version` (or
+`flue --version`) and `flue-broker -version` print it and exit. The
+version is a package variable stamped at link time with
+`-ldflags "-X main.version=<version>"` — `build.sh` and the Containerfile
+stamp it from the image tag, the release workflow from the git tag, and a
+plain `go build` leaves it at `dev`.
 
 ## Build
 
