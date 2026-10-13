@@ -6,14 +6,15 @@ agent needs when changing the code.
 
 ## Modes
 
-flue is a cobra CLI with three subcommands. The global flags (`--sock`,
-`--allow-key`, `--allow-key-type`, `--log-level`, `--log-file`) are
-persistent on the root
-and go before the
-subcommand; a subcommand's arguments follow the subcommand name, and a `--`
-separates them from the target command so the target's own flags pass
-through verbatim (pflag, unlike stdlib flag, keeps scanning for flags after
-positionals — which is why the `--` is needed for commands with flags).
+flue is a cobra CLI with five subcommands; this section covers `exec`,
+`enter`, and `extract-broker`, while `broker-sha256` and `version` are
+informational. The global flags (`--sock`, `--allow-key`,
+`--allow-key-type`, `--log-level`, `--log-file`) are persistent on the
+root and go before the subcommand; a subcommand's arguments follow the
+subcommand name, and a `--` separates them from the target command so the
+target's own flags pass through verbatim (pflag, unlike stdlib flag, keeps
+scanning for flags after positionals — which is why the `--` is needed for
+commands with flags).
 
 - **exec** — `flue exec [--] <command...>`: run any command that receives
   the control socketpair (typically `podman exec --preserve-fds 1 ...
