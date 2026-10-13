@@ -70,7 +70,8 @@ README.md           usage, flags, how-it-works, security
 
 ## Adding features
 
-- **New flag**: add to the `flag` block in `main.go`; document in the
+- **New flag**: add it to the flag registration in `main.go` (cobra's
+  `init()` in `flue`, the `flag` block in `flue-broker`); document in the
   README `### Flags` table.
 - **Socket path coupling**: the broker generates a unique per-session
   path (XDG_RUNTIME_DIR → /run/user/\<uid\> → /run → /tmp) and exports it
