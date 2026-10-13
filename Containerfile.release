@@ -3,8 +3,8 @@
 # Release image: ships the pre-built flue and flue-broker binaries that the
 # release workflow built and sigstore-attested (SLSA provenance in GitHub's
 # attestation store) on the cote base image. Nothing is compiled here — the
-# image's bytes are exactly the attested bytes; the dev path (Containerfile
-# + build.sh) is the one that compiles from source.
+# image's bytes are exactly the attested bytes; the dev path (the
+# Containerfile) is the one that compiles from source.
 #
 # Build (release workflow; the context carries one binary per architecture
 # under dist/<arch>/):

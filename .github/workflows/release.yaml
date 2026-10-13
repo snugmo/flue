@@ -210,14 +210,14 @@ jobs:
         id: refs
         run: |
           set -euo pipefail
-          # build.sh strips the leading v from the tag; the image tag
-          # follows suit (v1.2.3 -> 1.2.3).
+          # The image tag strips the leading v from the release tag
+          # (v1.2.3 -> 1.2.3), matching the stamped binary version.
           tag="${GITHUB_REF_NAME#v}"
           {
             echo "tag=${tag}"
-            # Same coupling as build.sh: the cote base at the release tag,
-            # which must be published (multi-arch) before this job runs.
-            # Override with the FLUE_BASE_IMAGE repository variable.
+            # The cote base at the release tag, which must be published
+            # (multi-arch) before this job runs. Override with the
+            # FLUE_BASE_IMAGE repository variable.
             echo "base=${FLUE_BASE_IMAGE:-ghcr.io/snugmo/cote:${tag}-base}"
             echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "${GITHUB_OUTPUT}"

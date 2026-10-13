@@ -20,8 +20,8 @@ import (
 // If the file is missing, compiling this package fails with "no matching
 // files found" — a deliberate hard failure, so a flue built without its
 // broker is never produced silently. The file is a build artifact (see
-// .gitignore and .containerignore). build.sh and the Containerfile produce
-// it, and the Containerfile copies the *same file* to the image's
+// .gitignore and .containerignore). The Containerfile's go-build stage
+// produces it and copies the *same file* to the image's
 // /usr/local/bin/flue-broker, so a flue from the image extracts a broker
 // identical to the image's own flue-broker.
 //

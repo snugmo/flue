@@ -51,8 +51,8 @@
 //
 // -version prints the build version and exits. The version is a package
 // variable stamped at link time with -ldflags "-X main.version=<version>"
-// (build.sh, the Containerfile, and the release workflow all do this); a
-// plain `go build` reports "dev".
+// (the Containerfile and the release workflow both do this); a plain
+// `go build` reports "dev".
 package main
 
 import (
@@ -89,8 +89,8 @@ var (
 
 // version is the build version of this flue-broker binary. It is a package
 // variable so the build can stamp it at link time with
-// -ldflags "-X main.version=<version>" (build.sh, the Containerfile, and
-// the release workflow all do this); a plain `go build` leaves it at
+// -ldflags "-X main.version=<version>" (the Containerfile and the
+// release workflow both do this); a plain `go build` leaves it at
 // "dev". Printed by the -version flag.
 var version = "dev"
 

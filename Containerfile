@@ -6,9 +6,10 @@
 # channel; flue accepts client connections on it and proxies each to the
 # real agent with key-allowlist filtering.
 #
-# Build:
-#   ./build.sh                          # Build only
-#   ./build.sh push <registry>          # Build and push
+# Build (local dev — the README Build section has the full form):
+#   buildah build --isolation chroot --layers --format docker \
+#     --build-arg BASE_IMAGE=<cote base> --build-arg VERSION=<tag> \
+#     -t <image> -f Containerfile .
 #
 # Usage:
 #   flue exec -- podman exec \
