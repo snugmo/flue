@@ -44,7 +44,7 @@ binaries, no runtime deps).
 
 ### Prerequisites
 
-1. SSH agent forwarding is active in your session on the host
+1. An SSH agent is running on the host where `flue` runs
    (`SSH_AUTH_SOCK` is set, `ssh-add -l` lists keys).
 2. The container is running.
 
