@@ -86,33 +86,25 @@ jobs:
           # so it is not published as a separate release asset.
           # The tag (minus the leading v) is stamped into both binaries,
           # shown by `flue version` / `flue-broker -version`.
-          # GOARCH applies only to the release artifacts: the cross-built
-          # flue cannot run on this runner when the matrix arch differs,
-          # so a native-arch pair is built as well, for the verification
-          # steps (which check the embed, not the arch).
           GOARCH="${arch}" go build -ldflags="-s -w -X main.version=${ver#v}" -o cmd/flue/flue-broker.bin ./cmd/flue-broker
           out="dist"
           mkdir -p "${out}"
           # The exact bytes that get embedded in this arch's flue, kept
-          # aside for the attestation (the embed path is reused below
-          # for the native verification build).
+          # aside for the attestation.
           cp cmd/flue/flue-broker.bin "${out}/flue-broker_${ver}_linux_${arch}"
           # Flat, version+arch-named release asset (no tgz wrapper):
           # download, chmod +x, run.
           GOARCH="${arch}" go build -ldflags="-s -w -X main.version=${ver#v}" -o "${out}/flue_${ver}_linux_${arch}" ./cmd/flue
-          go build -ldflags="-s -w -X main.version=${ver#v}" -o cmd/flue/flue-broker.bin ./cmd/flue-broker
-          go build -ldflags="-s -w -X main.version=${ver#v}" -o "${out}/flue-check" ./cmd/flue
+      # When the runner arch matches the build target (amd64 on X64,
+      # arm64 on ARM64) the release binary can execute; the verify steps
+      # run the actual artifact. On a mismatch (arm64 cross-compiled on
+      # an X64 runner) these are skipped — the attestation and
+      # SHA256SUMS still pin the shipped bytes.
       - name: Verify extract-broker identity
+        if: ${{ (runner.arch == 'X64' && matrix.goarch == 'amd64') || (runner.arch == 'ARM64' && matrix.goarch == 'arm64') }}
         run: |
           set -euo pipefail
-          flue="dist/flue-check"
-          # The broker embedded in flue must be the same binary as the
-          # one built into it: extract it with a native build of the
-          # same source and compare against the embed-source file's
-          # sha256. (The release artifact for this arch is cross-built
-          # and cannot run here; the embed identity is arch-independent.)
-          # The Go tests only cover the embed blob, not the extracted
-          # artifact.
+          flue="dist/flue_${GITHUB_REF_NAME}_linux_${{ matrix.goarch }}"
           tmp="$(mktemp -d)"
           "${flue}" extract-broker "${tmp}/flue-broker"
           want="$(sha256sum cmd/flue/flue-broker.bin | awk '{print $1}')"
@@ -123,14 +115,10 @@ jobs:
           fi
           echo "extract-broker sha256 matches: ${got}"
       - name: Verify broker-sha256
+        if: ${{ (runner.arch == 'X64' && matrix.goarch == 'amd64') || (runner.arch == 'ARM64' && matrix.goarch == 'arm64') }}
         run: |
           set -euo pipefail
-          flue="dist/flue-check"
-          # The hash the binary reports for its own embed must match the
-          # build-time embed source. Together with the extract check above,
-          # the embed is tied to the source by two independent paths
-          # (extract writes the bytes out, broker-sha256 hashes them
-          # in-process).
+          flue="dist/flue_${GITHUB_REF_NAME}_linux_${{ matrix.goarch }}"
           got="$("${flue}" broker-sha256)"
           want="$(sha256sum cmd/flue/flue-broker.bin | awk '{print $1}')"
           if [ "${got}" != "${want}" ]; then
