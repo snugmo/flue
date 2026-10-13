@@ -121,14 +121,27 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Required by create_attestations (the release job signs the
+      # artifacts' attestation statements with the runner's OIDC token).
+      id-token: write
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
       - name: Flatten
         run: find artifacts -name '*.tar.gz' -exec mv {} . \;
+      - name: Generate SHA256SUMS
+        run: sha256sum flue_*.tar.gz > SHA256SUMS
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: flue_*.tar.gz
+          files: |
+            flue_*.tar.gz
+            SHA256SUMS
           generate_release_notes: true
+          # Provenance statement embedded in the release notes (who/what
+          # built this, from which commit and workflow run); attestation
+          # statements for the assets (verifiable with gh attestation /
+          # sigstore tools). Both require generate_release_notes.
+          create_provenance: true
+          create_attestations: true
