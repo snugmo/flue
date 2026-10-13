@@ -209,33 +209,35 @@ $ sha256sum /usr/local/bin/flue-broker   # from a container or a separate build
 Both binaries carry their build version: `flue version` (or
 `flue --version`) and `flue-broker -version` print it and exit. The
 version is a package variable stamped at link time with
-`-ldflags "-X main.version=<version>"` — `build.sh` and the Containerfile
-stamp it from the image tag, the release workflow from the git tag, and a
-plain `go build` leaves it at `dev`.
+`-ldflags "-X main.version=<version>"` — the Containerfile stamps it
+from the image tag, the release workflow from the git tag, and a plain
+`go build` leaves it at `dev`.
 
 ## Build
 
+Local image builds are a plain `buildah` invocation — rootless, no
+daemon required:
+
 ```bash
-./build.sh
-./build.sh push <registry>
+buildah build --isolation chroot --layers --format docker \
+  --build-arg BASE_IMAGE=ghcr.io/snugmo/cote:0.1.0-base \
+  --build-arg VERSION=0.1.0 \
+  --build-arg REVISION=$(git rev-parse HEAD) \
+  --build-arg CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+  -t ghcr.io/snugmo/flue:0.1.0 \
+  -f Containerfile .
+buildah push ghcr.io/snugmo/flue:0.1.0
 ```
+
+The base image (the `cote` release at the same tag) must be published
+before building.
 
 Build order: `flue-broker` is built first, to the `go:embed` path
 `cmd/flue/flue-broker.bin`, because `flue` embeds that binary (compiling
 `flue` fails if the file is missing — a deliberate hard failure).
-`build.sh` then builds `flue` and copies the same broker file to the repo
-root; the Containerfile copies it to the image's
-`/usr/local/bin/flue-broker`, so a `flue` from the image embeds a broker
-identical to the image's own.
-
-### Environment Variables
-
-| Variable         | Default                  | Description          |
-| ---------------- | ------------------------ | -------------------- |
-| `DEV_REGISTRY`   | `ghcr.io/snugmo`         | Target registry      |
-| `DEV_IMAGE_NAME` | `flue`                   | Image name           |
-| `DEV_VERSION`    | git tag                  | Image tag            |
-| `DEV_BASE_IMAGE` | auto                     | Base image reference |
+The Containerfile then builds `flue` and copies the same broker file to
+the image's `/usr/local/bin/flue-broker`, so a `flue` from the image
+embeds a broker identical to the image's own.
 
 ### Release image
 

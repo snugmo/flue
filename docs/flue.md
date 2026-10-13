@@ -234,7 +234,7 @@ listener.
   injected broker shows up as `memfd:flue-broker (deleted)`.
 - **Build order**: the embed file must exist before flue is compiled —
   build `flue-broker` first, to `cmd/flue/flue-broker.bin` (the AGENTS.md
-  Build/Test commands, `build.sh`, and the Containerfile all do this).
+  Build/Test commands and the Containerfile all do this).
   If the file is missing, compiling `cmd/flue` fails with "no matching
   files found": a deliberate hard failure, so a flue without its broker
   is never built silently.
