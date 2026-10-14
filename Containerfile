@@ -15,9 +15,10 @@
 #             /flue, with /flue as the entrypoint
 #
 # Every stage compiles for exactly one target platform — its own
-# $TARGETPLATFORM. A multi-arch build (buildx) therefore evaluates
-# this same chain once per platform; a local buildah build compiles
-# for the build's platform (host default, or --platform).
+# $TARGETOS/$TARGETARCH. A multi-arch build (buildx) therefore
+# evaluates this same chain once per platform; a local buildah
+# build compiles for the build's platform (host default, or
+# --platform).
 #
 # The final stage has no base image and no other system files: a
 # static binary needs no libc, no runtime, no shell. The release
@@ -42,11 +43,13 @@
 # default on any of these would override the per-platform value,
 # which both BuildKit and buildah only populate for ARGs without
 # one. $BUILDPLATFORM pins the golang stages to the build machine;
-# $TARGETPLATFORM (os/arch) is what every stage compiles for —
-# buildah populates it from the build's platform (host default, or
-# the --platform value when given), BuildKit per target platform.
+# $TARGETOS/$TARGETARCH are what the stages compile for — buildah
+# populates them from the build's platform (host default, or the
+# --platform value when given), BuildKit per target platform.
 ARG TARGETPLATFORM
 ARG BUILDPLATFORM
+ARG TARGETOS
+ARG TARGETARCH
 
 # The broker stage is pinned to the build platform ($BUILDPLATFORM)
 # and cross-compiles for its own target platform (Go cross-compiles
@@ -56,19 +59,20 @@ ARG BUILDPLATFORM
 # dev host.
 FROM --platform=$BUILDPLATFORM golang:1.27 AS broker
 ARG VERSION=latest
-ARG TARGETPLATFORM
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/ cmd/
-# One fully static broker for this build's target platform, GOOS and
-# GOARCH derived from $TARGETPLATFORM; it is staged in the scratch
-# image below, which is the single origin of that file everywhere
-# else: the flue build stage consumes the stage file as its
-# go:embed source, and the release workflow attests the same file —
-# so the attested broker is provably the one injected into flue at
-# build time.
-RUN set -eu; GOOS="$(echo "${TARGETPLATFORM}" | cut -d/ -f1)"; GOARCH="$(echo "${TARGETPLATFORM}" | cut -d/ -f2)"; CGO_ENABLED=0 GOOS="${GOOS}" GOARCH="${GOARCH}" go build -ldflags="-s -w -X main.version=${VERSION}" -o flue-broker ./cmd/flue-broker
+# One fully static broker for this build's target platform (GOOS
+# and GOARCH from the $TARGETOS/$TARGETARCH builtins); it is staged
+# in the scratch image below, which is the single origin of that
+# file everywhere else: the flue build stage consumes the stage
+# file as its go:embed source, and the release workflow attests
+# the same file — so the attested broker is provably the one
+# injected into flue at build time.
+RUN set -eu; CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" go build -ldflags="-s -w -X main.version=${VERSION}" -o flue-broker ./cmd/flue-broker
 
 # One FROM scratch image with the target platform's single broker
 # binary (mode 0755, as the go build left it). In a buildx
@@ -88,7 +92,8 @@ COPY --chown=0:0 --from=broker /build/flue-broker /flue-broker
 # platform's instance of this stage.
 FROM --platform=$BUILDPLATFORM golang:1.27 AS build
 ARG VERSION=latest
-ARG TARGETPLATFORM
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
@@ -103,7 +108,7 @@ COPY cmd/ cmd/
 # WORKDIR (both builders agree on WORKDIR for destinations), onto
 # the go:embed path.
 COPY --from=flue-broker /flue-broker cmd/flue/flue-broker.bin
-RUN set -eu; GOOS="$(echo "${TARGETPLATFORM}" | cut -d/ -f1)"; GOARCH="$(echo "${TARGETPLATFORM}" | cut -d/ -f2)"; CGO_ENABLED=0 GOOS="${GOOS}" GOARCH="${GOARCH}" go build -ldflags="-s -w -X main.version=${VERSION}" -o flue ./cmd/flue
+RUN set -eu; CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" go build -ldflags="-s -w -X main.version=${VERSION}" -o flue ./cmd/flue
 
 # The final stage: FROM scratch, one static binary at the root. It
 # ships the target platform's flue, as built by the build stage

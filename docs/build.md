@@ -18,17 +18,18 @@ buildah push ghcr.io/snugmo/flue:<tag>
   so the image ref is `ghcr.io/snugmo/flue:<tag>` (a custom registry
   works the same way — adjust the image reference).
 - No platform `--build-arg`s in the command: the Containerfile
-  declares `TARGETPLATFORM` and `BUILDPLATFORM` at global scope with
-  no default, so the builder's per-platform values are inherited (a
-  default in the file would override them and ship the amd64 binary
-  in the arm64 image). buildah populates them from the build's
-  platform — the host by default, or the `--platform` value when
-  given — like BuildKit, so a plain build produces the host's
-  architecture. To build for a different architecture, pass
-  `--platform linux/<arch>` (e.g. `--platform linux/arm64`): it
-  sets the whole target platform (architecture and OS). A lone
-  `--build-arg TARGETARCH=<arch>` would do nothing — the stages read
-  only `TARGETPLATFORM`.
+  declares the platform builtins (`TARGETPLATFORM`, `BUILDPLATFORM`,
+  `TARGETOS`, `TARGETARCH`) at global scope with no default, so the
+  builder's per-platform values are inherited (a default in the
+  file would override them and ship the amd64 binary in the arm64
+  image). buildah populates them from the build's platform — the
+  host by default, or the `--platform` value when given — like
+  BuildKit, so a plain build produces the host's architecture. To
+  build for a different architecture, pass `--platform linux/<arch>`
+  (e.g. `--platform linux/arm64`): it sets the whole target
+  platform (architecture and OS) at once, whereas
+  `--build-arg TARGETARCH=<arch>` (or `TARGETOS=`) would pin that
+  one value onto every platform.
 - `$BUILDPLATFORM` (the build machine's platform) pins the golang
   stages, so the compiler always runs natively regardless of host or
   target architecture; in BuildKit the built-in values keep

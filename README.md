@@ -228,15 +228,16 @@ buildah build --isolation chroot --layers --format docker \
 buildah push ghcr.io/snugmo/flue:0.1.0
 ```
 
-No platform build-args are needed: the Containerfile declares
-`TARGETPLATFORM` and `BUILDPLATFORM` at global scope with no
-default, so the per-platform values are inherited (a default would
-override them and ship the amd64 binary in the arm64 image). A
-plain build produces the host's architecture; to build for a
-different one, pass `--platform linux/<arch>` (e.g.
-`--platform linux/arm64`) — it sets the whole target platform
-(architecture and OS). A lone `--build-arg TARGETARCH=<arch>`
-would do nothing: the stages read only `TARGETPLATFORM`.
+No platform build-args are needed: the Containerfile declares the
+platform builtins (`TARGETPLATFORM`, `BUILDPLATFORM`, `TARGETOS`,
+`TARGETARCH`) at global scope with no default, so the per-platform
+values are inherited (a default would override them and ship the
+amd64 binary in the arm64 image). A plain build produces the
+host's architecture; to build for a different one, pass
+`--platform linux/<arch>` (e.g. `--platform linux/arm64`) — it
+sets the whole target platform (architecture and OS) at once,
+whereas `--build-arg TARGETARCH=<arch>` (or `TARGETOS=`) would pin
+that one value onto every platform.
 
 Build order: `flue-broker` is built in its own stage for the target
 platform (one static binary) and staged in a single `flue-broker`

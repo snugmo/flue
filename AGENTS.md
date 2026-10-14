@@ -25,7 +25,7 @@ README.md           usage, flags, how-it-works, security
 | -------------- | ------- |
 | Build binaries | `go build -o cmd/flue/flue-broker.bin ./cmd/flue-broker && go build -o flue ./cmd/flue && cp cmd/flue/flue-broker.bin flue-broker` |
 | Test           | `go build -o cmd/flue/flue-broker.bin ./cmd/flue-broker && go test ./...` |
-| Build image    | `buildah build --isolation chroot --layers --format docker --build-arg VERSION=<tag> -t <image> -f Containerfile .` (see the Containerfile header; the image is the host's architecture by default, or `--platform linux/<arch>` for another — never a `TARGETARCH` build-arg: the stages read only `TARGETPLATFORM`) |
+| Build image    | `buildah build --isolation chroot --layers --format docker --build-arg VERSION=<tag> -t <image> -f Containerfile .` (see the Containerfile header; the image is the host's architecture by default, or `--platform linux/<arch>` for another — never `TARGETOS`/`TARGETARCH` build-args: they would override the per-platform builtins for every platform) |
 | Forward agent  | `flue exec -- podman exec --preserve-fds 1 -e SSH_AUTH_SOCK=/tmp/flue.sock <container> flue-broker -sock /tmp/flue.sock` |
 | Enter a shell  | `flue enter [container] [command…]` (defaults: snugmo, `$FLUE_ENTER_CMD` else `/bin/sh`; `-ti` when stdin is a tty; a `--` with no argument before it makes what follows the command in the default container) |
 
@@ -58,21 +58,23 @@ README.md           usage, flags, how-it-works, security
   `BUILDPLATFORM` from the build's platform — the host's platform by
   default, or the `--platform` value when given — and a global-scope
   `ARG` without a default inherits the value (long-standing buildah
-  behavior, not BuildKit-only). The Containerfile's `ARG
-  TARGETPLATFORM`/`ARG BUILDPLATFORM` are deliberately bare: a
-  default in the file would override the per-platform value (which
-  is inherited only by ARGs without a default) and ship the amd64
-  binary in the arm64 image. Don't add defaults, don't remove the
-  bare declarations, and don't assume buildah lacks these
-  variables.
+  behavior, not BuildKit-only — `TARGETOS` too, which is what the
+  golang stages build with). The Containerfile's bare
+  `ARG TARGETPLATFORM`/`ARG BUILDPLATFORM`/`ARG TARGETOS`/`ARG
+  TARGETARCH` are deliberately default-less: a default in the file
+  would override the per-platform value (which is inherited only by
+  ARGs without a default) and ship the amd64 binary in the arm64
+  image. Don't add defaults, don't remove the bare declarations,
+  and don't assume buildah lacks these variables.
 - **The Containerfile's stages build for one platform each**: every
-  stage compiles for its own `$TARGETPLATFORM` (a single
+  stage compiles for its own `$TARGETOS`/`$TARGETARCH` (a single
   `FROM scratch` `flue-broker` stage, one per platform — never
   resurrect the per-arch stage names or multi-arch loops in a
   stage): buildx evaluates the whole chain once per target platform,
   and buildah compiles for the build's platform. Pass `--platform`
-  for a different architecture — never a `TARGETARCH` build-arg,
-  which nothing in the Containerfile reads.
+  for a different architecture — never `--build-arg
+  TARGETOS/TARGETARCH` overrides: they would pin one platform's
+  values onto every platform in a multi-arch build.
 - Component details are on-demand: [docs/flue.md](docs/flue.md) (host),
   [docs/flue-broker.md](docs/flue-broker.md) (container),
   [docs/build.md](docs/build.md) (image).
