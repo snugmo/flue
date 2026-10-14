@@ -15,6 +15,14 @@
 #     was built by this workflow.
 #
 # Trigger: push a tag like `v1.2.3` (any tag matching `v*`).
+#
+# Runs on ubuntu-24.04, pinned (not ubuntu-latest): ubuntu-latest migrates
+# to Ubuntu 26.04 in stages from 2026-10-19, which would turn the runner
+# image into a moving target mid-release (24.04 or 26.04 depending on the
+# day a tag lands) and change the OS/kernel/toolchain under the signed and
+# attested build. Pinning keeps the release reproducible; adopt
+# ubuntu-26.04 deliberately in a later release once tested here.
+# (github.com/actions/runner-images#14748)
 name: Release
 
 on:
@@ -27,7 +35,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -44,7 +52,7 @@ jobs:
         run: go test ./...
 
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -60,7 +68,7 @@ jobs:
 
   image:
     needs: [test]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # This job-level block replaces the top-level permissions for this
     # job, so it must list everything the job needs:
     #   actions: write          upload the release binaries as an artifact
@@ -263,7 +271,7 @@ jobs:
 
   release:
     needs: [image]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       # Download the build artifact the release is made from.
       actions: read
