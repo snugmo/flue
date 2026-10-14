@@ -145,11 +145,13 @@ jobs:
           # signs the manifest list by digest, so every tag pointing at
           # this digest (the release tag and latest) is covered.
           cosign sign --yes "${IMAGE}@${{ steps.build.outputs.digest }}"
-      # The release binaries are the image's own bytes: pull each
-      # architecture's manifest by the manifest-list digest the build
-      # step just pushed — not the symbolic tag, which pins the
-      # extraction to the exact pushed, signed, and attested artifact —
-      # and copy the single /flue file out of it, byte-identical.
+      # The release binaries are the image's own bytes: resolve the
+      # manifest-list digest the build step pushed down to each arch's
+      # child manifest, pull that, and copy the single /flue file out —
+      # byte-identical to the pushed, signed, attested image. Each arch
+      # is pulled by its OWN child digest (not the list digest twice),
+      # which avoids docker's "cannot overwrite digest" error: a second
+      # --platform pull of the same list digest is refused.
       - name: Extract release binaries from the image
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
@@ -158,8 +160,9 @@ jobs:
           tag="${GITHUB_REF_NAME#v}"
           mkdir -p dist
           for arch in amd64 arm64; do
-            docker pull --platform "linux/${arch}" "${IMAGE}@${DIGEST}"
-            id="$(docker create --platform "linux/${arch}" "${IMAGE}@${DIGEST}")"
+            child="$(docker buildx imagetools inspect --format json "${IMAGE}@${DIGEST}" | jq -r --arg a "$arch" '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $a) | .digest')"
+            docker pull "${IMAGE}@${child}"
+            id="$(docker create "${IMAGE}@${child}")"
             docker cp "${id}:/flue" "dist/flue_${tag}_linux_${arch}"
             docker rm "${id}" >/dev/null
             chmod 0755 "dist/flue_${tag}_linux_${arch}"
