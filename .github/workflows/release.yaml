@@ -163,24 +163,50 @@ jobs:
             chmod 0755 "dist/flue_${tag}_linux_${arch}"
             sha256sum "dist/flue_${tag}_linux_${arch}"
           done
-      # The embedded broker is not a release asset (it ships inside
-      # every flue), but it is attested here — extracted from the
-      # native-arch image binary — with a SLSA build-provenance
-      # predicate in GitHub's attestation store, keyed by the file's
-      # sha256, so a consumer who recovers it from any flue can verify
-      # it without it ever appearing in the release download list:
+      # The brokers are not release assets (each ships inside its
+      # architecture's flue), but both are attested here with SLSA
+      # build-provenance predicates in GitHub's attestation store,
+      # keyed by each file's sha256, so a consumer who recovers a
+      # broker from any flue — any architecture — can verify it
+      # without it ever appearing in the release download list:
       #
       #   flue extract-broker ./flue-broker
       #   gh attestation verify ./flue-broker --source snugmo/flue
-      - name: Extract the embedded broker
+      #
+      # The broker files come out of the Containerfile's brokers
+      # stage — the exact files the build stage embedded into the
+      # flue binaries — not by running any non-native binary.
+      - name: Export the broker binaries from the build stage
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
-          ./dist/flue_${tag}_linux_amd64 extract-broker "dist/flue-broker_${tag}_linux_amd64"
-      - name: Attest broker
+          # A second buildx invocation of the same Containerfile,
+          # targeting the brokers stage: every step is a cache hit
+          # from the image build above, so only the two file copies
+          # run, and the local output writes the two brokers to
+          # dist/brokers.
+          docker buildx build -f Containerfile \
+            --target brokers \
+            --build-arg VERSION="${tag}" \
+            --output type=local,dest=dist/brokers .
+      - name: Verify the embedded broker is byte-identical
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          # Spot-check the whole embed chain: the amd64 flue pulled
+          # from the pushed image must carry exactly the build-stage
+          # broker that is about to be attested (the arm64 pairing is
+          # the same loop iteration and holds by construction).
+          ./dist/flue_${tag}_linux_amd64 extract-broker /tmp/flue-broker-embedded
+          cmp /tmp/flue-broker-embedded dist/brokers/flue-broker_amd64
+      - name: Attest the amd64 broker
         uses: actions/attest@v4
         with:
-          subject-path: ${{ github.workspace }}/dist/flue-broker_${{ github.ref_name }}_linux_amd64
+          subject-path: ${{ github.workspace }}/dist/brokers/flue-broker_amd64
+      - name: Attest the arm64 broker
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ github.workspace }}/dist/brokers/flue-broker_arm64
       # Only the flue binaries go in the artifact (the broker is
       # embedded in them and stays out of the release download list
       # and SHA256SUMS).

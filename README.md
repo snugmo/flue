@@ -251,7 +251,11 @@ one file, the static `flue` binary at `/flue` (the entrypoint), with
 provenance and signed (Sigstore keyless), and the release assets are
 the image's own bytes: each architecture's `flue` is extracted from
 the pushed, signed image, so a downloaded binary is byte-identical to
-the one the signed and attested image ships.
+the one the signed and attested image ships. Both `flue-broker`
+binaries are likewise attested: the workflow exports the
+`Containerfile`'s `brokers` stage — the exact files embedded in the
+`flue` binaries — so a broker recovered from any `flue`, any
+architecture, can be verified with `gh attestation verify`.
 
 Every release image carries two signed claims, keyed to the image's
 manifest-list digest, so they cover all of its tags:

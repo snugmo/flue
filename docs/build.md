@@ -77,6 +77,10 @@ The binaries published as release assets are the image's own bytes: the
 `image` job pulls each architecture's manifest from the registry by the
 manifest-list digest the build step just pushed and copies the `/flue`
 file out, so a downloaded binary is byte-identical to the one that was
-pushed, signed, and attested. The embedded
-`flue-broker` (not a release asset — it ships inside every `flue`) is
-extracted from the native-arch binary and attested.
+pushed, signed, and attested. The two `flue-broker` binaries (not
+release assets — each ships inside its architecture's `flue`) are
+attested for both architectures: the job exports the `brokers` stage
+of the same build (a second, fully cached `buildx` invocation with
+`--target brokers` and a local output) and attests each file, and a
+native `extract-broker` run on the pushed image's `flue` cross-checks
+the pairing byte-for-byte.

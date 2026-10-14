@@ -15,7 +15,7 @@ proxies each client connection to the real host agent
 cmd/flue/           host side: socketpair control channel, filtered agent proxy
 cmd/flue-broker/    container side: thin listener + one-shot listener-fd handoff
 docs/               on-demand details: flue.md, flue-broker.md, build.md, duplication-policy.md
-Containerfile       multi-stage image build: golang build stage → FROM scratch final stage (just /flue)
+Containerfile       multi-stage image build: golang build stage → brokers stage (both flue-broker binaries, for release attestation) → FROM scratch final stage (just /flue)
 README.md           usage, flags, how-it-works, security
 ```
 
