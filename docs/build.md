@@ -7,7 +7,6 @@ A plain `buildah` invocation — rootless, no daemon required:
 ```bash
 buildah build --isolation chroot --layers --format docker \
   --build-arg VERSION=<tag> \
-  --build-arg TARGETARCH=amd64 \
   --build-arg REVISION=<sha> \
   --build-arg CREATED=<rfc3339> \
   -t ghcr.io/snugmo/flue:<tag> \
@@ -18,21 +17,21 @@ buildah push ghcr.io/snugmo/flue:<tag>
 - The tag is the version with the leading `v` stripped (e.g. `0.1.0`),
   so the image ref is `ghcr.io/snugmo/flue:<tag>` (a custom registry
   works the same way — adjust the image reference).
-- `TARGETARCH` (which architecture's `flue` the final stage ships)
-  is passed explicitly — `--build-arg TARGETARCH=amd64` (or
-  `arm64`): the Containerfile declares it at global scope with no
-  default, because a default would override the per-platform builtin
-  (inherited only by ARGs without one) and ship the amd64 binary in
-  the arm64 image. `buildah` populates the builtin from the build's
-  platform (host default if none is given) like BuildKit does —
-  long-standing behavior — so a build without the argument still
-  resolves the host's architecture; the explicit argument pins the
-  result on any version.
-- `TARGETPLATFORM` and `BUILDPLATFORM` are likewise declared at
-  global scope with no default: `$BUILDPLATFORM` pins the golang
-  stages to the build machine's platform (in buildah, the host
-  platform — builtins are auto-populated from the build's platform,
-  `--platform` or host default); in BuildKit the built-in values keep
+- No platform `--build-arg`s in the command: the Containerfile
+  declares `TARGETARCH`, `TARGETPLATFORM`, and `BUILDPLATFORM` at
+  global scope with no default, so the builder's per-platform values
+  are inherited (a default in the file would override them and ship
+  the amd64 binary in the arm64 image). buildah populates them from
+  the build's platform — the host by default, or the `--platform`
+  value when given — like BuildKit, so a plain build produces the
+  host's architecture. To build for a different architecture, pass
+  `--platform linux/<arch>` (e.g. `--platform linux/arm64`): it sets
+  the whole target platform (architecture and OS), whereas a lone
+  `--build-arg TARGETARCH=<arch>` would leave `TARGETPLATFORM`
+  ambiguous.
+- `$BUILDPLATFORM` (the build machine's platform) pins the golang
+  stages, so the compiler always runs natively regardless of host or
+  target architecture; in BuildKit the built-in values keep
   applying.
 - `.containerignore` keeps local build artifacts (`flue`,
   `flue-broker`, `cmd/flue/flue-broker.bin`) out of the build context —

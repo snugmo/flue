@@ -23,7 +23,6 @@
 # Build (local dev — the README Build section has the full form):
 #   buildah build --isolation chroot --layers --format docker \
 #     --build-arg VERSION=<tag> \
-#     --build-arg TARGETARCH=amd64 \
 #     -t <image> -f Containerfile .
 #
 # Usage (the entrypoint is /flue, so the subcommand and its arguments
@@ -39,9 +38,9 @@
 # default on any of these would override the per-platform value,
 # which both BuildKit and buildah only populate for ARGs without
 # one. $BUILDPLATFORM pins the golang stages to the build machine;
-# $TARGETARCH selects the binary the final stage ships (the local
-# build command below passes it explicitly; the final stage
-# re-declares it).
+# $TARGETARCH selects the binary the final stage ships (buildah
+# populates it from the build's platform — the host by default, or
+# the --platform value when given; the final stage re-declares it).
 ARG TARGETPLATFORM
 ARG BUILDPLATFORM
 ARG TARGETARCH
@@ -111,9 +110,10 @@ FROM scratch
 # Bare ARG (no default): BuildKit populates TARGETARCH per target
 # platform (buildah per the build's platform), but a default here
 # would override that value for every platform — the arm64 image
-# would ship the amd64 binary. A local build passes
-# --build-arg TARGETARCH=<arch> explicitly (see the build command
-# above), declared globally and re-declared here.
+# would ship the amd64 binary. To build for a different
+# architecture, pass --platform linux/<arch> (never a lone
+# --build-arg TARGETARCH=<arch>: it would leave TARGETPLATFORM
+# ambiguous); declared globally and re-declared here.
 ARG TARGETARCH
 # Stamped into the OCI well-known labels below (the binary already
 # carries the version, stamped by the build stage).

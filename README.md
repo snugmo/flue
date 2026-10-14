@@ -221,7 +221,6 @@ daemon required:
 ```bash
 buildah build --isolation chroot --layers --format docker \
   --build-arg VERSION=0.1.0 \
-  --build-arg TARGETARCH=amd64 \
   --build-arg REVISION=$(git rev-parse HEAD) \
   --build-arg CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
   -t ghcr.io/snugmo/flue:0.1.0 \
@@ -229,11 +228,15 @@ buildah build --isolation chroot --layers --format docker \
 buildah push ghcr.io/snugmo/flue:0.1.0
 ```
 
-`TARGETARCH` (which architecture's binary the final stage ships) is
-passed explicitly: the Containerfile declares it with no default, so
-the per-platform value is inherited in multi-arch builds (a default
-would override it for every platform) — pass
-`--build-arg TARGETARCH=arm64` for an arm64 image.
+No platform build-args are needed: the Containerfile declares
+`TARGETARCH`, `TARGETPLATFORM`, and `BUILDPLATFORM` at global scope
+with no default, so the per-platform values are inherited (a
+default would override them and ship the amd64 binary in the arm64
+image). A plain build produces the host's architecture; to build
+for a different one, pass `--platform linux/<arch>` (e.g.
+`--platform linux/arm64`) — it sets the whole target platform
+(architecture and OS), whereas a lone `--build-arg
+TARGETARCH=<arch>` would leave `TARGETPLATFORM` ambiguous.
 
 Build order: `flue-broker` is built in its own stage (one static
 binary per architecture), staged in a per-architecture scratch image;
