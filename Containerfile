@@ -42,7 +42,7 @@
 # Platform builtins, declared at global scope with no default: a
 # default on any of these would override the per-platform value,
 # which both BuildKit and buildah only populate for ARGs without
-# one. $BUILDPLATFORM pins the golang stages to the build machine;
+# one. ${BUILDPLATFORM} pins the golang stages to the build machine;
 # $TARGETOS/$TARGETARCH are what the stages compile for — buildah
 # populates them from the build's platform (host default, or the
 # --platform value when given), BuildKit per target platform.
@@ -51,13 +51,13 @@ ARG BUILDPLATFORM
 ARG TARGETOS
 ARG TARGETARCH
 
-# The broker stage is pinned to the build platform ($BUILDPLATFORM)
+# The broker stage is pinned to the build platform (${BUILDPLATFORM})
 # and cross-compiles for its own target platform (Go cross-compiles
 # natively with CGO_ENABLED=0), so a multi-arch build never needs
 # QEMU: the compiler runs natively on whichever host the build runs
 # on — the release workflow's amd64 runner, or an amd64 or arm64
 # dev host.
-FROM --platform=$BUILDPLATFORM golang:1.27 AS broker
+FROM --platform=${BUILDPLATFORM} golang:1.27 AS broker
 ARG VERSION=latest
 ARG TARGETOS
 ARG TARGETARCH
@@ -86,11 +86,11 @@ FROM scratch AS flue-broker
 COPY --chown=0:0 --from=broker /build/flue-broker /flue-broker
 
 # The flue build stage is pinned to the build platform
-# ($BUILDPLATFORM) and cross-compiles for its own target platform
+# (${BUILDPLATFORM}) and cross-compiles for its own target platform
 # (native Go cross-compilation), so a multi-arch build never needs
 # QEMU: each platform's flue binary is compiled natively by that
 # platform's instance of this stage.
-FROM --platform=$BUILDPLATFORM golang:1.27 AS build
+FROM --platform=${BUILDPLATFORM} golang:1.27 AS build
 ARG VERSION=latest
 ARG TARGETOS
 ARG TARGETARCH
