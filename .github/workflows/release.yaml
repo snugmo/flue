@@ -234,12 +234,15 @@ jobs:
       - name: Verify the embedded broker is byte-identical
         env:
           # The runner's own architecture, remapped to a Go/docker arch
-          # name (AMD64->amd64, ARM64->arm64). GitHub's expression
+          # name (AMD64/X64->amd64, ARM64->arm64). GitHub's expression
           # language has no case-folding function, so the remap is an
-          # &&/|| chain over runner.arch; any other value (e.g. a 32-bit
-          # 'ARM') passes through raw and is used verbatim. No
-          # uname/shell needed to detect the arch: the runner reports it.
-          RUNNER_ARCH: ${{ runner.arch == 'AMD64' && 'amd64' || runner.arch == 'ARM64' && 'arm64' || runner.arch }}
+          # &&/|| chain over runner.arch. The 'X64' case is not in the
+          # official docs but is what the actual runner images report
+          # (observed: RUNNER_ARCH: X64 on ubuntu-latest); keep both
+          # spellings. Any other value (e.g. a 32-bit 'ARM') passes
+          # through raw and is used verbatim. No uname/shell needed to
+          # detect the arch: the runner reports it.
+          RUNNER_ARCH: ${{ runner.arch == 'AMD64' && 'amd64' || runner.arch == 'X64' && 'amd64' || runner.arch == 'ARM64' && 'arm64' || runner.arch }}
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
