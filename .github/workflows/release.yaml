@@ -203,15 +203,23 @@ jobs:
               --output "type=local,dest=dist/brokers/${arch}" .
           done
       - name: Verify the embedded broker is byte-identical
+        env:
+          # The runner's own architecture, as a Go/docker arch name
+          # (AMD64->amd64, ARM64->arm64) — no shell/uname needed: GitHub
+          # evaluates runner.arch in this env block.
+          RUNNER_ARCH: ${{ lower(runner.arch) }}
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
-          # Close the loop end to end: the amd64 flue pulled from the
-          # pushed image must extract a broker byte-identical to the
-          # file about to be attested — the same file its build stage
-          # COPY --from consumed (the arm64 pairing is the same edge).
-          ./dist/flue_${tag}_linux_amd64 extract-broker /tmp/flue-broker-embedded
-          cmp /tmp/flue-broker-embedded dist/brokers/amd64/flue-broker
+          # Close the loop end to end: run the flue binary matching THIS
+          # runner's architecture to extract its embedded broker, which
+          # must be byte-identical to that architecture's file about to
+          # be attested — the same file its build stage COPY --from
+          # consumed. Only the runner-native binary can execute here (no
+          # QEMU), so it's the one edge we verify; the other arch holds
+          # by the same COPY --from symmetry.
+          ./dist/flue_${tag}_linux_${RUNNER_ARCH} extract-broker /tmp/flue-broker-embedded
+          cmp /tmp/flue-broker-embedded "dist/brokers/${RUNNER_ARCH}/flue-broker"
       - name: Attest the amd64 broker
         uses: actions/attest@v4
         with:
