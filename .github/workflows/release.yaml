@@ -124,14 +124,15 @@ jobs:
       - name: Attest the image (SLSA provenance)
         uses: actions/attest@v4
         with:
-          # provenance: true makes the action generate the SLSA
-          # build-provenance predicate for this buildx run. The subject
-          # is the image name without a tag, identified by the
-          # manifest-list digest; push-to-registry stores it as a cosign
-          # attestation in the image's own repo, next to the signature.
+          # No predicate input: when neither predicate nor predicate-path
+          # is given, attest@v4 defaults to a SLSA build-provenance
+          # attestation generated for this buildx run. The subject is the
+          # image name without a tag, identified by the manifest-list
+          # digest; push-to-registry stores it as a cosign attestation in
+          # the image's own repo, next to the signature. (There is no
+          # "provenance" input — that would be rejected as unexpected.)
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.build.outputs.digest }}
-          provenance: true
           push-to-registry: true
           create-storage-record: true
       # Pinned to a specific release: cosign-installer has no bare "v4" tag
