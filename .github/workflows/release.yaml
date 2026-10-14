@@ -23,6 +23,12 @@
 # attested build. Pinning keeps the release reproducible; adopt
 # ubuntu-26.04 deliberately in a later release once tested here.
 # (github.com/actions/runner-images#14748)
+#
+# Action versions are pinned to their Node 24 majors (checkout, setup-go,
+# golangci-lint, upload/download-artifact, action-gh-release): the older
+# majors run on Node 20, which GitHub's runners now deprecate in favour of
+# Node 24. Bumping to the Node 24 majors clears that deprecation warning
+# without changing any input in use here.
 name: Release
 
 on:
@@ -37,8 +43,8 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -54,15 +60,15 @@ jobs:
   lint:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Build broker (embed source)
         env:
           CGO_ENABLED: 0
         run: go build -ldflags="-s -w" -o cmd/flue/flue-broker.bin ./cmd/flue-broker
-      - uses: golangci/golangci-lint-action@v8
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: latest
 
@@ -91,7 +97,7 @@ jobs:
       # name never changes and the tags are explicit below).
       IMAGE: ghcr.io/snugmo/flue
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Image refs
         id: refs
         run: |
@@ -262,7 +268,7 @@ jobs:
       # step above produced — github.ref_name keeps the v and would
       # point at paths that do not exist.
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: flue_${{ steps.refs.outputs.tag }}
           path: |
@@ -278,7 +284,7 @@ jobs:
       # Publish the release and upload the assets.
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
       - name: Flatten
@@ -286,7 +292,7 @@ jobs:
       - name: Generate SHA256SUMS
         run: sha256sum flue_* > SHA256SUMS
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             flue_*
