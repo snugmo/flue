@@ -2,15 +2,18 @@
 #
 # The flue image, in one multi-stage build:
 #
-#   build   a golang toolchain compiles flue, fully static
-#           (CGO_ENABLED=0), embedding the flue-broker built from the
-#           same source (go:embed, built first, to the embed path)
-#   brokers FROM scratch: the two flue-broker binaries from the build
-#           stage — an intermediate only, not part of the image; the
-#           release workflow exports it to attest the brokers for
-#           every architecture (see its stage comment)
-#   final   FROM scratch: the image is that one static binary at /flue,
-#           with /flue as the entrypoint
+#   broker  a golang toolchain compiles flue-broker, fully static
+#           (CGO_ENABLED=0), for both release architectures
+#   flue-broker-amd64, flue-broker-arm64
+#           one FROM scratch image per architecture, each a single
+#           broker binary — the release workflow's attestation input,
+#           and the exact file the flue build embeds (see stage
+#           comments)
+#   build   a golang toolchain compiles flue, fully static, one per
+#           architecture, each embedding that architecture's broker
+#           file (go:embed)
+#   final   FROM scratch: the image is that one static binary at
+#           /flue, with /flue as the entrypoint
 #
 # The final stage has no base image and no other system files: a static
 # binary needs no libc, no runtime, no shell. The release workflow's
@@ -31,47 +34,64 @@
 #     -e SSH_AUTH_SOCK=/tmp/flue.sock \
 #     <target> flue-broker -sock /tmp/flue.sock
 
-# The build stage is pinned to linux/amd64 and cross-compiles for the
-# target architecture (Go cross-compiles natively with CGO_ENABLED=0),
-# so a multi-arch build never needs QEMU: on the release workflow's
-# amd64 runner — and any amd64 dev host — both platforms' binaries are
-# compiled natively.
+# The broker stage is pinned to linux/amd64 and cross-compiles for the
+# release architectures (Go cross-compiles natively with
+# CGO_ENABLED=0), so a multi-arch build never needs QEMU: on the
+# release workflow's amd64 runner — and any amd64 dev host — both
+# platforms' brokers are compiled natively.
+FROM --platform=linux/amd64 golang:1.27 AS broker
+ARG VERSION=latest
+WORKDIR /build
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd/ cmd/
+# One fully-static broker per release architecture; each is staged in
+# its own scratch image below (flue-broker-amd64, flue-broker-arm64),
+# which is the single origin of that file everywhere else: the flue
+# build stage consumes those stage files as its go:embed sources, and
+# the release workflow attests the same files — so the attested
+# broker is provably the one injected into flue at build time.
+RUN set -eu; for arch in amd64 arm64; do \
+  CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -ldflags="-s -w -X main.version=${VERSION}" -o flue-broker_$arch ./cmd/flue-broker; \
+  done
+
+# One FROM scratch image per architecture, each a single broker
+# binary (mode 0755, as the go build left it). From scratch, so no
+# base-image metadata to reconcile; intermediates only — the final
+# stage below is the last stage and never becomes an image.
+# Absolute --from paths: buildah resolves them from the stage's
+# filesystem root, BuildKit from its WORKDIR — both agree on /build.
+FROM scratch AS flue-broker-amd64
+COPY --chown=0:0 --from=broker /build/flue-broker_amd64 /flue-broker
+
+FROM scratch AS flue-broker-arm64
+COPY --chown=0:0 --from=broker /build/flue-broker_arm64 /flue-broker
+
+# The flue build stage is pinned to linux/amd64 and cross-compiles for
+# each architecture (native Go cross-compilation), so a multi-arch
+# build never needs QEMU: both platforms' flue binaries are compiled
+# natively in this one stage.
 FROM --platform=linux/amd64 golang:1.27 AS build
 ARG VERSION=latest
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/ cmd/
-# The broker is built first, to the go:embed path, because flue embeds
-# it (compiling flue without it fails — a deliberate hard failure).
-# It is rebuilt before each architecture's flue, so each flue embeds
-# the broker built for the same architecture; both release
-# architectures are compiled in this one native-amd64 stage. Each
-# broker is also copied to flue-broker_<arch> — the per-architecture
-# copies feed the brokers stage below.
+# The embed sources come from the per-architecture scratch stages
+# above, not from this stage's own build: the same files the release
+# workflow attests are the ones go:embed pulls into each flue. Both
+# hops are deliberate hard failures — cp fails if a stage file is
+# missing, and go:embed fails with "no matching files found" if the
+# embed path is empty at compile time — so a flue built without its
+# broker is never produced silently.
+COPY --from=flue-broker-amd64 /flue-broker /build/broker_amd64
+COPY --from=flue-broker-arm64 /flue-broker /build/broker_arm64
+# Each architecture's flue embeds that architecture's broker: the
+# stage file is placed on the go:embed path before compiling it.
 RUN set -eu; for arch in amd64 arm64; do \
-  CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -ldflags="-s -w -X main.version=${VERSION}" -o cmd/flue/flue-broker.bin ./cmd/flue-broker \
-  && cp cmd/flue/flue-broker.bin flue-broker_$arch \
+  cp broker_$arch cmd/flue/flue-broker.bin \
   && CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -ldflags="-s -w -X main.version=${VERSION}" -o flue_$arch ./cmd/flue; \
   done
-
-# The brokers stage: the two per-architecture flue-broker binaries.
-# It is an intermediate (the final stage below is the last stage, so
-# this one never becomes the image), and it exists so the release
-# workflow can attest the broker for every architecture without
-# running any non-native binary: the files are the exact ones the
-# build stage's flue binaries embedded — the loop copies each to
-# flue-broker_<arch> right after building it, before compiling that
-# architecture's flue — so the workflow exports this stage
-# (docker buildx build --target brokers --output type=local), and a
-# native extract-broker run on the pushed image cross-checks the
-# pairing byte-for-byte.
-FROM scratch AS brokers
-# Absolute paths: buildah resolves --from sources from the stage's
-# filesystem root, BuildKit from its WORKDIR — both agree on /build
-# (the final stage's COPY below relies on the same).
-COPY --chown=0:0 --from=build /build/flue-broker_amd64 /flue-broker_amd64
-COPY --chown=0:0 --from=build /build/flue-broker_arm64 /flue-broker_arm64
 
 # The final stage: FROM scratch, one static binary at the root.
 FROM scratch
