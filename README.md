@@ -249,8 +249,9 @@ architecture), and the final stage is a `FROM scratch` with exactly
 one file, the static `flue` binary at `/flue` (the entrypoint), with
 `flue-broker` embedded in it. The image is attested with SLSA build
 provenance and signed (Sigstore keyless), and the release assets are
-the binaries the release build itself built and attested, from the
-same commit with the same flags.
+the image's own bytes: each architecture's `flue` is extracted from
+the pushed, signed image, so a downloaded binary is byte-identical to
+the one the signed and attested image ships.
 
 Every release image carries two signed claims, keyed to the image's
 manifest-list digest, so they cover all of its tags:

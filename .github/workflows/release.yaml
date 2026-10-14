@@ -1,17 +1,18 @@
-# Release — build the static flue binary when a git tag is pushed and
-# publish it as a GitHub Release. The flue-broker is embedded in the flue
-# binary (recoverable via `flue extract-broker`), so it is not a separate
-# release asset; this workflow still builds it (to the go:embed path),
-# verifies the embed matches the build source, and sigstore-attests the
-# broker (SLSA provenance in the GitHub attestation store) so anyone who
-# extracts it can verify it was built by this workflow.
+# Release — build the flue image when a git tag is pushed and publish
+# it as a GitHub Release. One multi-arch build of the Containerfile
+# (golang build stage compiles the static flue binary, FROM scratch
+# final stage ships it at /flue) is the single source of truth:
 #
-# The flue binary is also published as the OCI image ghcr.io/snugmo/flue:
-# a minimal static distribution (FROM scratch, just the /flue binary, with
-# flue-broker embedded in it). The image job builds the repo's Containerfile
-# for both architectures (its build stage compiles the static binary; the
-# final stage is the scratch distribution), signs it (Sigstore keyless),
-# and attests it with SLSA build provenance.
+#   - the image is pushed to ghcr.io/snugmo/flue, attested with SLSA
+#     build provenance, and signed (Sigstore keyless);
+#   - the release assets are the image's own bytes: each architecture's
+#     manifest is pulled from the registry and the single /flue file is
+#     copied out, so a downloaded binary is byte-identical to the one
+#     that was pushed, signed, and attested;
+#   - the embedded flue-broker (not a separate asset — it ships inside
+#     every flue) is extracted from the native-arch binary and
+#     sigstore-attested, so a consumer who recovers it can verify it
+#     was built by this workflow.
 #
 # Trigger: push a tag like `v1.2.3` (any tag matching `v*`).
 name: Release
@@ -57,124 +58,21 @@ jobs:
         with:
           version: latest
 
-  build:
+  image:
     needs: [test]
     runs-on: ubuntu-latest
-    # This job-level block replaces the top-level permissions for this job,
-    # so it must list everything the job needs:
-    #   actions: write         upload the build artifact
-    #   contents: read        checkout the source
-    #   id-token: write       mint the OIDC token exchanged for the Sigstore
-    #                         signing certificate (Attest broker step)
-    #   attestations: write   persist the attestation in GitHub's store
-    permissions:
-      actions: write
-      contents: read
-      id-token: write
-      attestations: write
-    strategy:
-      fail-fast: false
-      matrix:
-        goarch: [amd64, arm64]
-    env:
-      CGO_ENABLED: 0
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - name: Build
-        run: |
-          set -euo pipefail
-          ver="${GITHUB_REF_NAME}"
-          arch="${{ matrix.goarch }}"
-          # The broker is built first, to the go:embed path, because flue
-          # embeds it; consumers get it back via `flue extract-broker`,
-          # so it is not published as a separate release asset.
-          # The tag (minus the leading v) is stamped into both binaries,
-          # shown by `flue version` / `flue-broker -version`.
-          GOARCH="${arch}" go build -ldflags="-s -w -X main.version=${ver#v}" -o cmd/flue/flue-broker.bin ./cmd/flue-broker
-          out="dist"
-          mkdir -p "${out}"
-          # The exact bytes that get embedded in this arch's flue, kept
-          # aside for the attestation.
-          cp cmd/flue/flue-broker.bin "${out}/flue-broker_${ver}_linux_${arch}"
-          # Flat, version+arch-named release asset (no tgz wrapper):
-          # download, chmod +x, run.
-          GOARCH="${arch}" go build -ldflags="-s -w -X main.version=${ver#v}" -o "${out}/flue_${ver}_linux_${arch}" ./cmd/flue
-      # When the runner arch matches the build target (amd64 on X64,
-      # arm64 on ARM64) the release binary can execute; the verify steps
-      # run the actual artifact. On a mismatch (arm64 cross-compiled on
-      # an X64 runner) these are skipped — the attestation and
-      # SHA256SUMS still pin the shipped bytes.
-      - name: Verify extract-broker identity
-        if: ${{ (runner.arch == 'X64' && matrix.goarch == 'amd64') || (runner.arch == 'ARM64' && matrix.goarch == 'arm64') }}
-        run: |
-          set -euo pipefail
-          flue="dist/flue_${GITHUB_REF_NAME}_linux_${{ matrix.goarch }}"
-          tmp="$(mktemp -d)"
-          "${flue}" extract-broker "${tmp}/flue-broker"
-          want="$(sha256sum cmd/flue/flue-broker.bin | awk '{print $1}')"
-          got="$(sha256sum "${tmp}/flue-broker" | awk '{print $1}')"
-          if [ "${want}" != "${got}" ]; then
-            printf 'extract-broker does not match the embed source:\n  embed:     %s\n  extracted: %s\n' "${want}" "${got}"
-            exit 1
-          fi
-          echo "extract-broker sha256 matches: ${got}"
-      - name: Verify broker-sha256
-        if: ${{ (runner.arch == 'X64' && matrix.goarch == 'amd64') || (runner.arch == 'ARM64' && matrix.goarch == 'arm64') }}
-        run: |
-          set -euo pipefail
-          flue="dist/flue_${GITHUB_REF_NAME}_linux_${{ matrix.goarch }}"
-          got="$("${flue}" broker-sha256)"
-          want="$(sha256sum cmd/flue/flue-broker.bin | awk '{print $1}')"
-          if [ "${got}" != "${want}" ]; then
-            printf 'broker-sha256 does not match the embed source:\n  reported: %s\n  actual:   %s\n' "${got}" "${want}"
-            exit 1
-          fi
-          echo "broker-sha256 matches the embed source: ${got}"
-      - name: Attest broker
-        uses: actions/attest@v4
-        with:
-          subject-path: ${{ github.workspace }}/dist/flue-broker_${{ github.ref_name }}_linux_${{ matrix.goarch }}
-        # The broker is not a release asset, but it is still attested here —
-        # in the job that built it — with a SLSA build-provenance predicate
-        # signed by a short-lived Sigstore certificate (public-good instance
-        # for this public repo). The attestation lands in GitHub's
-        # attestation store, keyed by the file's sha256 digest, so a
-        # consumer who recovers the broker from any flue binary can verify
-        # it without the broker ever appearing in the release download list:
-        #
-        #   flue extract-broker ./flue-broker
-        #   gh attestation verify ./flue-broker --source snugmo/flue
-      - name: Attest flue
-        uses: actions/attest@v4
-        with:
-          subject-path: ${{ github.workspace }}/dist/flue_${{ github.ref_name }}_linux_${{ matrix.goarch }}
-      # Only the flue binary goes in the artifact (the broker is embedded
-      # in it), and the release job publishes it. The broker is still not
-      # a release asset — it stays out of the release download list and
-      # out of SHA256SUMS.
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: flue_${{ github.ref_name }}_${{ matrix.goarch }}
-          path: |
-            dist/flue_${{ github.ref_name }}_linux_${{ matrix.goarch }}
-
-  image:
-    needs: [build]
-    runs-on: ubuntu-latest
-    # This job-level block replaces the top-level permissions for this job,
-    # so it must list everything the job needs:
+    # This job-level block replaces the top-level permissions for this
+    # job, so it must list everything the job needs:
+    #   actions: write          upload the release binaries as an artifact
     #   contents: read           check out the source and the Containerfile
     #   packages: write          push the image, the cosign signature, and
     #                            the registry-pushed attestation to GHCR
     #   id-token: write          mint the OIDC token exchanged for the
     #                            Sigstore signing certificate (sign + attest)
-    #   attestations: write      persist the attestation in GitHub's store
+    #   attestations: write      persist the attestations in GitHub's store
     #   artifact-metadata: write create the image's storage record
     permissions:
+      actions: write
       contents: read
       packages: write
       id-token: write
@@ -227,9 +125,8 @@ jobs:
         uses: actions/attest@v4
         with:
           # provenance: true makes the action generate the SLSA
-          # build-provenance predicate for this buildx run (the same
-          # toolkit as the binary attestations in the build job). The
-          # subject is the image name without a tag, identified by the
+          # build-provenance predicate for this buildx run. The subject
+          # is the image name without a tag, identified by the
           # manifest-list digest; push-to-registry stores it as a cosign
           # attestation in the image's own repo, next to the signature.
           subject-name: ${{ env.IMAGE }}
@@ -246,12 +143,57 @@ jobs:
           # signs the manifest list by digest, so every tag pointing at
           # this digest (the release tag and latest) is covered.
           cosign sign --yes "${IMAGE}@${{ steps.build.outputs.digest }}"
+      # The release binaries are the image's own bytes: pull each
+      # architecture's manifest from the registry and copy the single
+      # /flue file out of it, so a downloaded binary is byte-identical
+      # to the one that was pushed, signed, and attested above.
+      - name: Extract release binaries from the image
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            docker pull --platform "linux/${arch}" "${IMAGE}:${tag}"
+            id="$(docker create "${IMAGE}:${tag}")"
+            docker cp "${id}:/flue" "dist/flue_${tag}_linux_${arch}"
+            docker rm "${id}" >/dev/null
+            chmod 0755 "dist/flue_${tag}_linux_${arch}"
+            sha256sum "dist/flue_${tag}_linux_${arch}"
+          done
+      # The embedded broker is not a release asset (it ships inside
+      # every flue), but it is attested here — extracted from the
+      # native-arch image binary — with a SLSA build-provenance
+      # predicate in GitHub's attestation store, keyed by the file's
+      # sha256, so a consumer who recovers it from any flue can verify
+      # it without it ever appearing in the release download list:
+      #
+      #   flue extract-broker ./flue-broker
+      #   gh attestation verify ./flue-broker --source snugmo/flue
+      - name: Extract the embedded broker
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          ./dist/flue_${tag}_linux_amd64 extract-broker "dist/flue-broker_${tag}_linux_amd64"
+      - name: Attest broker
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ github.workspace }}/dist/flue-broker_${{ github.ref_name }}_linux_amd64
+      # Only the flue binaries go in the artifact (the broker is
+      # embedded in them and stays out of the release download list
+      # and SHA256SUMS).
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flue_${{ github.ref_name }}
+          path: |
+            dist/flue_${{ github.ref_name }}_linux_amd64
+            dist/flue_${{ github.ref_name }}_linux_arm64
 
   release:
-    needs: [build]
+    needs: [image]
     runs-on: ubuntu-latest
     permissions:
-      # Download the build artifacts the release is made from.
+      # Download the build artifact the release is made from.
       actions: read
       # Publish the release and upload the assets.
       contents: write

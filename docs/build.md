@@ -73,6 +73,9 @@ The image job then:
 - signs it with a Sigstore keyless cosign signature (one signature per
   manifest-list digest, so all tags are covered).
 
-The binaries published as release assets are built and attested by the
-`build` job from the same commit with the same build flags; the
-image's build stage compiles that same source itself.
+The binaries published as release assets are the image's own bytes: the
+`image` job pulls each architecture's manifest from the registry and
+copies the `/flue` file out, so a downloaded binary is byte-identical
+to the one that was pushed, signed, and attested. The embedded
+`flue-broker` (not a release asset — it ships inside every `flue`) is
+extracted from the native-arch binary and attested.
