@@ -277,28 +277,35 @@ verified offline — no registry or network lookup.
 Every release image carries two signed claims, keyed to the image's
 manifest-list digest, so they cover all of its tags:
 
-- a **Sigstore keyless signature** (cosign, under the GitHub identity of
-  the release workflow), and
+- a **Sigstore keyless signature** (cosign), and
 - a **SLSA build provenance attestation** (in GitHub's attestation
   store, with a copy pushed into the registry).
+
+The certificate behind the signature has no subject of its own: its
+identity is the SAN URI of the release workflow file at the pushed
+ref — *not* the account that pushed the tag. (That is how fulcio
+identifies a GitHub Actions run; the identity differs per release tag
+because it embeds the ref.)
 
 Verify from any machine:
 
 ```sh
 tag=1.2.3   # the release tag, without the leading v
+identity="https://github.com/snugmo/flue/.github/workflows/release.yaml@refs/tags/v${tag}"
 
-# 1. Signature: built by the release workflow under this identity
+# 1. Signature: this workflow file at this tag, under the GHA OIDC issuer
 cosign verify ghcr.io/snugmo/flue:$tag \
-  --certificate-identity "<account that pushed the tag>" \
+  --certificate-identity "$identity" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 
 # 2. Provenance: built by snugmo/flue's release workflow
 gh attestation verify ghcr.io/snugmo/flue:$tag --source snugmo/flue
 
 # 3. Binaries: each asset ships a self-contained sigstore bundle
+#    (same identity as the image signature: same workflow file, same ref)
 cosign verify-blob "flue_${tag}_linux_amd64" \
   --bundle "flue_${tag}_linux_amd64.sigstore" \
-  --certificate-identity "<account that pushed the tag>" \
+  --certificate-identity "$identity" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 ```
 
