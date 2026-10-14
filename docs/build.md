@@ -37,7 +37,7 @@ buildah push ghcr.io/snugmo/flue:<tag>
 Two stages:
 
 - **`build`**: compiles both binaries from source with the
-  `golang:1.26` toolchain, `CGO_ENABLED=0` with `-ldflags="-s -w"`
+  `golang:1.27` toolchain, `CGO_ENABLED=0` with `-ldflags="-s -w"`
   (static, stripped — the image must run on any Linux container without
   a glibc). It is pinned to `FROM --platform=linux/amd64` and
   cross-compiles both release architectures in one loop (Go

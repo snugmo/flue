@@ -32,7 +32,7 @@
 # so a multi-arch build never needs QEMU: on the release workflow's
 # amd64 runner — and any amd64 dev host — both platforms' binaries are
 # compiled natively.
-FROM --platform=linux/amd64 golang:1.26 AS build
+FROM --platform=linux/amd64 golang:1.27 AS build
 ARG VERSION=latest
 WORKDIR /build
 COPY go.mod go.sum ./
