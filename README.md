@@ -242,10 +242,11 @@ embeds a broker identical to the image's own.
 ### Release image
 
 Pushing a `v*` tag publishes `ghcr.io/snugmo/flue:<tag>` (and `:latest`)
-to GHCR: a multi-arch image on the `cote` base at the same release tag,
-shipping the exact binaries the release build attested (no second
-compilation — `Containerfile.release` only copies them). Override the
-base with the `FLUE_BASE_IMAGE` repository variable.
+to GHCR: a multi-arch image built on `FROM scratch` with exactly one
+file, the static `flue` binary at `/flue` (the entrypoint), with
+`flue-broker` embedded in it. `Containerfile.release` only copies the
+exact binary the release build attested — no base image, no second
+compilation.
 
 Every release image carries two signed claims, keyed to the image's
 manifest-list digest, so they cover all of its tags:

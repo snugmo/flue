@@ -1,48 +1,52 @@
 # flue — a narrow channel from your host's SSH agent into a container
 #
-# Release image: ships the pre-built flue and flue-broker binaries that the
-# release workflow built and sigstore-attested (SLSA provenance in GitHub's
-# attestation store) on the cote base image. Nothing is compiled here — the
-# image's bytes are exactly the attested bytes; the dev path (the
+# Release image: a minimal, static distribution of the pre-built flue
+# binary. It is FROM scratch with exactly one file in the image — /flue —
+# and /flue as the entrypoint. flue embeds flue-broker (recoverable via
+# `flue extract-broker`), so nothing else needs to be in the image. flue is
+# built fully static (CGO_ENABLED=0) by the release workflow, which is why
+# it can run on scratch with no libc or runtime. Nothing is compiled here —
+# the image's bytes are exactly the attested bytes; the dev path (the
 # Containerfile) is the one that compiles from source.
 #
-# Build (release workflow; the context carries one binary per architecture
-# under dist/<arch>/):
+# Build (release workflow; the context carries one flue binary per
+# architecture under dist/<arch>/):
 #   buildx build --platform linux/amd64,linux/arm64 \
-#     --build-arg BASE_IMAGE=ghcr.io/snugmo/cote:<tag>-base \
 #     --build-arg VERSION=<tag> \
 #     --build-arg REVISION=<commit sha> \
 #     --build-arg CREATED=<rfc3339> \
 #     -f Containerfile.release -t ghcr.io/snugmo/flue:<tag> .
 #
-# Usage:
-#   flue exec -- podman exec \
+# Usage (the entrypoint is /flue, so the subcommand and its arguments go
+# straight after the image):
+#   podman run --rm ghcr.io/snugmo/flue:latest version
+#   podman run --rm ghcr.io/snugmo/flue:latest \
+#     exec -- podman exec \
 #     --preserve-fds 1 \
 #     -e SSH_AUTH_SOCK=/tmp/flue.sock \
-#     <container> flue-broker -sock /tmp/flue.sock
+#     <target> flue-broker -sock /tmp/flue.sock
 
-ARG BASE_IMAGE=ghcr.io/snugmo/cote:latest-base
-FROM ${BASE_IMAGE}
+FROM scratch
 
 # BuildKit fills TARGETARCH in per build platform, so each platform's
-# build copies only its own architecture's binaries from the context.
+# build copies only its own architecture's flue binary from the context.
 ARG TARGETARCH
-# Stamped into the OCI well-known labels below (the binaries already carry
+# Stamped into the OCI well-known labels below (the binary already carries
 # the version, stamped by the release workflow's build job).
 ARG VERSION=latest
 ARG REVISION=unknown
 ARG CREATED=
-# Re-declared after the FROM so the base.name label can reference it.
-ARG BASE_IMAGE=ghcr.io/snugmo/cote:latest-base
 
-# --chown because COPY keeps the local context files' ownership (the
-# runner's user); the image's binaries must be root-owned, like the dev
-# image's.
-COPY --chown=root:root dist/flue_${TARGETARCH} /usr/local/bin/flue
-COPY --chown=root:root dist/flue-broker_${TARGETARCH} /usr/local/bin/flue-broker
+# The single file in the image: the static flue binary at the root.
+# --chown=0:0 (numeric, not "root":root) because scratch has no /etc/passwd
+# to resolve a name; 0:0 is the only meaningful ownership, and with no USER
+# instruction the process runs as uid 0 anyway.
+COPY --chown=0:0 dist/flue_${TARGETARCH} /flue
 
-# The final stage keeps the base image's non-root user, so the shipped
-# container still runs unprivileged (as the dev image does).
+# The binary is the whole image.
+ENTRYPOINT ["/flue"]
+
+# No base image, so no org.opencontainers.image.base.* label.
 LABEL org.opencontainers.image.title="flue" \
       org.opencontainers.image.description="Filtered SSH agent bridge from host to container via SCM_RIGHTS control channel" \
       org.opencontainers.image.authors="Joakim Nohlgård" \
@@ -54,5 +58,4 @@ LABEL org.opencontainers.image.title="flue" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.created="${CREATED}" \
-      org.opencontainers.image.base.name="${BASE_IMAGE}" \
       io.openshift.tags="dev,ssh,agent,proxy"

@@ -6,11 +6,11 @@
 # broker (SLSA provenance in the GitHub attestation store) so anyone who
 # extracts it can verify it was built by this workflow.
 #
-# The same binaries are also published as the OCI image
-# ghcr.io/snugmo/flue: the image job packages them onto the cote base
-# (no compilation), builds a multi-arch image, signs it (Sigstore
-# keyless), and attests it with SLSA build provenance — so the image's
-# bytes are exactly the attested ones.
+# The flue binary is also published as the OCI image ghcr.io/snugmo/flue:
+# a minimal static distribution (FROM scratch, just the /flue binary, with
+# flue-broker embedded in it). The image job builds a multi-arch image with
+# no compilation (the binary is the attested one), signs it (Sigstore
+# keyless), and attests it with SLSA build provenance.
 #
 # Trigger: push a tag like `v1.2.3` (any tag matching `v*`).
 name: Release
@@ -150,17 +150,16 @@ jobs:
         uses: actions/attest@v4
         with:
           subject-path: ${{ github.workspace }}/dist/flue_${{ github.ref_name }}_linux_${{ matrix.goarch }}
-      # The broker goes in the artifact too (the image job packages both
-      # binaries), but it is still not a release asset: the release job's
-      # `flue_*` globs match only the underscore names, so `flue-broker_*`
-      # stays out of the release download list and out of SHA256SUMS.
+      # Only the flue binary goes in the artifact: the image job copies it
+      # (the broker is embedded in it), and the release job publishes it.
+      # The broker is still not a release asset — it stays out of the
+      # release download list and out of SHA256SUMS.
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: flue_${{ github.ref_name }}_${{ matrix.goarch }}
           path: |
             dist/flue_${{ github.ref_name }}_linux_${{ matrix.goarch }}
-            dist/flue-broker_${{ github.ref_name }}_linux_${{ matrix.goarch }}
 
   image:
     needs: [build]
@@ -199,7 +198,6 @@ jobs:
           mkdir -p dist
           for arch in amd64 arm64; do
             cp "artifacts/flue_${ref}_${arch}/flue_${ref}_linux_${arch}" "dist/flue_${arch}"
-            cp "artifacts/flue_${ref}_${arch}/flue-broker_${ref}_linux_${arch}" "dist/flue-broker_${arch}"
           done
           # 0755 like a go build (the artifact transfer may not keep the
           # mode), and the digests recorded in the job log next to the
@@ -215,15 +213,8 @@ jobs:
           tag="${GITHUB_REF_NAME#v}"
           {
             echo "tag=${tag}"
-            # The cote base at the release tag, which must be published
-            # (multi-arch) before this job runs. Override with the
-            # FLUE_BASE_IMAGE repository variable.
-            echo "base=${FLUE_BASE_IMAGE:-ghcr.io/snugmo/cote:${tag}-base}"
             echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "${GITHUB_OUTPUT}"
-        env:
-          # Unset repository variable -> empty -> the default above wins.
-          FLUE_BASE_IMAGE: ${{ vars.FLUE_BASE_IMAGE }}
       - uses: docker/setup-buildx-action@v4
       - name: Log in to GHCR
         uses: docker/login-action@v4
@@ -238,14 +229,13 @@ jobs:
           context: .
           file: Containerfile.release
           # No QEMU: the release stage only COPYs, so each platform build
-          # runs natively (the binaries are already built and attested).
+          # runs natively (the binary is already built and attested).
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ${{ env.IMAGE }}:${{ steps.refs.outputs.tag }}
             ${{ env.IMAGE }}:latest
           build-args: |
-            BASE_IMAGE=${{ steps.refs.outputs.base }}
             VERSION=${{ steps.refs.outputs.tag }}
             REVISION=${{ github.sha }}
             CREATED=${{ steps.refs.outputs.created }}
