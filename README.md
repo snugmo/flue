@@ -232,12 +232,14 @@ buildah push ghcr.io/snugmo/flue:0.1.0
 defaults to `amd64` — pass `--build-arg TARGETARCH=arm64` for an arm64
 image.
 
-Build order: for each architecture, `flue-broker` is built first, to
-the `go:embed` path `cmd/flue/flue-broker.bin`, because `flue` embeds
-that binary (compiling `flue` fails if the file is missing — a
-deliberate hard failure), and only then `flue` for that architecture.
-Both architectures are cross-compiled (natively) in one build stage
-pinned to linux/amd64, so a multi-arch build never needs QEMU.
+Build order: `flue-broker` is built in its own stage (one static
+binary per architecture), staged in a per-architecture scratch image;
+then `flue` for each architecture is built in a second golang stage,
+with that architecture's broker file placed on the `go:embed` path
+`cmd/flue/flue-broker.bin` before compiling (a flue without its
+broker is a deliberate hard failure). Both golang stages are pinned
+to linux/amd64 and cross-compile (natively), so a multi-arch build
+never needs QEMU.
 
 ### Release image
 
@@ -253,9 +255,11 @@ the image's own bytes: each architecture's `flue` is extracted from
 the pushed, signed image, so a downloaded binary is byte-identical to
 the one the signed and attested image ships. Both `flue-broker`
 binaries are likewise attested: the workflow exports the
-`Containerfile`'s `brokers` stage — the exact files embedded in the
-`flue` binaries — so a broker recovered from any `flue`, any
-architecture, can be verified with `gh attestation verify`.
+per-architecture `flue-broker-<arch>` stages of the Containerfile —
+the exact files the `flue` build stage consumed as its `go:embed`
+sources, so the attested broker is the one injected at build time —
+and a broker recovered from any `flue`, any architecture, can be
+verified with `gh attestation verify`.
 
 Every release image carries two signed claims, keyed to the image's
 manifest-list digest, so they cover all of its tags:
