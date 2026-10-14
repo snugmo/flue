@@ -21,12 +21,13 @@ import (
 // files found" — a deliberate hard failure, so a flue built without its
 // broker is never produced silently. The file is a build artifact (see
 // .gitignore and .containerignore). In the Containerfile the broker
-// is built in its own stage and staged in a per-architecture scratch
-// image; the flue build stage places those exact files on the embed
-// path before compiling each flue, and the release workflow attests
-// the same files — so the attested broker is the one injected at
-// build time, and a flue from the image extracts the broker it was
-// built with, for the image's architecture.
+// is built in its own stage and staged in a single flue-broker
+// scratch stage (one per target platform); the flue build stage
+// places that exact file on the embed path before compiling the
+// platform's flue, and the release workflow attests the same files
+// — so the attested broker is the one injected at build time, and
+// a flue from the image extracts the broker it was built with, for
+// the image's architecture.
 //
 // Architecture: the embedded broker is built for the same architecture as
 // this flue binary (one source tree, one build).

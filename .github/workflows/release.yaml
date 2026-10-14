@@ -109,9 +109,9 @@ jobs:
           context: .
           file: Containerfile
           # No QEMU: the Containerfile's golang stages are pinned to
-          # $BUILDPLATFORM and cross-compile for the target
-          # architectures (Go cross-compilation is native), so every
-          # platform build runs natively on the runner.
+          # $BUILDPLATFORM and each compiles its own target platform
+          # (Go cross-compilation is native), so every platform
+          # build runs natively on the runner.
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
@@ -174,21 +174,25 @@ jobs:
       #   gh attestation verify ./flue-broker --source snugmo/flue
       #
       # Each attested file is the rootfs of the Containerfile's
-      # flue-broker-<arch> stage — the same file the flue build
-      # stage's COPY --from consumes as the go:embed source — so the
-      # attested broker is provably the one injected at build time;
-      # the cross-check below closes the loop end to end.
-      - name: Export the broker binaries from the broker stages
+      # flue-broker stage, built for linux/<arch> — the same file
+      # the flue build stage's COPY --from consumes as the go:embed
+      # source — so the attested broker is provably the one
+      # injected at build time; the cross-check below closes the
+      # loop end to end.
+      - name: Export the broker binaries from the broker stage
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
-          # One buildx invocation per flue-broker-<arch> stage: every
-          # step is a cache hit from the image build above, so only
-          # the stage's single COPY runs, and the local output writes
-          # that architecture's broker to dist/brokers/<arch>/.
+          # One buildx invocation per architecture: --platform
+          # selects which platform's chain to build, and --target
+          # stops at the flue-broker stage. Every step is a cache
+          # hit from the image build above, so only the stage's
+          # single COPY runs, and the local output writes that
+          # architecture's broker to dist/brokers/<arch>/.
           for arch in amd64 arm64; do
             docker buildx build -f Containerfile \
-              --target "flue-broker-${arch}" \
+              --target flue-broker \
+              --platform "linux/${arch}" \
               --build-arg VERSION="${tag}" \
               --output "type=local,dest=dist/brokers/${arch}" .
           done

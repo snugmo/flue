@@ -229,41 +229,42 @@ buildah push ghcr.io/snugmo/flue:0.1.0
 ```
 
 No platform build-args are needed: the Containerfile declares
-`TARGETARCH`, `TARGETPLATFORM`, and `BUILDPLATFORM` at global scope
-with no default, so the per-platform values are inherited (a
-default would override them and ship the amd64 binary in the arm64
-image). A plain build produces the host's architecture; to build
-for a different one, pass `--platform linux/<arch>` (e.g.
+`TARGETPLATFORM` and `BUILDPLATFORM` at global scope with no
+default, so the per-platform values are inherited (a default would
+override them and ship the amd64 binary in the arm64 image). A
+plain build produces the host's architecture; to build for a
+different one, pass `--platform linux/<arch>` (e.g.
 `--platform linux/arm64`) — it sets the whole target platform
-(architecture and OS), whereas a lone `--build-arg
-TARGETARCH=<arch>` would leave `TARGETPLATFORM` ambiguous.
+(architecture and OS). A lone `--build-arg TARGETARCH=<arch>`
+would do nothing: the stages read only `TARGETPLATFORM`.
 
-Build order: `flue-broker` is built in its own stage (one static
-binary per architecture), staged in a per-architecture scratch image;
-then `flue` for each architecture is built in a second golang stage,
-with that architecture's broker file placed on the `go:embed` path
-`cmd/flue/flue-broker.bin` before compiling (a flue without its
-broker is a deliberate hard failure). Both golang stages are pinned
-to the build platform (`$BUILDPLATFORM`) and cross-compile
-(natively), so a multi-arch build never needs QEMU — the compiler
-runs natively on whichever host builds the image.
+Build order: `flue-broker` is built in its own stage for the target
+platform (one static binary) and staged in a single `flue-broker`
+scratch stage; then `flue` for the same platform is built in a
+second golang stage, with that platform's broker file placed on the
+`go:embed` path `cmd/flue/flue-broker.bin` before compiling (a
+flue without its broker is a deliberate hard failure). Both golang
+stages are pinned to the build platform (`$BUILDPLATFORM`) and
+cross-compile (natively), so a multi-arch build never needs QEMU —
+buildx evaluates the whole chain once per target platform, and the
+compiler runs natively on whichever host builds the image.
 
 ### Release image
 
 Pushing a `v*` tag publishes `ghcr.io/snugmo/flue:<tag>` (and `:latest`)
 to GHCR, built from the same `Containerfile` as the local build above:
 the build stage compiles the binary from the tagged source (no QEMU —
-it is pinned to the build platform, `$BUILDPLATFORM`, and
-cross-compiles for the target architectures), and the final stage is
-a `FROM scratch` with exactly
+it is pinned to the build platform, `$BUILDPLATFORM`, and each
+platform's stage compiles its own target platform), and the final
+stage is a `FROM scratch` with exactly
 one file, the static `flue` binary at `/flue` (the entrypoint), with
 `flue-broker` embedded in it. The image is attested with SLSA build
 provenance and signed (Sigstore keyless), and the release assets are
 the image's own bytes: each architecture's `flue` is extracted from
 the pushed, signed image, so a downloaded binary is byte-identical to
 the one the signed and attested image ships. Both `flue-broker`
-binaries are likewise attested: the workflow exports the
-per-architecture `flue-broker-<arch>` stages of the Containerfile —
+binaries are likewise attested: the workflow builds the Containerfile's
+`flue-broker` stage once per architecture —
 the exact files the `flue` build stage consumed as its `go:embed`
 sources, so the attested broker is the one injected at build time —
 and a broker recovered from any `flue`, any architecture, can be
