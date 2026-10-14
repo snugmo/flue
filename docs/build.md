@@ -74,8 +74,9 @@ The image job then:
   manifest-list digest, so all tags are covered).
 
 The binaries published as release assets are the image's own bytes: the
-`image` job pulls each architecture's manifest from the registry and
-copies the `/flue` file out, so a downloaded binary is byte-identical
-to the one that was pushed, signed, and attested. The embedded
+`image` job pulls each architecture's manifest from the registry by the
+manifest-list digest the build step just pushed and copies the `/flue`
+file out, so a downloaded binary is byte-identical to the one that was
+pushed, signed, and attested. The embedded
 `flue-broker` (not a release asset — it ships inside every `flue`) is
 extracted from the native-arch binary and attested.

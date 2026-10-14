@@ -144,17 +144,20 @@ jobs:
           # this digest (the release tag and latest) is covered.
           cosign sign --yes "${IMAGE}@${{ steps.build.outputs.digest }}"
       # The release binaries are the image's own bytes: pull each
-      # architecture's manifest from the registry and copy the single
-      # /flue file out of it, so a downloaded binary is byte-identical
-      # to the one that was pushed, signed, and attested above.
+      # architecture's manifest by the manifest-list digest the build
+      # step just pushed — not the symbolic tag, which pins the
+      # extraction to the exact pushed, signed, and attested artifact —
+      # and copy the single /flue file out of it, byte-identical.
       - name: Extract release binaries from the image
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
           mkdir -p dist
           for arch in amd64 arm64; do
-            docker pull --platform "linux/${arch}" "${IMAGE}:${tag}"
-            id="$(docker create "${IMAGE}:${tag}")"
+            docker pull --platform "linux/${arch}" "${IMAGE}@${DIGEST}"
+            id="$(docker create --platform "linux/${arch}" "${IMAGE}@${DIGEST}")"
             docker cp "${id}:/flue" "dist/flue_${tag}_linux_${arch}"
             docker rm "${id}" >/dev/null
             chmod 0755 "dist/flue_${tag}_linux_${arch}"
