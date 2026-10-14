@@ -38,10 +38,17 @@ buildah push ghcr.io/snugmo/flue:<tag>
   `flue-broker`, `cmd/flue/flue-broker.bin`) out of the build context —
   the stages build their own: the embed source is placed by the flue
   build stage from the `flue-broker` stage (one per target platform).
+  `cmd/flue/flue-broker.sigstore` is deliberately kept in the context:
+  it is the build-context input for the broker bundle's `go:embed`
+  source (a signed one, when present; else the stage's `cp -n`
+  fallback copies the committed placeholder template).
 - Building the host-side helpers for local use is the AGENTS.md
   Build command: `flue-broker` first, to the `go:embed` path
-  `cmd/flue/flue-broker.bin` (which `flue` embeds), then `flue`, then
-  copies that same broker file to the repo root.
+  `cmd/flue/flue-broker.bin` (which `flue` embeds); then, when no
+  signed `cmd/flue/flue-broker.sigstore` is present, a copy of the
+  committed placeholder template to that path (the bundle's second
+  `go:embed` source); then `flue`; then a copy of that same broker
+  file to the repo root.
 - OCI well-known labels (`org.opencontainers.image.*`,
   `io.openshift.tags`) come from the `--build-arg`s.
 
@@ -52,7 +59,11 @@ own `$TARGETPLATFORM` (a multi-arch buildx build evaluates the whole
 chain once per platform):
 
 - **`broker`**: compiles `flue-broker` from source with the
-  `golang:1.27` toolchain, `CGO_ENABLED=0` with `-ldflags="-s -w"`
+  `golang:${GOVERSION}` toolchain (`ARG GOVERSION`, default `1.27` —
+  floating for local builds; the release workflow pins it to the
+  `go.mod` `go` directive, so the broker the image compiles is
+  byte-identical to the one the release exports and signs),
+  `CGO_ENABLED=0` with `-ldflags="-s -w"`
   (static, stripped — the image must run on any Linux container
   without a glibc). Pinned to `FROM --platform=$BUILDPLATFORM` — the
   build machine's platform — and cross-compiles for its own target
@@ -63,52 +74,66 @@ chain once per platform):
   broker binary for the target platform (in a buildx multi-arch
   build, one image per platform) — the single origin of that file:
   the flue build stage consumes the stage file as its `go:embed`
-  source (see `cmd/flue/embed.go`), and the release workflow attests
-  the same file, so the attested broker is provably the one
-  injected into `flue` at build time.
+  source (see `cmd/flue/embed.go`), and the release workflow exports,
+  signs, and attests the same file, so the attested and signed
+  broker is provably the one injected into `flue` at build time.
 - **`build`**: compiles `flue` with the same toolchain — pinned to
   `$BUILDPLATFORM` as well — for its own target platform; the stage
   places that platform's broker file on the `go:embed` path
-  `cmd/flue/flue-broker.bin` before compiling (a flue without its
-  broker is a deliberate hard failure).
+  `cmd/flue/flue-broker.bin` (a flue without its broker is a
+  deliberate hard failure), and the broker's sigstore bundle on
+  `cmd/flue/flue-broker.sigstore` — a signed context copy when
+  present, else `cp -n` falls back to the committed placeholder
+  template — before compiling.
 - **final**: `FROM scratch` — the image is the single static binary at
   `/flue`, with `/flue` as the entrypoint. No base image (hence no
   `org.opencontainers.image.base.*` label) and no other system files:
   a static binary needs no libc, no runtime, no shell. The
   `flue-broker` is not a separate file in the image — it is embedded in
-  `flue`, recoverable via `flue extract-broker`.
+  `flue` (along with its sigstore bundle), recoverable via
+  `flue extract-broker` and `flue broker-bundle`.
 
 ## Release image (Release workflow)
 
-The release image is built from the same `Containerfile`: the
-workflow's `image` job runs a `buildx` build for `linux/amd64` and
-`linux/arm64` (BuildKit evaluates the chain once per target
+The release image is built from the same `Containerfile` — one
+`buildx` build per architecture, each from its own copy of the build
+context (`ctx/<arch>`, the repo without `.git`) with that
+architecture's signed broker bundle placed at
+`cmd/flue/flue-broker.sigstore`. A single multi-arch buildx
+invocation shares one build context across its platforms, so the
+per-platform signed bundles cannot ride one build; the two
+single-platform images are then assembled into the `<tag>` and
+`:latest` manifest list with `docker buildx imagetools create` (no
+rebuild, no re-upload). BuildKit evaluates the chain once per target
 platform; the golang stages, pinned to `$BUILDPLATFORM`, each
-cross-compile their own platform natively — no QEMU), tagging
-`ghcr.io/snugmo/flue:<tag>` and `:latest` from the tagged source.
+cross-compile their own platform natively — no QEMU.
 
-The image job then:
+The `image` job:
 
-- attests the manifest list with an SLSA build-provenance attestation
-  (the attest step's `provenance: true` generates the predicate for
-  the buildx run — the same toolkit as the binary attestations in the
-  build job): stored in GitHub's attestation store, pushed to the
-  registry as a cosign attestation, and registered as an artifact
-  storage record;
-- signs it with a Sigstore keyless cosign signature (one signature per
-  manifest-list digest, so all tags are covered).
-
-The binaries published as release assets are the image's own bytes: the
-`image` job pulls each architecture's manifest from the registry by the
-manifest-list digest the build step just pushed and copies the `/flue`
-file out, so a downloaded binary is byte-identical to the one that was
-pushed, signed, and attested. The two `flue-broker` binaries (not
-release assets — each ships inside its architecture's `flue`) are
-attested for both architectures: the job builds the `flue-broker`
-stage of the same build once per architecture (fully cached `buildx`
-invocations with `--target`, a per-architecture `--platform`, and a
-local output) and attests each file — the same files the flue build
-stage's `COPY --from` consumed as the `go:embed` sources, so the
-attested broker is the one injected at build time — and a native
-`extract-broker` run on the pushed image's `flue` cross-checks the
-pairing byte-for-byte.
+- exports the broker from the `flue-broker` stage per architecture
+  (`buildx --target` builds with a per-architecture `--platform` and
+  a local output; `GOVERSION` pinned to the `go.mod` `go` directive
+  and the same `VERSION` as the image, so the exported bytes are the
+  image's bytes);
+- signs each exported broker with `cosign sign-blob --keyless` — the
+  bundle's certificate identity is the release workflow, so the
+  signed pair proves the broker was built by this workflow;
+- builds and pushes `ghcr.io/snugmo/flue:<tag>-<arch>` per
+  architecture (each image embedding that architecture's signed
+  bundle), then assembles the `<tag>` and `:latest` manifest list;
+- attests each per-architecture image with an SLSA
+  build-provenance attestation (the predicate is generated from the
+  workflow OIDC claims — repo, ref, builder — so per-architecture
+  attestations are valid), and signs the manifest list with a
+  Sigstore keyless cosign signature (one signature per digest, so
+  all tags are covered);
+- extracts the release binaries from the pushed image by the
+  manifest-list digest and copies the `/flue` file out — a
+  downloaded binary is byte-identical to the one that was pushed,
+  signed, and attested — and cross-checks both embedded pairs
+  byte-for-byte: an `extract-broker` run against the exported broker,
+  and a `broker-bundle` run against the signed bundle;
+- attests the two `flue-broker` files (a `subject-path` attestation
+  each) — the same files the flue build stage's `COPY --from`
+  consumed as the `go:embed` sources, so the attested broker is the
+  one injected at build time.

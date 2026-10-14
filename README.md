@@ -34,7 +34,9 @@ Both binaries are built from source (`cmd/flue-broker/` and `cmd/flue/`)
 and are fully static (no runtime deps). The published image
 (`ghcr.io/snugmo/flue`) is just the `flue` binary at `/flue`, with the
 `flue-broker` built at the same time embedded in it — recoverable via
-`flue extract-broker`.
+`flue extract-broker` — plus the broker's cosign-signed sigstore
+bundle (`flue broker-bundle`), so a recovered broker is verifiable
+offline with `cosign verify-blob --bundle` (see Release image).
 
 > **Field-verified end to end.** The full path has been exercised for real:
 > laptop `ssh-agent` → host workstation → a snugmo container, where
@@ -204,6 +206,25 @@ $ sha256sum /usr/local/bin/flue-broker   # from a container or a separate build
 8ea5d136dd59…                            # a match means the same broker
 ```
 
+`flue broker-bundle` writes the embedded broker's sigstore bundle to a
+file — the other half of the pair, for offline verification:
+
+```sh
+flue extract-broker /tmp/flue-broker
+flue broker-bundle /tmp/flue-broker.sigstore
+cosign verify-blob /tmp/flue-broker --bundle /tmp/flue-broker.sigstore
+```
+
+The bundle is self-contained (signature, certificate, chain), so the
+verify needs no registry or network lookup. For a release `flue`, the
+release workflow signed it over that very broker — pin the
+certificate's identity with the same
+`--certificate-identity`/`--certificate-oidc-issuer` pair as the
+release signature in the Release image section. A `flue` built
+without a signed broker carries the labeled placeholder bundle
+instead, and `broker-bundle` warns that it cannot verify the
+extracted broker.
+
 ### Version
 
 Both binaries carry their build version: `flue version` (or
@@ -242,35 +263,56 @@ that one value onto every platform.
 Build order: `flue-broker` is built in its own stage for the target
 platform (one static binary) and staged in a single `flue-broker`
 scratch stage; then `flue` for the same platform is built in a
-second golang stage, with that platform's broker file placed on the
-`go:embed` path `cmd/flue/flue-broker.bin` before compiling (a
-flue without its broker is a deliberate hard failure). Both golang
+second golang stage, which places that platform's broker file on the
+`go:embed` path `cmd/flue/flue-broker.bin`, and the broker's sigstore
+bundle on `cmd/flue/flue-broker.sigstore`, before compiling. The
+broker's embed source comes from the stage (a flue without its broker
+is a deliberate hard failure); the bundle's is a build-context input
+— a signed `cmd/flue/flue-broker.sigstore` wins when present (the
+release workflow places each platform's there; a local user may sign
+their own broker first) — else the stage copies the committed
+placeholder template over, so a bare local build succeeds, labeled
+as unverifiable rather than mistaken for a signed one. Both golang
 stages are pinned to the build platform (`$BUILDPLATFORM`) and
 cross-compile (natively), so a multi-arch build never needs QEMU —
 buildx evaluates the whole chain once per target platform, and the
-compiler runs natively on whichever host builds the image.
+compiler runs natively on whichever host builds the image. The
+stages use the `golang:${GOVERSION}` toolchain (`ARG GOVERSION`,
+default `1.27`): floating for local builds, pinned by the release
+workflow to the `go.mod` `go` directive, so the broker the image
+compiles is byte-identical to the one the release exports and signs.
 
 ### Release image
 
 Pushing a `v*` tag publishes `ghcr.io/snugmo/flue:<tag>` (and `:latest`)
 to GHCR, built from the same `Containerfile` as the local build above:
-the build stage compiles the binary from the tagged source (no QEMU —
-it is pinned to the build platform, `$BUILDPLATFORM`, and each
-platform's stage compiles its own target platform), and the final
-stage is a `FROM scratch` with exactly
-one file, the static `flue` binary at `/flue` (the entrypoint), with
-`flue-broker` embedded in it. The image is attested with SLSA build
+one buildx build per architecture, each from its own copy of the
+build context carrying that architecture's signed broker bundle, then
+the two per-architecture images assembled into the manifest list with
+`docker buildx imagetools create` (a single multi-arch buildx
+invocation shares one build context, so per-platform bundles cannot
+ride one build). The build stage compiles the binary from the tagged
+source (no QEMU — it is pinned to the build
+platform, `$BUILDPLATFORM`, and each platform's stage compiles its
+own target platform), and the final stage is a `FROM scratch` with
+exactly one file, the static `flue` binary at `/flue` (the
+entrypoint), with `flue-broker` — and its cosign-signed sigstore
+bundle — embedded in it. The image is attested with SLSA build
 provenance and signed (Sigstore keyless), and the release assets are
 the image's own bytes: each architecture's `flue` is extracted from
 the pushed, signed image, so a downloaded binary is byte-identical to
-the one the signed and attested image ships. Both `flue-broker`
-binaries are likewise attested: the workflow builds the Containerfile's
-`flue-broker` stage once per architecture —
+the one the signed and attested image ships. The two `flue-broker`
+binaries are likewise attested and signed: the workflow builds the
+Containerfile's `flue-broker` stage once per architecture —
 the exact files the `flue` build stage consumed as its `go:embed`
-sources, so the attested broker is the one injected at build time —
-and a broker recovered from any `flue`, any architecture, can be
-verified with `gh attestation verify`. Each release binary is
-additionally signed (Sigstore keyless) and ships its signature as a
+sources, so the attested and signed broker is the one injected at
+build time — and signs each one (Sigstore keyless); each platform's
+bundle is embedded in its `flue`, and the job cross-checks both pairs
+byte-for-byte from the built image. A broker recovered from any
+`flue`, any architecture, can therefore be verified with
+`gh attestation verify`, or offline with `cosign verify-blob
+--bundle` using the bundle the same `flue` ships. Each release binary
+is additionally signed (Sigstore keyless) and ships its signature as a
 self-contained `.sigstore` bundle next to it, so a binary can be
 verified offline — no registry or network lookup.
 
@@ -305,6 +347,17 @@ gh attestation verify ghcr.io/snugmo/flue:$tag --source snugmo/flue
 #    (same identity as the image signature: same workflow file, same ref)
 cosign verify-blob "flue_${tag}_linux_amd64" \
   --bundle "flue_${tag}_linux_amd64.sigstore" \
+  --certificate-identity "$identity" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+
+# 4. The broker embedded in a release flue: recover the signed pair
+#    from the binary itself (extract-broker + broker-bundle) and
+#    verify it offline — the bundle's certificate carries the same
+#    identity as the image signature
+flue_${tag}_linux_amd64 extract-broker /tmp/flue-broker
+flue_${tag}_linux_amd64 broker-bundle /tmp/flue-broker.sigstore
+cosign verify-blob /tmp/flue-broker \
+  --bundle /tmp/flue-broker.sigstore \
   --certificate-identity "$identity" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 ```
