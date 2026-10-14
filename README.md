@@ -238,16 +238,18 @@ then `flue` for each architecture is built in a second golang stage,
 with that architecture's broker file placed on the `go:embed` path
 `cmd/flue/flue-broker.bin` before compiling (a flue without its
 broker is a deliberate hard failure). Both golang stages are pinned
-to linux/amd64 and cross-compile (natively), so a multi-arch build
-never needs QEMU.
+to the build platform (`$BUILDPLATFORM`) and cross-compile
+(natively), so a multi-arch build never needs QEMU — the compiler
+runs natively on whichever host builds the image.
 
 ### Release image
 
 Pushing a `v*` tag publishes `ghcr.io/snugmo/flue:<tag>` (and `:latest`)
 to GHCR, built from the same `Containerfile` as the local build above:
 the build stage compiles the binary from the tagged source (no QEMU —
-it is pinned to linux/amd64 and cross-compiles for the target
-architecture), and the final stage is a `FROM scratch` with exactly
+it is pinned to the build platform, `$BUILDPLATFORM`, and
+cross-compiles for the target architectures), and the final stage is
+a `FROM scratch` with exactly
 one file, the static `flue` binary at `/flue` (the entrypoint), with
 `flue-broker` embedded in it. The image is attested with SLSA build
 provenance and signed (Sigstore keyless), and the release assets are

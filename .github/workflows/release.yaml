@@ -108,10 +108,10 @@ jobs:
         with:
           context: .
           file: Containerfile
-          # No QEMU: the Containerfile's build stage is pinned to
-          # linux/amd64 and cross-compiles for the target architecture
-          # (Go cross-compilation is native), so every platform build
-          # runs natively on the amd64 runner.
+          # No QEMU: the Containerfile's golang stages are pinned to
+          # $BUILDPLATFORM and cross-compile for the target
+          # architectures (Go cross-compilation is native), so every
+          # platform build runs natively on the runner.
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |

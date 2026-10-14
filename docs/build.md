@@ -21,6 +21,10 @@ buildah push ghcr.io/snugmo/flue:<tag>
   defaults to `amd64` — `buildah` does not populate the BuildKit
   variable — which matches a build on an amd64 host; pass
   `--build-arg TARGETARCH=arm64` for an arm64 image.
+- `TARGETPLATFORM` and `BUILDPLATFORM` are declared at global scope
+  (empty by default) for buildah, which does not define BuildKit's
+  platform builtins — for buildah, empty means the build's default
+  platform; under BuildKit the built-in values keep applying.
 - `.containerignore` keeps local build artifacts (`flue`,
   `flue-broker`, `cmd/flue/flue-broker.bin`) out of the build context —
   the stages build their own: the embed source is placed by the flue
@@ -39,21 +43,22 @@ Five stages:
 - **`broker`**: compiles `flue-broker` from source with the
   `golang:1.27` toolchain, `CGO_ENABLED=0` with `-ldflags="-s -w"`
   (static, stripped — the image must run on any Linux container
-  without a glibc). Pinned to `FROM --platform=linux/amd64` and
-  cross-compiles both release architectures in one loop (Go
-  cross-compiles natively), so the multi-arch release build never
-  needs QEMU.
+  without a glibc). Pinned to `FROM --platform=$BUILDPLATFORM` — the
+  build machine's platform — and cross-compiles both release
+  architectures in one loop (Go cross-compiles natively), so the
+  multi-arch release build never needs QEMU: the compiler runs
+  natively on whichever host the build runs on.
 - **`flue-broker-amd64`** and **`flue-broker-arm64`**: one
   `FROM scratch` image per architecture, each a single broker binary
   — the single origin of that file: the flue build stage consumes the
   stage files as its `go:embed` sources (see `cmd/flue/embed.go`),
   and the release workflow attests the same files, so the attested
   broker is provably the one injected into `flue` at build time.
-- **`build`**: compiles `flue` with the same toolchain, one binary per
-  architecture; each `flue` embeds that architecture's broker file,
-  which the stage places on the `go:embed` path
-  `cmd/flue/flue-broker.bin` before compiling (a flue without its
-  broker is a deliberate hard failure).
+- **`build`**: compiles `flue` with the same toolchain — pinned to
+  `$BUILDPLATFORM` as well — one binary per architecture; each
+  `flue` embeds that architecture's broker file, which the stage
+  places on the `go:embed` path `cmd/flue/flue-broker.bin` before
+  compiling (a flue without its broker is a deliberate hard failure).
 - **final**: `FROM scratch` — the image is the single static binary at
   `/flue`, with `/flue` as the entrypoint. No base image (hence no
   `org.opencontainers.image.base.*` label) and no other system files:
@@ -66,9 +71,9 @@ Five stages:
 The release image is built from the same `Containerfile`: the
 workflow's `image` job runs a `buildx` build for `linux/amd64` and
 `linux/arm64` (BuildKit populates `TARGETARCH` per platform; both
-platforms are compiled natively in the pinned amd64 build stage — no
-QEMU), tagging `ghcr.io/snugmo/flue:<tag>` and `:latest` from the
-tagged source.
+platforms are compiled natively in the build stage pinned to
+`$BUILDPLATFORM` — no QEMU), tagging `ghcr.io/snugmo/flue:<tag>`
+and `:latest` from the tagged source.
 
 The image job then:
 

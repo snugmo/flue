@@ -34,12 +34,21 @@
 #     -e SSH_AUTH_SOCK=/tmp/flue.sock \
 #     <target> flue-broker -sock /tmp/flue.sock
 
-# The broker stage is pinned to linux/amd64 and cross-compiles for the
-# release architectures (Go cross-compiles natively with
-# CGO_ENABLED=0), so a multi-arch build never needs QEMU: on the
-# release workflow's amd64 runner — and any amd64 dev host — both
-# platforms' brokers are compiled natively.
-FROM --platform=linux/amd64 golang:1.27 AS broker
+# TARGETPLATFORM and BUILDPLATFORM are BuildKit builtins; declared
+# here (empty by default) so that buildah, which does not define
+# them, does not trip on the $BUILDPLATFORM references below — for
+# buildah, an empty value means the build's default platform. Under
+# BuildKit the built-in values keep applying.
+ARG TARGETPLATFORM
+ARG BUILDPLATFORM
+
+# The broker stage is pinned to the build platform ($BUILDPLATFORM)
+# and cross-compiles for the release architectures (Go
+# cross-compiles natively with CGO_ENABLED=0), so a multi-arch build
+# never needs QEMU: the compiler runs natively on whichever host the
+# build runs on — the release workflow's amd64 runner, or an amd64 or
+# arm64 dev host.
+FROM --platform=$BUILDPLATFORM golang:1.27 AS broker
 ARG VERSION=latest
 WORKDIR /build
 COPY go.mod go.sum ./
@@ -67,11 +76,11 @@ COPY --chown=0:0 --from=broker /build/flue-broker_amd64 /flue-broker
 FROM scratch AS flue-broker-arm64
 COPY --chown=0:0 --from=broker /build/flue-broker_arm64 /flue-broker
 
-# The flue build stage is pinned to linux/amd64 and cross-compiles for
-# each architecture (native Go cross-compilation), so a multi-arch
-# build never needs QEMU: both platforms' flue binaries are compiled
-# natively in this one stage.
-FROM --platform=linux/amd64 golang:1.27 AS build
+# The flue build stage is pinned to the build platform
+# ($BUILDPLATFORM) and cross-compiles for each architecture (native
+# Go cross-compilation), so a multi-arch build never needs QEMU: both
+# platforms' flue binaries are compiled natively in this one stage.
+FROM --platform=$BUILDPLATFORM golang:1.27 AS build
 ARG VERSION=latest
 WORKDIR /build
 COPY go.mod go.sum ./
