@@ -204,10 +204,12 @@ jobs:
           done
       - name: Verify the embedded broker is byte-identical
         env:
-          # The runner's own architecture, as a Go/docker arch name
-          # (AMD64->amd64, ARM64->arm64) — no shell/uname needed: GitHub
-          # evaluates runner.arch in this env block.
-          RUNNER_ARCH: ${{ lower(runner.arch) }}
+          # The runner's own architecture, remapped to a Go/docker arch
+          # name (AMD64->amd64, ARM64->arm64, ARM->arm). GitHub's
+          # expression language has no case-folding function, so the
+          # remap is an &&/|| chain over runner.arch. No uname/shell: the
+          # runner reports its own arch.
+          RUNNER_ARCH: ${{ runner.arch == 'AMD64' && 'amd64' || runner.arch == 'ARM64' && 'arm64' || 'arm' }}
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
