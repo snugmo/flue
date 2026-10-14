@@ -8,9 +8,10 @@
 #
 # The flue binary is also published as the OCI image ghcr.io/snugmo/flue:
 # a minimal static distribution (FROM scratch, just the /flue binary, with
-# flue-broker embedded in it). The image job builds a multi-arch image with
-# no compilation (the binary is the attested one), signs it (Sigstore
-# keyless), and attests it with SLSA build provenance.
+# flue-broker embedded in it). The image job builds the repo's Containerfile
+# for both architectures (its build stage compiles the static binary; the
+# final stage is the scratch distribution), signs it (Sigstore keyless),
+# and attests it with SLSA build provenance.
 #
 # Trigger: push a tag like `v1.2.3` (any tag matching `v*`).
 name: Release
@@ -150,10 +151,10 @@ jobs:
         uses: actions/attest@v4
         with:
           subject-path: ${{ github.workspace }}/dist/flue_${{ github.ref_name }}_linux_${{ matrix.goarch }}
-      # Only the flue binary goes in the artifact: the image job copies it
-      # (the broker is embedded in it), and the release job publishes it.
-      # The broker is still not a release asset — it stays out of the
-      # release download list and out of SHA256SUMS.
+      # Only the flue binary goes in the artifact (the broker is embedded
+      # in it), and the release job publishes it. The broker is still not
+      # a release asset — it stays out of the release download list and
+      # out of SHA256SUMS.
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -166,8 +167,7 @@ jobs:
     runs-on: ubuntu-latest
     # This job-level block replaces the top-level permissions for this job,
     # so it must list everything the job needs:
-    #   actions: read            download the binaries the build job attested
-    #   contents: read           check out the Containerfile.release
+    #   contents: read           check out the source and the Containerfile
     #   packages: write          push the image, the cosign signature, and
     #                            the registry-pushed attestation to GHCR
     #   id-token: write          mint the OIDC token exchanged for the
@@ -175,7 +175,6 @@ jobs:
     #   attestations: write      persist the attestation in GitHub's store
     #   artifact-metadata: write create the image's storage record
     permissions:
-      actions: read
       contents: read
       packages: write
       id-token: write
@@ -187,23 +186,6 @@ jobs:
       IMAGE: ghcr.io/snugmo/flue
     steps:
       - uses: actions/checkout@v4
-      - name: Download the attested binaries
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-      - name: Lay out the build context
-        run: |
-          set -euo pipefail
-          ref="${GITHUB_REF_NAME}"
-          mkdir -p dist
-          for arch in amd64 arm64; do
-            cp "artifacts/flue_${ref}_${arch}/flue_${ref}_linux_${arch}" "dist/flue_${arch}"
-          done
-          # 0755 like a go build (the artifact transfer may not keep the
-          # mode), and the digests recorded in the job log next to the
-          # attestation's subject digests.
-          chmod 0755 dist/*
-          sha256sum dist/*
       - name: Image refs
         id: refs
         run: |
@@ -227,9 +209,11 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: Containerfile.release
-          # No QEMU: the release stage only COPYs, so each platform build
-          # runs natively (the binary is already built and attested).
+          file: Containerfile
+          # No QEMU: the Containerfile's build stage is pinned to
+          # linux/amd64 and cross-compiles for the target architecture
+          # (Go cross-compilation is native), so every platform build
+          # runs natively on the amd64 runner.
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
@@ -242,14 +226,15 @@ jobs:
       - name: Attest the image (SLSA provenance)
         uses: actions/attest@v4
         with:
-          # No sbom/predicate inputs: the action auto-generates the SLSA
-          # build-provenance predicate for this run (the same toolkit as
-          # the binary attestations in the build job). The subject is the
-          # image name without a tag, identified by the manifest-list
-          # digest; push-to-registry stores it as a cosign attestation in
-          # the image's own repo, next to the signature.
+          # provenance: true makes the action generate the SLSA
+          # build-provenance predicate for this buildx run (the same
+          # toolkit as the binary attestations in the build job). The
+          # subject is the image name without a tag, identified by the
+          # manifest-list digest; push-to-registry stores it as a cosign
+          # attestation in the image's own repo, next to the signature.
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.build.outputs.digest }}
+          provenance: true
           push-to-registry: true
           create-storage-record: true
       - name: Install cosign
