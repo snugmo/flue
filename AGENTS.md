@@ -53,6 +53,18 @@ README.md           usage, flags, how-it-works, security
   hard failure. The embedded bytes are stored verbatim, so
   `flue extract-broker` produces a broker 100% identical to the build
   source.
+- **buildah populates the platform builtins**: like BuildKit,
+  `buildah` populates `TARGETARCH`, `TARGETPLATFORM`, and
+  `BUILDPLATFORM` from the build's platform — the host's platform by
+  default, or the `--platform` value when given — and a global-scope
+  `ARG` without a default inherits the value (long-standing buildah
+  behavior, not BuildKit-only). The Containerfile's
+  `ARG TARGETARCH`/`TARGETPLATFORM`/`BUILDPLATFORM` are deliberately
+  bare: a default in the file would override the per-platform value
+  (which is inherited only by ARGs without a default) and ship the
+  amd64 binary in the arm64 image. Don't add defaults, don't remove
+  the bare declarations, and don't assume buildah lacks these
+  variables.
 - Component details are on-demand: [docs/flue.md](docs/flue.md) (host),
   [docs/flue-broker.md](docs/flue-broker.md) (container),
   [docs/build.md](docs/build.md) (image).

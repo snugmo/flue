@@ -23,14 +23,17 @@ buildah push ghcr.io/snugmo/flue:<tag>
   `arm64`): the Containerfile declares it at global scope with no
   default, because a default would override the per-platform builtin
   (inherited only by ARGs without one) and ship the amd64 binary in
-  the arm64 image. Recent `buildah` populates the builtin from the
-  build's platform like BuildKit (host default if none is given),
-  but the explicit argument pins the result on any version.
+  the arm64 image. `buildah` populates the builtin from the build's
+  platform (host default if none is given) like BuildKit does —
+  long-standing behavior — so a build without the argument still
+  resolves the host's architecture; the explicit argument pins the
+  result on any version.
 - `TARGETPLATFORM` and `BUILDPLATFORM` are likewise declared at
   global scope with no default: `$BUILDPLATFORM` pins the golang
   stages to the build machine's platform (in buildah, the host
-  default when no `--platform` is given); in BuildKit the built-in
-  values keep applying.
+  platform — builtins are auto-populated from the build's platform,
+  `--platform` or host default); in BuildKit the built-in values keep
+  applying.
 - `.containerignore` keeps local build artifacts (`flue`,
   `flue-broker`, `cmd/flue/flue-broker.bin`) out of the build context —
   the stages build their own: the embed source is placed by the flue
