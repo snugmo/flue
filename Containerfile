@@ -5,6 +5,10 @@
 #   build   a golang toolchain compiles flue, fully static
 #           (CGO_ENABLED=0), embedding the flue-broker built from the
 #           same source (go:embed, built first, to the embed path)
+#   brokers FROM scratch: the two flue-broker binaries from the build
+#           stage — an intermediate only, not part of the image; the
+#           release workflow exports it to attest the brokers for
+#           every architecture (see its stage comment)
 #   final   FROM scratch: the image is that one static binary at /flue,
 #           with /flue as the entrypoint
 #
@@ -42,11 +46,32 @@ COPY cmd/ cmd/
 # it (compiling flue without it fails — a deliberate hard failure).
 # It is rebuilt before each architecture's flue, so each flue embeds
 # the broker built for the same architecture; both release
-# architectures are compiled in this one native-amd64 stage.
+# architectures are compiled in this one native-amd64 stage. Each
+# broker is also copied to flue-broker_<arch> — the per-architecture
+# copies feed the brokers stage below.
 RUN set -eu; for arch in amd64 arm64; do \
   CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -ldflags="-s -w -X main.version=${VERSION}" -o cmd/flue/flue-broker.bin ./cmd/flue-broker \
+  && cp cmd/flue/flue-broker.bin flue-broker_$arch \
   && CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -ldflags="-s -w -X main.version=${VERSION}" -o flue_$arch ./cmd/flue; \
   done
+
+# The brokers stage: the two per-architecture flue-broker binaries.
+# It is an intermediate (the final stage below is the last stage, so
+# this one never becomes the image), and it exists so the release
+# workflow can attest the broker for every architecture without
+# running any non-native binary: the files are the exact ones the
+# build stage's flue binaries embedded — the loop copies each to
+# flue-broker_<arch> right after building it, before compiling that
+# architecture's flue — so the workflow exports this stage
+# (docker buildx build --target brokers --output type=local), and a
+# native extract-broker run on the pushed image cross-checks the
+# pairing byte-for-byte.
+FROM scratch AS brokers
+# Absolute paths: buildah resolves --from sources from the stage's
+# filesystem root, BuildKit from its WORKDIR — both agree on /build
+# (the final stage's COPY below relies on the same).
+COPY --chown=0:0 --from=build /build/flue-broker_amd64 /flue-broker_amd64
+COPY --chown=0:0 --from=build /build/flue-broker_arm64 /flue-broker_arm64
 
 # The final stage: FROM scratch, one static binary at the root.
 FROM scratch

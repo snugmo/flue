@@ -24,6 +24,9 @@ import (
 // produces it (per architecture, before that architecture's flue), and
 // the image ships the flue with it embedded: a flue from the image
 // extracts the broker it was built with, for the image's architecture.
+// The Containerfile's brokers stage keeps a copy of each per-
+// architecture file so the release workflow can attest the brokers
+// for every architecture without running non-native binaries.
 //
 // Architecture: the embedded broker is built for the same architecture as
 // this flue binary (one source tree, one build).
