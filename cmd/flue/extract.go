@@ -80,7 +80,22 @@ func writeEmbeddedBroker(path string) error {
 	if !looksLikeELF(flueBrokerBin) {
 		return errors.New("embedded flue-broker is not a Linux ELF binary: build flue-broker (to cmd/flue/flue-broker.bin) before building flue, then rebuild")
 	}
+	if err := writeFileAtomic(path, flueBrokerBin, 0o755); err != nil {
+		return err
+	}
+	log.Info("flue: extracted broker", "path", path, "bytes", len(flueBrokerBin))
+	return nil
+}
 
+// writeFileAtomic writes data to path atomically: a temp file in the
+// target directory is written, chmod'd to mode, flushed to disk, and
+// renamed onto path, so the target is never left half-written and the
+// final mode is set on the temp file before it becomes the target
+// (for the broker that is the executable bit, set before the rename).
+// It refuses a target that is a directory and fails if the target
+// directory does not exist. Shared by the extract-broker (0755) and
+// broker-bundle (0644) writes.
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path) // "." for a bare filename, never ""
 	st, err := os.Stat(dir)
 	if err != nil {
@@ -93,21 +108,18 @@ func writeEmbeddedBroker(path string) error {
 		return fmt.Errorf("%s is a directory", path)
 	}
 
-	// Write to a temp file in the target directory and rename, so the
-	// target is never left half-written, and the executable bit is set on
-	// the temp file before it becomes the target.
-	tmp, err := os.CreateTemp(dir, ".flue-broker-*.tmp")
+	tmp, err := os.CreateTemp(dir, ".flue-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp file in %s: %v", dir, err)
 	}
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }() // no-op after a successful rename
 
-	if _, err := tmp.Write(flueBrokerBin); err != nil {
+	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("write %s: %v", path, err)
 	}
-	if err := tmp.Chmod(0o755); err != nil {
+	if err := tmp.Chmod(mode); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("chmod %s: %v", path, err)
 	}
@@ -123,8 +135,6 @@ func writeEmbeddedBroker(path string) error {
 	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("rename to %s: %v", path, err)
 	}
-
-	log.Info("flue: extracted broker", "path", path, "bytes", len(flueBrokerBin))
 	return nil
 }
 

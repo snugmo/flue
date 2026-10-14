@@ -68,7 +68,7 @@
 // enter, --session-check=required|advisory|off overrides the choice (an
 // explicit choice is logged at info; the default at handover).
 //
-// flue is a cobra CLI with five subcommands. The global flags (--sock,
+// flue is a cobra CLI with six subcommands. The global flags (--sock,
 // --allow-key, --allow-key-type, --log-level, --log-file) are
 // persistent: place them before the subcommand. The subcommand's
 // arguments follow the subcommand name, and a --
@@ -126,6 +126,22 @@
 // 0755). It needs no agent socket: the root PersistentPreRun resolves
 // the agent socket only for the subcommands that proxy it (exec, enter).
 //
+// broker-bundle — writes the embedded broker's sigstore bundle back out
+// (see embed.go): the cosign signature, signing certificate, and chain
+// for the embedded flue-broker's bytes, byte-identical to the bundle
+// that was embedded when flue was built:
+//
+//	flue broker-bundle <filename>
+//
+// Together with extract-broker it is how an extracted broker is verified
+// *offline* with cosign (cosign verify-blob <file> --bundle <bundle> —
+// no registry or network lookup at verify time): in a release build the
+// release workflow signed the broker it built (Sigstore keyless, the
+// identity being the workflow file at the pushed ref); in a local build
+// it is a bundle you signed the broker with, or the placeholder — which
+// broker-bundle warns about when it writes it, since it carries no
+// signature. Like extract-broker it needs no agent socket.
+//
 // broker-sha256 — prints the SHA256 of the embedded flue-broker (the
 // same bytes extract-broker writes) as a bare hex digest:
 //
@@ -152,6 +168,14 @@
 // build must produce by building flue-broker *first*; a missing file fails
 // the compile, so a flue without its broker is never built silently. The
 // embedded bytes are the built broker's, untransformed, so identical.
+// Alongside the binary, flue embeds the broker's sigstore bundle
+// (go:embed reads cmd/flue/flue-broker.sigstore): the cosign signature,
+// certificate, and chain for those same bytes — signed by the release
+// workflow in a release, by a local cosign key (or keyless context) in a
+// signed local build, or the committed placeholder template in an
+// unsigned local build. So a flue extracted from anywhere — the image,
+// a release asset, a local build — carries its broker and the means to
+// verify it offline (broker-bundle, above).
 package main
 
 import (
@@ -271,7 +295,7 @@ separates them from the target command, so the target command's own flags
 are passed through verbatim.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// No subcommand given: the classic usage-error case.
-		fmt.Fprintln(os.Stderr, `flue: missing subcommand (want "exec", "enter", "extract-broker", "broker-sha256", or "version")`)
+		fmt.Fprintln(os.Stderr, `flue: missing subcommand (want "exec", "enter", "extract-broker", "broker-bundle", "broker-sha256", or "version")`)
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, cmd.Root().UsageString())
 		os.Exit(1)
@@ -421,7 +445,7 @@ func init() {
 			}
 		}
 	}
-	rootCmd.AddCommand(execCmd, enterCmd, extractCmd, brokerSha256Cmd, versionCmd)
+	rootCmd.AddCommand(execCmd, enterCmd, extractCmd, brokerBundleCmd, brokerSha256Cmd, versionCmd)
 }
 
 // parseLevel maps a --log-level flag value to a slog.Level.

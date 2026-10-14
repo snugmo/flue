@@ -24,6 +24,7 @@ func TestCobraSubcommands(t *testing.T) {
 		"exec":           "exec [command [args...]]",
 		"enter":          "enter [container] [command [args...]]",
 		"extract-broker": "extract-broker <filename>",
+		"broker-bundle":  "broker-bundle <filename>",
 		"broker-sha256":  "broker-sha256",
 		"version":        "version",
 	} {

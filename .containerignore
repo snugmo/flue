@@ -2,6 +2,9 @@
 # Containerfile's stages build their own copies;
 # cmd/flue/flue-broker.bin is a go:embed source the flue build stage
 # places there from the flue-broker stage, one per target platform).
+# cmd/flue/flue-broker.sigstore is deliberately NOT excluded: it is a
+# build-context input the flue build stage consumes — a release-signed
+# or locally signed bundle, else its committed .placeholder fallback.
 /flue
 /flue-broker
 /cmd/flue/flue-broker.bin
