@@ -216,14 +216,18 @@ jobs:
           subject-path: ${{ github.workspace }}/dist/brokers/arm64/flue-broker
       # Only the flue binaries go in the artifact (the broker is
       # embedded in them and stays out of the release download list
-      # and SHA256SUMS).
+      # and SHA256SUMS). The file names use the stripped release tag
+      # (steps.refs.outputs.tag = the tag without its leading v),
+      # matching the dist/flue_<tag>_linux_<arch> files the extract
+      # step above produced — github.ref_name keeps the v and would
+      # point at paths that do not exist.
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: flue_${{ github.ref_name }}
+          name: flue_${{ steps.refs.outputs.tag }}
           path: |
-            dist/flue_${{ github.ref_name }}_linux_amd64
-            dist/flue_${{ github.ref_name }}_linux_arm64
+            dist/flue_${{ steps.refs.outputs.tag }}_linux_amd64
+            dist/flue_${{ steps.refs.outputs.tag }}_linux_arm64
 
   release:
     needs: [image]
