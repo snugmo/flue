@@ -25,7 +25,7 @@ README.md           usage, flags, how-it-works, security
 | -------------- | ------- |
 | Build binaries | `go build -o cmd/flue/flue-broker.bin ./cmd/flue-broker && go build -o flue ./cmd/flue && cp cmd/flue/flue-broker.bin flue-broker` |
 | Test           | `go build -o cmd/flue/flue-broker.bin ./cmd/flue-broker && go test ./...` |
-| Build image    | `buildah build --isolation chroot --layers --format docker --build-arg VERSION=<tag> -t <image> -f Containerfile .` (see the Containerfile header; `--build-arg TARGETARCH=<arch>` for arm64) |
+| Build image    | `buildah build --isolation chroot --layers --format docker --build-arg VERSION=<tag> --build-arg TARGETARCH=amd64 -t <image> -f Containerfile .` (see the Containerfile header; `--build-arg TARGETARCH=<arch>` selects the architecture the final stage ships) |
 | Forward agent  | `flue exec -- podman exec --preserve-fds 1 -e SSH_AUTH_SOCK=/tmp/flue.sock <container> flue-broker -sock /tmp/flue.sock` |
 | Enter a shell  | `flue enter [container] [command…]` (defaults: snugmo, `$FLUE_ENTER_CMD` else `/bin/sh`; `-ti` when stdin is a tty; a `--` with no argument before it makes what follows the command in the default container) |
 

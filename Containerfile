@@ -23,6 +23,7 @@
 # Build (local dev — the README Build section has the full form):
 #   buildah build --isolation chroot --layers --format docker \
 #     --build-arg VERSION=<tag> \
+#     --build-arg TARGETARCH=amd64 \
 #     -t <image> -f Containerfile .
 #
 # Usage (the entrypoint is /flue, so the subcommand and its arguments
@@ -34,13 +35,16 @@
 #     -e SSH_AUTH_SOCK=/tmp/flue.sock \
 #     <target> flue-broker -sock /tmp/flue.sock
 
-# TARGETPLATFORM and BUILDPLATFORM are BuildKit builtins; declared
-# here (empty by default) so that buildah, which does not define
-# them, does not trip on the $BUILDPLATFORM references below — for
-# buildah, an empty value means the build's default platform. Under
-# BuildKit the built-in values keep applying.
+# Platform builtins, declared at global scope with no default: a
+# default on any of these would override the per-platform value,
+# which both BuildKit and buildah only populate for ARGs without
+# one. $BUILDPLATFORM pins the golang stages to the build machine;
+# $TARGETARCH selects the binary the final stage ships (the local
+# build command below passes it explicitly; the final stage
+# re-declares it).
 ARG TARGETPLATFORM
 ARG BUILDPLATFORM
+ARG TARGETARCH
 
 # The broker stage is pinned to the build platform ($BUILDPLATFORM)
 # and cross-compiles for the release architectures (Go
@@ -104,11 +108,13 @@ RUN set -eu; for arch in amd64 arm64; do \
 
 # The final stage: FROM scratch, one static binary at the root.
 FROM scratch
-# BuildKit populates TARGETARCH per build platform, so a multi-arch
-# build copies the matching binary. buildah does not know the variable:
-# the default (amd64) matches a local build on an amd64 host; pass
-# --build-arg TARGETARCH=arm64 for an arm64 image.
-ARG TARGETARCH=amd64
+# Bare ARG (no default): BuildKit populates TARGETARCH per target
+# platform (buildah per the build's platform), but a default here
+# would override that value for every platform — the arm64 image
+# would ship the amd64 binary. A local build passes
+# --build-arg TARGETARCH=<arch> explicitly (see the build command
+# above), declared globally and re-declared here.
+ARG TARGETARCH
 # Stamped into the OCI well-known labels below (the binary already
 # carries the version, stamped by the build stage).
 ARG VERSION=latest

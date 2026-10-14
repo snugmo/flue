@@ -7,6 +7,7 @@ A plain `buildah` invocation — rootless, no daemon required:
 ```bash
 buildah build --isolation chroot --layers --format docker \
   --build-arg VERSION=<tag> \
+  --build-arg TARGETARCH=amd64 \
   --build-arg REVISION=<sha> \
   --build-arg CREATED=<rfc3339> \
   -t ghcr.io/snugmo/flue:<tag> \
@@ -18,13 +19,18 @@ buildah push ghcr.io/snugmo/flue:<tag>
   so the image ref is `ghcr.io/snugmo/flue:<tag>` (a custom registry
   works the same way — adjust the image reference).
 - `TARGETARCH` (which architecture's `flue` the final stage ships)
-  defaults to `amd64` — `buildah` does not populate the BuildKit
-  variable — which matches a build on an amd64 host; pass
-  `--build-arg TARGETARCH=arm64` for an arm64 image.
-- `TARGETPLATFORM` and `BUILDPLATFORM` are declared at global scope
-  (empty by default) for buildah, which does not define BuildKit's
-  platform builtins — for buildah, empty means the build's default
-  platform; under BuildKit the built-in values keep applying.
+  is passed explicitly — `--build-arg TARGETARCH=amd64` (or
+  `arm64`): the Containerfile declares it at global scope with no
+  default, because a default would override the per-platform builtin
+  (inherited only by ARGs without one) and ship the amd64 binary in
+  the arm64 image. Recent `buildah` populates the builtin from the
+  build's platform like BuildKit (host default if none is given),
+  but the explicit argument pins the result on any version.
+- `TARGETPLATFORM` and `BUILDPLATFORM` are likewise declared at
+  global scope with no default: `$BUILDPLATFORM` pins the golang
+  stages to the build machine's platform (in buildah, the host
+  default when no `--platform` is given); in BuildKit the built-in
+  values keep applying.
 - `.containerignore` keeps local build artifacts (`flue`,
   `flue-broker`, `cmd/flue/flue-broker.bin`) out of the build context —
   the stages build their own: the embed source is placed by the flue

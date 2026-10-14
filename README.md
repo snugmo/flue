@@ -221,6 +221,7 @@ daemon required:
 ```bash
 buildah build --isolation chroot --layers --format docker \
   --build-arg VERSION=0.1.0 \
+  --build-arg TARGETARCH=amd64 \
   --build-arg REVISION=$(git rev-parse HEAD) \
   --build-arg CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
   -t ghcr.io/snugmo/flue:0.1.0 \
@@ -228,9 +229,11 @@ buildah build --isolation chroot --layers --format docker \
 buildah push ghcr.io/snugmo/flue:0.1.0
 ```
 
-`TARGETARCH` (which architecture's binary the final stage ships)
-defaults to `amd64` — pass `--build-arg TARGETARCH=arm64` for an arm64
-image.
+`TARGETARCH` (which architecture's binary the final stage ships) is
+passed explicitly: the Containerfile declares it with no default, so
+the per-platform value is inherited in multi-arch builds (a default
+would override it for every platform) — pass
+`--build-arg TARGETARCH=arm64` for an arm64 image.
 
 Build order: `flue-broker` is built in its own stage (one static
 binary per architecture), staged in a per-architecture scratch image;
