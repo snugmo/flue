@@ -10,7 +10,9 @@
 #             exact file the flue build embeds (see stage comments)
 #   build     a golang toolchain compiles flue, fully static, for the
 #             target platform, embedding that platform's broker file
-#             (go:embed)
+#             and the broker's sigstore bundle (go:embed; the bundle
+#             is a build-context input — release-signed, locally
+#             signed, or the committed placeholder fallback)
 #   final     FROM scratch: the image is that one static binary at
 #             /flue, with /flue as the entrypoint
 #
@@ -18,7 +20,12 @@
 # $TARGETOS/$TARGETARCH. A multi-arch build (buildx) therefore
 # evaluates this same chain once per platform; a local buildah
 # build compiles for the build's platform (host default, or
-# --platform).
+# --platform). The golang stages use the golang:${GOVERSION}
+# toolchain (ARG GOVERSION, default 1.27 — floating for local
+# builds; the release workflow pins it to the go.mod `go` directive,
+# so the broker bytes are identical across every buildx invocation
+# in one release — including the broker the release signs and
+# embeds, see below).
 #
 # The final stage has no base image and no other system files: a
 # static binary needs no libc, no runtime, no shell. The release
@@ -29,6 +36,16 @@
 #   buildah build --isolation chroot --layers --format docker \
 #     --build-arg VERSION=<tag> \
 #     -t <image> -f Containerfile .
+#
+# The build stage's broker-bundle embed source comes from the build
+# context, not from a stage: a signed cmd/flue/flue-broker.sigstore
+# in the context wins (the release workflow places the platform's
+# cosign-signed bundle there; a local user may sign their own broker
+# first), else the committed placeholder template
+# (cmd/flue/flue-broker.sigstore.placeholder) is copied over — so a
+# bare local build succeeds with the labeled placeholder, and an
+# unsigned build is never confused with a signed one (see
+# cmd/flue/embed.go).
 #
 # Usage (the entrypoint is /flue, so the subcommand and its arguments
 # go straight after the image):
@@ -42,14 +59,13 @@
 # Platform builtins, declared at global scope with no default: a
 # default on any of these would override the per-platform value,
 # which both BuildKit and buildah only populate for ARGs without
-# one. ${BUILDPLATFORM} pins the golang stages to the build machine;
-# $TARGETOS/$TARGETARCH are what the stages compile for — buildah
-# populates them from the build's platform (host default, or the
-# --platform value when given), BuildKit per target platform.
+# one. GOVERSION is a regular (non-platform) arg with a default:
+# floating for local builds, pinned by the release workflow.
 ARG TARGETPLATFORM
 ARG BUILDPLATFORM
 ARG TARGETOS
 ARG TARGETARCH
+ARG GOVERSION=1.27
 
 # The broker stage is pinned to the build platform (${BUILDPLATFORM})
 # and cross-compiles for its own target platform (Go cross-compiles
@@ -57,7 +73,7 @@ ARG TARGETARCH
 # QEMU: the compiler runs natively on whichever host the build runs
 # on — the release workflow's amd64 runner, or an amd64 or arm64
 # dev host.
-FROM --platform=${BUILDPLATFORM} golang:1.27 AS broker
+FROM --platform=${BUILDPLATFORM} golang:${GOVERSION} AS broker
 ARG VERSION=latest
 ARG TARGETOS
 ARG TARGETARCH
@@ -69,9 +85,11 @@ COPY cmd/ cmd/
 # and GOARCH from the $TARGETOS/$TARGETARCH builtins); it is staged
 # in the scratch image below, which is the single origin of that
 # file everywhere else: the flue build stage consumes the stage
-# file as its go:embed source, and the release workflow attests
-# the same file — so the attested broker is provably the one
-# injected into flue at build time.
+# file as its go:embed source, and the release workflow exports,
+# attests, and cosign-signs the same file (the signature is
+# embedded in flue as the broker's sigstore bundle) — so the
+# attested and signed broker is provably the one injected into
+# flue at build time.
 RUN set -eu; CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" go build -ldflags="-s -w -X main.version=${VERSION}" -o flue-broker ./cmd/flue-broker
 
 # One FROM scratch image with the target platform's single broker
@@ -90,7 +108,7 @@ COPY --chown=0:0 --from=broker /build/flue-broker /flue-broker
 # (native Go cross-compilation), so a multi-arch build never needs
 # QEMU: each platform's flue binary is compiled natively by that
 # platform's instance of this stage.
-FROM --platform=${BUILDPLATFORM} golang:1.27 AS build
+FROM --platform=${BUILDPLATFORM} golang:${GOVERSION} AS build
 ARG VERSION=latest
 ARG TARGETOS
 ARG TARGETARCH
@@ -108,6 +126,16 @@ COPY cmd/ cmd/
 # WORKDIR (both builders agree on WORKDIR for destinations), onto
 # the go:embed path.
 COPY --from=flue-broker /flue-broker cmd/flue/flue-broker.bin
+# The broker's sigstore bundle (the second go:embed source, see
+# cmd/flue/embed.go): the COPY of cmd/ above already brought in the
+# context's cmd/flue/flue-broker.sigstore when one is present (the
+# release workflow places the platform's cosign-signed bundle in each
+# platform's build context; a local user may sign their own broker
+# first) — and the committed placeholder template, which this cp -n
+# copies to the embed path only when no signed bundle is present.
+# So a signed context always wins over the placeholder, a bare local
+# build falls back to it, and go:embed never sees a missing file.
+RUN cp -n cmd/flue/flue-broker.sigstore.placeholder cmd/flue/flue-broker.sigstore
 RUN set -eu; CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" go build -ldflags="-s -w -X main.version=${VERSION}" -o flue ./cmd/flue
 
 # The final stage: FROM scratch, one static binary at the root. It

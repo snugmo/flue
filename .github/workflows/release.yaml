@@ -1,33 +1,44 @@
 # Release — build the flue image when a git tag is pushed and publish
-# it as a GitHub Release. One multi-arch build of the Containerfile
-# (golang build stage compiles the static flue binary, FROM scratch
-# final stage ships it at /flue) is the single source of truth:
+# it as a GitHub Release. One build of the Containerfile (golang build
+# stage compiles the static flue binary, FROM scratch final stage ships
+# it at /flue — built once per platform, assembled into a manifest
+# list) is the single source of truth:
 #
+#   - the brokers (one per architecture, from the Containerfile's
+#     flue-broker stage) are exported, attested, and cosign-signed
+#     (Sigstore keyless) — the signature is embedded in every flue as
+#     the broker's sigstore bundle, so a consumer who recovers a
+#     broker from any flue can verify it offline (flue broker-bundle
+#     + cosign verify-blob --bundle);
 #   - the image is pushed to ghcr.io/snugmo/flue, attested with SLSA
-#     build provenance, and signed (Sigstore keyless);
+#     build provenance (one attestation per architecture), and signed
+#     (Sigstore keyless);
 #   - the release assets are the image's own bytes: each architecture's
 #     manifest is pulled from the registry and the single /flue file is
 #     copied out, so a downloaded binary is byte-identical to the one
-#     that was pushed, signed, and attested;
-#   - the embedded flue-broker (not a separate asset — it ships inside
-#     every flue) is extracted from the native-arch binary and
-#     sigstore-attested, so a consumer who recovers it can verify it
-#     was built by this workflow.
+#     that was pushed, signed, and attested.
+#
+# The brokers are signed before the image is built, and each
+# platform's image is built with that platform's signed bundle in its
+# build context — a buildx invocation carries one context (shared by
+# all of its platforms), so the multi-arch release is two single-
+# platform builds whose outputs are assembled into the manifest list
+# with `docker buildx imagetools create`.
 #
 # Trigger: push a tag like `v1.2.3` (any tag matching `v*`).
 #
 # Runs on ubuntu-24.04, pinned (not ubuntu-latest): ubuntu-latest migrates
 # to Ubuntu 26.04 in stages from 2026-10-19, which would turn the runner
-# image into a moving target mid-release (24.04 or 26.04 depending on the
-# day a tag lands) and change the OS/kernel/toolchain under the signed and
-# attested build. Pinning keeps the release reproducible; adopt
+# image into a moving target mid-release (24.04 or 26.04 depending on
+# the day a tag lands) and change the OS/kernel/toolchain under the signed
+# and attested build. Pinning keeps the release reproducible; adopt
 # ubuntu-26.04 deliberately in a later release once tested here.
 # (github.com/actions/runner-images#14748)
 #
 # Action versions are pinned to their Node 24 majors (checkout, setup-go,
 # golangci-lint, upload/download-artifact, action-gh-release): the older
-# majors run on Node 20, which GitHub's runners now deprecate in favour of
-# Node 24. Bumping to the Node 24 majors clears that deprecation warning
+# majors run on Node 20, which GitHub's runners now deprecate in favour
+# of Node 24. Bumping to the Node 24 majors clears that deprecation warning
 # without changing any input in use here.
 name: Release
 
@@ -48,12 +59,16 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      # flue go:embeds the built broker (cmd/flue/embed.go), so the broker
-      # must be built to its embed path before any package load succeeds.
+      # flue go:embeds the built broker (cmd/flue/embed.go) and its
+      # sigstore bundle: the broker must be built to its embed path, and
+      # the bundle must exist (the committed placeholder template when no
+      # signed bundle is present) before any package load succeeds.
       - name: Build broker (embed source)
         env:
           CGO_ENABLED: 0
         run: go build -ldflags="-s -w" -o cmd/flue/flue-broker.bin ./cmd/flue-broker
+      - name: Place the placeholder broker bundle (embed source)
+        run: test -f cmd/flue/flue-broker.sigstore || cp cmd/flue/flue-broker.sigstore.placeholder cmd/flue/flue-broker.sigstore
       - name: Test
         run: go test ./...
 
@@ -68,6 +83,8 @@ jobs:
         env:
           CGO_ENABLED: 0
         run: go build -ldflags="-s -w" -o cmd/flue/flue-broker.bin ./cmd/flue-broker
+      - name: Place the placeholder broker bundle (embed source)
+        run: test -f cmd/flue/flue-broker.sigstore || cp cmd/flue/flue-broker.sigstore.placeholder cmd/flue/flue-broker.sigstore
       - uses: golangci/golangci-lint-action@v9
         with:
           version: latest
@@ -79,12 +96,13 @@ jobs:
     # job, so it must list everything the job needs:
     #   actions: write          upload the release binaries as an artifact
     #   contents: read           check out the source and the Containerfile
-    #   packages: write          push the image, the cosign signature, and
-    #                            the registry-pushed attestation to GHCR
+    #   packages: write          push the images, the cosign signatures, and
+    #                            the registry-pushed attestations to GHCR
     #   id-token: write          mint the OIDC token exchanged for the
-    #                            Sigstore signing certificate (sign + attest)
+    #                            Sigstore signing certificate (broker
+    #                            sign-blobs + image sign)
     #   attestations: write      persist the attestations in GitHub's store
-    #   artifact-metadata: write create the image's storage record
+    #   artifact-metadata: write create the images' storage records
     permissions:
       actions: write
       contents: read
@@ -108,6 +126,14 @@ jobs:
           {
             echo "tag=${tag}"
             echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            # The toolchain the release's golang stages pin to: the
+            # go.mod `go` directive. Every buildx invocation in this
+            # job (the broker export, then the per-arch image builds)
+            # runs its golang stages at this exact version, so the
+            # broker rebuilt inside the image is byte-identical to the
+            # broker exported and signed above — independent of the
+            # build cache or of a new golang:1.27.x patch landing.
+            echo "goversion=$(awk '/^go /{print $2}' go.mod)"
           } >> "${GITHUB_OUTPUT}"
       - uses: docker/setup-buildx-action@v4
       - name: Log in to GHCR
@@ -116,43 +142,150 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push the image
-        id: build
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Containerfile
-          # No QEMU: the Containerfile's golang stages are pinned to
-          # $BUILDPLATFORM and each compiles its own target platform
-          # (Go cross-compilation is native), so every platform
-          # build runs natively on the runner.
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ env.IMAGE }}:${{ steps.refs.outputs.tag }}
-            ${{ env.IMAGE }}:latest
-          build-args: |
-            VERSION=${{ steps.refs.outputs.tag }}
-            REVISION=${{ github.sha }}
-            CREATED=${{ steps.refs.outputs.created }}
-      - name: Attest the image (SLSA provenance)
-        uses: actions/attest@v4
-        with:
-          # No predicate input: when neither predicate nor predicate-path
-          # is given, attest@v4 defaults to a SLSA build-provenance
-          # attestation generated for this buildx run. The subject is the
-          # image name without a tag, identified by the manifest-list
-          # digest; push-to-registry stores it as a cosign attestation in
-          # the image's own repo, next to the signature. (There is no
-          # "provenance" input — that would be rejected as unexpected.)
-          subject-name: ${{ env.IMAGE }}
-          subject-digest: ${{ steps.build.outputs.digest }}
-          push-to-registry: true
-          create-storage-record: true
       # Pinned to a specific release: cosign-installer has no bare "v4" tag
-      # (only v4.0.0+ and a v3), so @v4 does not resolve.
+      # (only v4.0.0+ and a v3), so @v4 does not resolve. Installed before
+      # the broker sign (below) as well as the image sign.
       - name: Install cosign
         uses: sigstore/cosign-installer@v4.1.2
+      # The brokers are not release assets (each ships inside its
+      # architecture's flue), but both are exported here, before any
+      # image build, so they can be signed (below): the signed bundles
+      # are what the per-arch image builds embed. Each exported file is
+      # the rootfs of the Containerfile's flue-broker stage, built for
+      # linux/<arch> — the same file the flue build stage's COPY --from
+      # consumes as the go:embed source, so the attested and signed
+      # broker is provably the one injected at build time; the verify
+      # steps below close the loop end to end.
+      - name: Export the broker binaries from the broker stage
+        env:
+          GOVERSION: ${{ steps.refs.outputs.goversion }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          # One buildx invocation per architecture: --platform
+          # selects which platform's chain to build, and --target
+          # stops at the flue-broker stage. GOVERSION pins the
+          # golang stage to one toolchain for this whole job (see
+          # Image refs), so these bytes are what the image builds
+          # below rebuild.
+          for arch in amd64 arm64; do
+            docker buildx build -f Containerfile \
+              --target flue-broker \
+              --platform "linux/${arch}" \
+              --build-arg VERSION="${tag}" \
+              --build-arg GOVERSION="${GOVERSION}" \
+              --output "type=local,dest=dist/brokers/${arch}" .
+          done
+      # One sigstore bundle per broker, next to it: the bundle carries
+      # the signature, certificate, and chain, so a consumer who
+      # recovers the broker from any flue verifies it offline (cosign
+      # verify-blob <file> --bundle <file>.sigstore) — no registry or
+      # network lookup needed. The bundle is embedded in flue (below),
+      # so the extracted broker and its bundle always travel together.
+      # The identity is this workflow file at the pushed ref, under
+      # the GitHub Actions OIDC issuer (same identity as the image and
+      # release-binary signatures).
+      - name: Sign the brokers (Sigstore keyless)
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            cosign sign-blob --yes --keyless \
+              --bundle "dist/brokers/${arch}/flue-broker.sigstore" \
+              "dist/brokers/${arch}/flue-broker"
+          done
+      # Each platform's flue embeds that platform's broker and bundle,
+      # and a buildx invocation carries one context (shared by all of
+      # its platforms), so the image is built once per platform, each
+      # with its own context: a copy of the checkout with that
+      # platform's signed bundle placed on the go:embed path
+      # (cmd/flue/flue-broker.sigstore — the Containerfile's build
+      # stage consumes the context copy, falling back to the committed
+      # placeholder template only when no bundle is present). The two
+      # single-platform pushes are assembled into the release's
+      # manifest list below.
+      - name: Prepare the per-platform build contexts
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            mkdir -p "ctx/${arch}"
+            tar --exclude=.git -cf - . | tar -xf - -C "ctx/${arch}"
+            cp "dist/brokers/${arch}/flue-broker.sigstore" "ctx/${arch}/cmd/flue/flue-broker.sigstore"
+          done
+      # No QEMU: the Containerfile's golang stages are pinned to
+      # $BUILDPLATFORM and each compiles its own target platform
+      # (Go cross-compilation is native), so every platform build
+      # runs natively on the runner.
+      - name: Build and push the amd64 image
+        id: build-amd64
+        uses: docker/build-push-action@v7
+        with:
+          context: ctx/amd64
+          file: Containerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ steps.refs.outputs.tag }}-amd64
+          build-args: |
+            VERSION=${{ steps.refs.outputs.tag }}
+            GOVERSION=${{ steps.refs.outputs.goversion }}
+            REVISION=${{ github.sha }}
+            CREATED=${{ steps.refs.outputs.created }}
+      - name: Build and push the arm64 image
+        id: build-arm64
+        uses: docker/build-push-action@v7
+        with:
+          context: ctx/arm64
+          file: Containerfile
+          platforms: linux/arm64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ steps.refs.outputs.tag }}-arm64
+          build-args: |
+            VERSION=${{ steps.refs.outputs.tag }}
+            GOVERSION=${{ steps.refs.outputs.goversion }}
+            REVISION=${{ github.sha }}
+            CREATED=${{ steps.refs.outputs.created }}
+      # Assemble the two per-arch images into the release's manifest
+      # list (the tag and latest). imagetools create copies the
+      # existing child manifests into a new index — no rebuild, no
+      # re-upload of blobs — and prints the new list's digest. The
+      # per-arch tags stay published alongside the list: they are the
+      # imagetools sources and let consumers pull one arch directly.
+      - name: Assemble the multi-arch manifest list
+        id: list
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          digest="$(docker buildx imagetools create \
+            -t "${IMAGE}:${tag}" -t "${IMAGE}:latest" \
+            "${IMAGE}:${tag}-amd64" "${IMAGE}:${tag}-arm64" \
+            | grep -oE 'sha256:[0-9a-f]{64}' | head -n 1)"
+          if [[ -z "$digest" ]]; then
+            echo "ERROR: imagetools create produced no digest" >&2
+            exit 1
+          fi
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+      # One SLSA build-provenance attestation per per-arch image (the
+      # GHA-workflow build type: source = this repo at the pushed
+      # commit, builder = this workflow): stored in GitHub's
+      # attestation store and pushed to the registry next to each
+      # child manifest. (There is no "provenance" input — that would be
+      # rejected as unexpected; with neither predicate nor
+      # predicate-path, attest@v4 generates the SLSA provenance
+      # predicate from the workflow's OIDC claims, which is why it
+      # works per platform the same way it did for the manifest list.)
+      - name: Attest the amd64 image (SLSA provenance)
+        uses: actions/attest@v4
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build-amd64.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: true
+      - name: Attest the arm64 image (SLSA provenance)
+        uses: actions/attest@v4
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build-arm64.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: true
       - name: Sign the image (Sigstore keyless)
         run: |
           set -euo pipefail
@@ -163,9 +296,9 @@ jobs:
           # cosign verify (resolving to a child digest) matches — the
           # umbrella signature alone pins the child digests but stores no
           # signature at the child for that verify.
-          cosign sign --yes --recursive "${IMAGE}@${{ steps.build.outputs.digest }}"
+          cosign sign --yes --recursive "${IMAGE}@${{ steps.list.outputs.digest }}"
       # The release binaries are the image's own bytes: resolve the
-      # manifest-list digest the build step pushed down to each arch's
+      # manifest-list digest the assemble step created down to each arch's
       # child manifest, pull that, and copy the single /flue file out —
       # byte-identical to the pushed, signed, attested image. Each arch
       # is pulled by its OWN child digest (not the list digest twice),
@@ -173,7 +306,7 @@ jobs:
       # --platform pull of the same list digest is refused.
       - name: Extract release binaries from the image
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.list.outputs.digest }}
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
@@ -198,67 +331,48 @@ jobs:
             chmod 0755 "dist/flue_${tag}_linux_${arch}"
             sha256sum "dist/flue_${tag}_linux_${arch}"
           done
-      # The brokers are not release assets (each ships inside its
-      # architecture's flue), but both are attested here (attestation
-      # records in GitHub's attestation store, keyed by each file's
-      # sha256), so a consumer who recovers a broker from any flue —
-      # any architecture — can verify it without it ever appearing in
-      # the release download list:
-      #
-      #   flue extract-broker ./flue-broker
-      #   gh attestation verify ./flue-broker --source snugmo/flue
-      #
-      # Each attested file is the rootfs of the Containerfile's
-      # flue-broker stage, built for linux/<arch> — the same file
-      # the flue build stage's COPY --from consumes as the go:embed
-      # source — so the attested broker is provably the one
-      # injected at build time; the cross-check below closes the
-      # loop end to end.
-      - name: Export the broker binaries from the broker stage
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF_NAME#v}"
-          # One buildx invocation per architecture: --platform
-          # selects which platform's chain to build, and --target
-          # stops at the flue-broker stage. Every step is a cache
-          # hit from the image build above, so only the stage's
-          # single COPY runs, and the local output writes that
-          # architecture's broker to dist/brokers/<arch>/.
-          for arch in amd64 arm64; do
-            docker buildx build -f Containerfile \
-              --target flue-broker \
-              --platform "linux/${arch}" \
-              --build-arg VERSION="${tag}" \
-              --output "type=local,dest=dist/brokers/${arch}" .
-          done
+      # The runner's own architecture, remapped to a Go/docker arch
+      # name (AMD64/X64->amd64, ARM64->arm64). Named FLUE_ARCH, not
+      # RUNNER_ARCH: the runner injects its own RUNNER_ARCH into
+      # every step, and env entries that shadow a runner-reserved
+      # name do not reliably win the environment merge — the step
+      # kept seeing the runner-native value (X64) instead of the
+      # remapped one. GitHub's expression language has no
+      # case-folding function, so the remap is an &&/|| chain over
+      # runner.arch. The 'X64' case is not in the official docs but
+      # is what the actual runner images report; keep both
+      # spellings. Any other value (e.g. a 32-bit 'ARM') passes
+      # through raw and is used verbatim. No uname/shell needed to
+      # detect the arch: the runner reports it. (Shared by the two
+      # verify steps below.)
       - name: Verify the embedded broker is byte-identical
         env:
-          # The runner's own architecture, remapped to a Go/docker arch
-          # name (AMD64/X64->amd64, ARM64->arm64). Named FLUE_ARCH, not
-          # RUNNER_ARCH: the runner injects its own RUNNER_ARCH into
-          # every step, and env entries that shadow a runner-reserved
-          # name do not reliably win the environment merge — the step
-          # kept seeing the runner-native value (X64) instead of the
-          # remapped one. GitHub's expression language has no
-          # case-folding function, so the remap is an &&/|| chain over
-          # runner.arch. The 'X64' case is not in the official docs but
-          # is what the actual runner images report; keep both
-          # spellings. Any other value (e.g. a 32-bit 'ARM') passes
-          # through raw and is used verbatim. No uname/shell needed to
-          # detect the arch: the runner reports it.
           FLUE_ARCH: ${{ runner.arch == 'AMD64' && 'amd64' || runner.arch == 'X64' && 'amd64' || runner.arch == 'ARM64' && 'arm64' || runner.arch }}
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
           # Close the loop end to end: run the flue binary matching THIS
           # runner's architecture to extract its embedded broker, which
-          # must be byte-identical to that architecture's file about to
-          # be attested — the same file its build stage COPY --from
-          # consumed. Only the runner-native binary can execute here (no
-          # QEMU), so it's the one edge we verify; the other arch holds
-          # by the same COPY --from symmetry.
+          # must be byte-identical to that architecture's file above —
+          # the same file its build stage COPY --from consumed. Only the
+          # runner-native binary can execute here (no QEMU), so it's the
+          # one edge we verify; the other arch holds by the same
+          # COPY --from symmetry.
           ./dist/flue_${tag}_linux_${FLUE_ARCH} extract-broker /tmp/flue-broker-embedded
           cmp /tmp/flue-broker-embedded "dist/brokers/${FLUE_ARCH}/flue-broker"
+      - name: Verify the embedded broker bundle is byte-identical
+        env:
+          FLUE_ARCH: ${{ runner.arch == 'AMD64' && 'amd64' || runner.arch == 'X64' && 'amd64' || runner.arch == 'ARM64' && 'arm64' || runner.arch }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          # The native-arch flue extracts its embedded broker bundle; it
+          # must be byte-identical to the bundle signed above for that
+          # architecture's broker — the one its build stage's context
+          # copy embedded. So the extracted broker and its bundle are
+          # exactly the signed pair: cosign verify-blob --bundle passes.
+          ./dist/flue_${tag}_linux_${FLUE_ARCH} broker-bundle /tmp/flue-broker-bundle
+          cmp /tmp/flue-broker-bundle "dist/brokers/${FLUE_ARCH}/flue-broker.sigstore"
       - name: Attest the amd64 broker
         uses: actions/attest@v4
         with:
@@ -267,13 +381,13 @@ jobs:
         uses: actions/attest@v4
         with:
           subject-path: ${{ github.workspace }}/dist/brokers/arm64/flue-broker
-      # Only the flue binaries go in the artifact (the broker is
-      # embedded in them and stays out of the release download list
-      # and SHA256SUMS). The file names use the stripped release tag
-      # (steps.refs.outputs.tag = the tag without its leading v),
-      # matching the dist/flue_<tag>_linux_<arch> files the extract
-      # step above produced — github.ref_name keeps the v and would
-      # point at paths that do not exist.
+      # Only the flue binaries go in the artifact (the broker and its
+      # bundle are embedded in them and stay out of the release
+      # download list and SHA256SUMS). The file names use the stripped
+      # release tag (steps.refs.outputs.tag = the tag without its
+      # leading v), matching the dist/flue_<tag>_linux_<arch> files the
+      # extract step above produced — github.ref_name keeps the v and
+      # would point at paths that do not exist.
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
@@ -311,6 +425,7 @@ jobs:
           # — no registry or network lookup needed. The glob expands once,
           # so the .sigstore files created here are not iterated.
           for f in flue_*; do
+            [[ -f "$f" ]] || continue
             cosign sign-blob --yes --keyless --bundle "${f}.sigstore" "$f"
           done
       # After signing, so the sums cover the bundles as well.
