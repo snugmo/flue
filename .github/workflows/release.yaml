@@ -209,13 +209,22 @@ jobs:
       - name: Verify the embedded broker is byte-identical
         env:
           # The runner's own architecture, remapped to a Go/docker arch
-          # name (AMD64->amd64, ARM64->arm64, ARM->arm). GitHub's
-          # expression language has no case-folding function, so the
-          # remap is an &&/|| chain over runner.arch. No uname/shell: the
-          # runner reports its own arch.
-          RUNNER_ARCH: ${{ runner.arch == 'AMD64' && 'amd64' || runner.arch == 'ARM64' && 'arm64' || 'arm' }}
+          # name (AMD64->amd64, ARM64->arm64). GitHub's expression
+          # language has no case-folding function, so the remap is an
+          # &&/|| chain over runner.arch; any other value (e.g. a 32-bit
+          # 'ARM') passes through raw and is rejected in the step below
+          # — no silent default. No uname/shell needed to detect the arch:
+          # the runner reports it.
+          RUNNER_ARCH: ${{ runner.arch == 'AMD64' && 'amd64' || runner.arch == 'ARM64' && 'arm64' || runner.arch }}
         run: |
           set -euo pipefail
+          # The release only ships linux/amd64 and linux/arm64, so an
+          # architecture we don't build for must fail loudly here rather
+          # than silently pick a file that doesn't exist.
+          case "${RUNNER_ARCH}" in
+            amd64|arm64) ;;
+            *) echo "unsupported runner architecture: '${RUNNER_ARCH}' (this release only builds amd64 and arm64)" >&2; exit 1 ;;
+          esac
           tag="${GITHUB_REF_NAME#v}"
           # Close the loop end to end: run the flue binary matching THIS
           # runner's architecture to extract its embedded broker, which
