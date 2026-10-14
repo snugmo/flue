@@ -290,17 +290,36 @@ jobs:
       actions: read
       # Publish the release and upload the assets.
       contents: write
+      # Mint the OIDC token cosign's keyless (fulcio) signing needs.
+      id-token: write
     steps:
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
       - name: Flatten
         run: find artifacts -type f -exec mv {} . \;
+      # Pinned to a specific release: cosign-installer has no bare "v4" tag
+      # (only v4.0.0+ and a v3), so @v4 does not resolve.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
+      - name: Sign the release binaries (Sigstore keyless)
+        run: |
+          set -euo pipefail
+          # One bundle per binary, next to it: the bundle carries the
+          # signature, certificate, and chain, so a consumer verifies
+          # offline with cosign verify-blob <file> --bundle <file>.sigstore
+          # — no registry or network lookup needed. The glob expands once,
+          # so the .sigstore files created here are not iterated.
+          for f in flue_*; do
+            cosign sign-blob --yes --keyless --bundle "${f}.sigstore" "$f"
+          done
+      # After signing, so the sums cover the bundles as well.
       - name: Generate SHA256SUMS
         run: sha256sum flue_* > SHA256SUMS
       - name: Publish release
         uses: softprops/action-gh-release@v3
         with:
+          # flue_* covers the binaries and their .sigstore bundles.
           files: |
             flue_*
             SHA256SUMS
