@@ -269,7 +269,10 @@ binaries are likewise attested: the workflow builds the Containerfile's
 the exact files the `flue` build stage consumed as its `go:embed`
 sources, so the attested broker is the one injected at build time —
 and a broker recovered from any `flue`, any architecture, can be
-verified with `gh attestation verify`.
+verified with `gh attestation verify`. Each release binary is
+additionally signed (Sigstore keyless) and ships its signature as a
+self-contained `.sigstore` bundle next to it, so a binary can be
+verified offline — no registry or network lookup.
 
 Every release image carries two signed claims, keyed to the image's
 manifest-list digest, so they cover all of its tags:
@@ -291,6 +294,12 @@ cosign verify ghcr.io/snugmo/flue:$tag \
 
 # 2. Provenance: built by snugmo/flue's release workflow
 gh attestation verify ghcr.io/snugmo/flue:$tag --source snugmo/flue
+
+# 3. Binaries: each asset ships a self-contained sigstore bundle
+cosign verify-blob "flue_${tag}_linux_amd64" \
+  --bundle "flue_${tag}_linux_amd64.sigstore" \
+  --certificate-identity "<account that pushed the tag>" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 ```
 
 ## How it works
