@@ -164,8 +164,19 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
           mkdir -p dist
+          # Fetch the index once. `imagetools inspect --raw` emits the
+          # manifest-list JSON (buildx-native, handles OCI media types);
+          # `--format` is a Go template, not a "json" keyword, so it must
+          # not be used here.
+          index_json="$(docker buildx imagetools inspect --raw "${IMAGE}@${DIGEST}")"
           for arch in amd64 arm64; do
-            child="$(docker buildx imagetools inspect --format json "${IMAGE}@${DIGEST}" | jq -r --arg a "$arch" '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $a) | .digest')"
+            child="$(jq -r --arg a "$arch" '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $a) | .digest' <<<"$index_json" 2>/dev/null || true)"
+            if [[ -z "$child" || "$child" == "null" ]]; then
+              echo "ERROR: no linux/${arch} child manifest under ${IMAGE}@${DIGEST} (or the index did not parse as JSON)" >&2
+              echo "--- docker buildx imagetools inspect --raw ---" >&2
+              printf '%s\n' "$index_json" >&2
+              exit 1
+            fi
             docker pull "${IMAGE}@${child}"
             id="$(docker create "${IMAGE}@${child}")"
             docker cp "${id}:/flue" "dist/flue_${tag}_linux_${arch}"
