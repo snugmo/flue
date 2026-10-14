@@ -6,8 +6,8 @@ A plain `buildah` invocation — rootless, no daemon required:
 
 ```bash
 buildah build --isolation chroot --layers --format docker \
-  --build-arg BASE_IMAGE=ghcr.io/snugmo/cote:<tag>-base \
-  --build-arg VERSION=<tag> --build-arg REVISION=<sha> \
+  --build-arg VERSION=<tag> \
+  --build-arg REVISION=<sha> \
   --build-arg CREATED=<rfc3339> \
   -t ghcr.io/snugmo/flue:<tag> \
   -f Containerfile .
@@ -16,70 +16,63 @@ buildah push ghcr.io/snugmo/flue:<tag>
 
 - The tag is the version with the leading `v` stripped (e.g. `0.1.0`),
   so the image ref is `ghcr.io/snugmo/flue:<tag>` (a custom registry
-  works the same way — adjust both the image and the base reference).
-- The base image defaults to `ghcr.io/snugmo/cote:latest-base` (the
-  Containerfile's ARG default); the `cote` release at the same tag is
-  the usual choice. **The base image must be pushed before building
-  flue.**
-- `.containerignore` keeps local build artifacts (`flue`, `flue-broker`,
-  `cmd/flue/flue-broker.bin`) out of the build context — the go-build
-  stage builds its own, and the embed source must be the stage's.
+  works the same way — adjust the image reference).
+- `TARGETARCH` (which architecture's `flue` the final stage ships)
+  defaults to `amd64` — `buildah` does not populate the BuildKit
+  variable — which matches a build on an amd64 host; pass
+  `--build-arg TARGETARCH=arm64` for an arm64 image.
+- `.containerignore` keeps local build artifacts (`flue`,
+  `flue-broker`, `cmd/flue/flue-broker.bin`) out of the build context —
+  the build stage builds its own, and the embed source must be the
+  stage's.
 - Building the host-side helpers for local use is the AGENTS.md
   Build command: `flue-broker` first, to the `go:embed` path
   `cmd/flue/flue-broker.bin` (which `flue` embeds), then `flue`, then
   copies that same broker file to the repo root.
-- OCI well-known labels (`org.opencontainers.image.*`, `io.openshift.tags`)
-  are passed as `--build-arg`s.
+- OCI well-known labels (`org.opencontainers.image.*`,
+  `io.openshift.tags`) come from the `--build-arg`s.
 
 ## Containerfile
 
 Two stages:
 
-- **`go-build`**: compiles both binaries with the Go toolchain from the
-  cote base image (`GOROOT=/opt/go`). It runs as `USER root` because the
-  base image's default user is a non-root account that can only write to
-  `/tmp`, while the build must place files in root-owned directories
-  (`/build/flue/...`, `/usr/local/bin`). `COPY go.mod go.sum` before
-  `RUN go build` gives dependency-level layer caching. Both binaries are
-  built `CGO_ENABLED=0` with `-ldflags="-s -w"` (static, stripped — the
-  image must run in any Linux container without glibc). The broker is
-  built first, to the `go:embed` path `cmd/flue/flue-broker.bin` (flue
-  embeds it — see `cmd/flue/embed.go`), then `flue`, and the *same file*
-  is copied to `/usr/local/bin/flue-broker`: so a `flue` from this image
-  extracts (via `flue extract-broker`) a broker byte-identical to the
-  image's own.
-- **final**: copies just the two binaries (~18 MB uncompressed; `flue`
-  carries the embedded broker, so it is the larger of the two) and keeps
-  the base image's non-root user, so the shipped container runs
-  unprivileged.
+- **`build`**: compiles both binaries from source with the
+  `golang:1.26` toolchain, `CGO_ENABLED=0` with `-ldflags="-s -w"`
+  (static, stripped — the image must run on any Linux container without
+  a glibc). It is pinned to `FROM --platform=linux/amd64` and
+  cross-compiles both release architectures in one loop (Go
+  cross-compiles natively), so the multi-arch release build never needs
+  QEMU. For each architecture the broker is built first, to the
+  `go:embed` path `cmd/flue/flue-broker.bin` (flue embeds it — see
+  `cmd/flue/embed.go`), then `flue` for that architecture, so each
+  `flue` embeds the broker built for the same architecture.
+- **final**: `FROM scratch` — the image is the single static binary at
+  `/flue`, with `/flue` as the entrypoint. No base image (hence no
+  `org.opencontainers.image.base.*` label) and no other system files:
+  a static binary needs no libc, no runtime, no shell. The
+  `flue-broker` is not a separate file in the image — it is embedded in
+  `flue`, recoverable via `flue extract-broker`.
 
 ## Release image (Release workflow)
 
-`Containerfile.release` is the release path: a single stage that
-`COPY`s the two pre-built binaries (no `go-build` stage, no
-compilation, no QEMU — the final stage runs nothing). The Release
-workflow's `image` job places the binaries the `build` job built and
-attested into the context as
-`dist/<arch>/{flue,flue-broker}`, and BuildKit's auto-populated
-`ARG TARGETARCH` selects each platform's pair at `COPY` time.
-`--chown=root:root` pins the ownership, because a context `COPY` would
-otherwise keep the runner user's uid; the final stage keeps the base
-image's non-root user, as the dev image does.
+The release image is built from the same `Containerfile`: the
+workflow's `image` job runs a `buildx` build for `linux/amd64` and
+`linux/arm64` (BuildKit populates `TARGETARCH` per platform; both
+platforms are compiled natively in the pinned amd64 build stage — no
+QEMU), tagging `ghcr.io/snugmo/flue:<tag>` and `:latest` from the
+tagged source.
 
 The image job then:
 
-- pushes `ghcr.io/snugmo/flue:<tag>` and `:latest` (buildx,
-  `linux/amd64,linux/arm64`);
-- attests the image with `actions/attest` (SLSA build provenance, the
-  same toolkit as the binary attestations): stored in GitHub's
-  attestation store, pushed to the registry as a cosign attestation,
-  and registered as an artifact storage record;
+- attests the manifest list with an SLSA build-provenance attestation
+  (the attest step's `provenance: true` generates the predicate for
+  the buildx run — the same toolkit as the binary attestations in the
+  build job): stored in GitHub's attestation store, pushed to the
+  registry as a cosign attestation, and registered as an artifact
+  storage record;
 - signs it with a Sigstore keyless cosign signature (one signature per
   manifest-list digest, so all tags are covered).
 
-The base image is the `cote` release at the same tag, which must be
-published (multi-arch) before the job runs, and can be overridden
-with the `FLUE_BASE_IMAGE` repository variable.
-
-The dev path (buildah + `Containerfile`) compiles from source; release
-images ship the attested bytes.
+The binaries published as release assets are built and attested by the
+`build` job from the same commit with the same build flags; the
+image's build stage compiles that same source itself.

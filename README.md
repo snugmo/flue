@@ -30,9 +30,11 @@ flue enter <container>     # or just flue enter — snugmo is the default
 …and you are in a shell where `ssh-add -l`, `git push`, and friends use the
 host's agent — with only the keys you allowlisted visible.
 
-Built from source at `cmd/flue-broker/` and `cmd/flue/` and installed as
-`/usr/local/bin/flue-broker` and `/usr/local/bin/flue` (fully static
-binaries, no runtime deps).
+Both binaries are built from source (`cmd/flue-broker/` and `cmd/flue/`)
+and are fully static (no runtime deps). The published image
+(`ghcr.io/snugmo/flue`) is just the `flue` binary at `/flue`, with the
+`flue-broker` built at the same time embedded in it — recoverable via
+`flue extract-broker`.
 
 > **Field-verified end to end.** The full path has been exercised for real:
 > laptop `ssh-agent` → host workstation → a snugmo container, where
@@ -179,8 +181,7 @@ wrapper mode.)
 
 Only relevant when you disable injection (`--no-inject-broker`): the
 container then needs the `flue-broker` binary — either from an image that
-has it (the image built by this repo installs it at
-`/usr/local/bin/flue-broker`) or by installing a copy:
+provides one, or by installing a copy:
 
 ```sh
 flue extract-broker /tmp/flue-broker
@@ -189,8 +190,7 @@ podman cp /tmp/flue-broker <container>:/usr/local/bin/flue-broker
 
 `flue` embeds the `flue-broker` built at the same time (`go:embed`), so
 `extract-broker` writes out a byte-identical copy (mode 0755) — built for
-the same architecture as your `flue`, and identical to the image's own
-broker when `flue` comes from the flue image. Unlike `exec` and `enter`,
+the same architecture as your `flue`. Unlike `exec` and `enter`,
 `extract-broker` needs no agent socket and takes no flags.
 
 `flue broker-sha256` prints the SHA256 of the embedded broker as a bare
@@ -209,9 +209,9 @@ $ sha256sum /usr/local/bin/flue-broker   # from a container or a separate build
 Both binaries carry their build version: `flue version` (or
 `flue --version`) and `flue-broker -version` print it and exit. The
 version is a package variable stamped at link time with
-`-ldflags "-X main.version=<version>"` — the Containerfile stamps it
-from the image tag, the release workflow from the git tag, and a plain
-`go build` leaves it at `dev`.
+`-ldflags "-X main.version=<version>"` — the Containerfile's build
+stage stamps it from the `VERSION` build arg (the release workflow
+passes the release tag), and a plain `go build` leaves it at `dev`.
 
 ## Build
 
@@ -220,7 +220,6 @@ daemon required:
 
 ```bash
 buildah build --isolation chroot --layers --format docker \
-  --build-arg BASE_IMAGE=ghcr.io/snugmo/cote:0.1.0-base \
   --build-arg VERSION=0.1.0 \
   --build-arg REVISION=$(git rev-parse HEAD) \
   --build-arg CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
@@ -229,24 +228,29 @@ buildah build --isolation chroot --layers --format docker \
 buildah push ghcr.io/snugmo/flue:0.1.0
 ```
 
-The base image (the `cote` release at the same tag) must be published
-before building.
+`TARGETARCH` (which architecture's binary the final stage ships)
+defaults to `amd64` — pass `--build-arg TARGETARCH=arm64` for an arm64
+image.
 
-Build order: `flue-broker` is built first, to the `go:embed` path
-`cmd/flue/flue-broker.bin`, because `flue` embeds that binary (compiling
-`flue` fails if the file is missing — a deliberate hard failure).
-The Containerfile then builds `flue` and copies the same broker file to
-the image's `/usr/local/bin/flue-broker`, so a `flue` from the image
-embeds a broker identical to the image's own.
+Build order: for each architecture, `flue-broker` is built first, to
+the `go:embed` path `cmd/flue/flue-broker.bin`, because `flue` embeds
+that binary (compiling `flue` fails if the file is missing — a
+deliberate hard failure), and only then `flue` for that architecture.
+Both architectures are cross-compiled (natively) in one build stage
+pinned to linux/amd64, so a multi-arch build never needs QEMU.
 
 ### Release image
 
 Pushing a `v*` tag publishes `ghcr.io/snugmo/flue:<tag>` (and `:latest`)
-to GHCR: a multi-arch image built on `FROM scratch` with exactly one
-file, the static `flue` binary at `/flue` (the entrypoint), with
-`flue-broker` embedded in it. `Containerfile.release` only copies the
-exact binary the release build attested — no base image, no second
-compilation.
+to GHCR, built from the same `Containerfile` as the local build above:
+the build stage compiles the binary from the tagged source (no QEMU —
+it is pinned to linux/amd64 and cross-compiles for the target
+architecture), and the final stage is a `FROM scratch` with exactly
+one file, the static `flue` binary at `/flue` (the entrypoint), with
+`flue-broker` embedded in it. The image is attested with SLSA build
+provenance and signed (Sigstore keyless), and the release assets are
+the binaries the release build itself built and attested, from the
+same commit with the same flags.
 
 Every release image carries two signed claims, keyed to the image's
 manifest-list digest, so they cover all of its tags:

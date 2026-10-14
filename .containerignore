@@ -1,6 +1,7 @@
 # Local build artifacts: keep them out of the image build context (the
-# Containerfile builds its own copies; cmd/flue/flue-broker.bin is a
-# go:embed source that must be produced by the go-build stage itself).
+# Containerfile's build stage builds its own copies;
+# cmd/flue/flue-broker.bin is a go:embed source that must be produced
+# by that stage itself).
 /flue
 /flue-broker
 /cmd/flue/flue-broker.bin

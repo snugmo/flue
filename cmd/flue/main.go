@@ -143,8 +143,9 @@
 //	flue version
 //
 // The version is a package variable stamped at link time with
-// -ldflags "-X main.version=<version>" (the Containerfile and the
-// release workflow both do this); a plain `go build` reports "dev".
+// -ldflags "-X main.version=<version>" (the Containerfile's build stage
+// does this, for local and release builds alike — the release workflow
+// passes the release tag); a plain `go build` reports "dev".
 //
 // flue also embeds a complete copy of the flue-broker built at the same
 // time (see embed.go): go:embed reads cmd/flue/flue-broker.bin, which the
@@ -239,9 +240,10 @@ var log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: sl
 
 // version is the build version of this flue binary. It is a package
 // variable so the build can stamp it at link time with
-// -ldflags "-X main.version=<version>" (the Containerfile and the
-// release workflow both do this); a plain `go build` leaves it at
-// "dev". Shown by the root --version flag and the version subcommand.
+// -ldflags "-X main.version=<version>" (the Containerfile's build stage
+// does this — the release workflow passes the release tag); a plain
+// `go build` leaves it at "dev". Shown by the root --version flag and
+// the version subcommand.
 var version = "dev"
 
 // versionLine is the one-line version string both the root --version flag

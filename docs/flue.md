@@ -246,9 +246,10 @@ listener.
   half-written. It refuses a directory as target.
 - **Architecture**: the embedded broker is built for the same
   architecture as this flue binary (one source tree, one build). The
-  Containerfile builds the broker to the embed path and copies the same
-  file to `/usr/local/bin/flue-broker`, so a flue from the image extracts
-  a broker identical to the image's own, for the image's architecture.
+  Containerfile's build stage builds the broker to the embed path before
+  each architecture's flue, so a flue from the image embeds a broker
+  built for the image's architecture — the image ships no separate
+  broker, `flue extract-broker` recovers the embedded one.
 
 ## Dependencies
 

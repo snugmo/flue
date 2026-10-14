@@ -15,8 +15,7 @@ proxies each client connection to the real host agent
 cmd/flue/           host side: socketpair control channel, filtered agent proxy
 cmd/flue-broker/    container side: thin listener + one-shot listener-fd handoff
 docs/               on-demand details: flue.md, flue-broker.md, build.md, duplication-policy.md
-Containerfile       two-stage build of the static binaries
-Containerfile.release single stage: ships the attested release binaries (no compile)
+Containerfile       multi-stage image build: golang build stage → FROM scratch final stage (just /flue)
 README.md           usage, flags, how-it-works, security
 ```
 
@@ -26,7 +25,7 @@ README.md           usage, flags, how-it-works, security
 | -------------- | ------- |
 | Build binaries | `go build -o cmd/flue/flue-broker.bin ./cmd/flue-broker && go build -o flue ./cmd/flue && cp cmd/flue/flue-broker.bin flue-broker` |
 | Test           | `go build -o cmd/flue/flue-broker.bin ./cmd/flue-broker && go test ./...` |
-| Build image    | `buildah build --isolation chroot --layers --format docker --build-arg BASE_IMAGE=<cote base> --build-arg VERSION=<tag> -t <image> -f Containerfile .` (see the Containerfile header) |
+| Build image    | `buildah build --isolation chroot --layers --format docker --build-arg VERSION=<tag> -t <image> -f Containerfile .` (see the Containerfile header; `--build-arg TARGETARCH=<arch>` for arm64) |
 | Forward agent  | `flue exec -- podman exec --preserve-fds 1 -e SSH_AUTH_SOCK=/tmp/flue.sock <container> flue-broker -sock /tmp/flue.sock` |
 | Enter a shell  | `flue enter [container] [command…]` (defaults: snugmo, `$FLUE_ENTER_CMD` else `/bin/sh`; `-ti` when stdin is a tty; a `--` with no argument before it makes what follows the command in the default container) |
 
@@ -80,7 +79,6 @@ README.md           usage, flags, how-it-works, security
   `flue exec` help text must stay in sync with that rule.
 - **New protocol support** (e.g. GPG agent): extend `agentFilter` or add
   a new command under `cmd/`.
-- **New image variant**: add a Containerfile stage (the release image is
-  `Containerfile.release` — pre-built binaries, no compile; keep its
-  `dist/<arch>` context layout in sync with the Release workflow's
-  `image` job).
+- **New image variant**: add a stage to the `Containerfile` (one
+  Containerfile serves local and release builds; keep it in sync with
+  the Release workflow's `image` job).

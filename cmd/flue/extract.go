@@ -25,8 +25,8 @@ inside the container for a flue from the flue image) and put the result
 where it is needed.
 
 The embedded broker was built for the same architecture as this flue
-binary, so a flue from the flue image extracts a broker identical to the
-image's own /usr/local/bin/flue-broker.
+binary, so a flue from the flue image extracts a broker built for that
+same architecture.
 
 Unlike exec and enter, this subcommand needs no agent socket.`,
 	Args: cobra.ExactArgs(1),
