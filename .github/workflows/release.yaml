@@ -234,15 +234,19 @@ jobs:
       - name: Verify the embedded broker is byte-identical
         env:
           # The runner's own architecture, remapped to a Go/docker arch
-          # name (AMD64/X64->amd64, ARM64->arm64). GitHub's expression
-          # language has no case-folding function, so the remap is an
-          # &&/|| chain over runner.arch. The 'X64' case is not in the
-          # official docs but is what the actual runner images report
-          # (observed: RUNNER_ARCH: X64 on ubuntu-latest); keep both
+          # name (AMD64/X64->amd64, ARM64->arm64). Named FLUE_ARCH, not
+          # RUNNER_ARCH: the runner injects its own RUNNER_ARCH into
+          # every step, and env entries that shadow a runner-reserved
+          # name do not reliably win the environment merge — the step
+          # kept seeing the runner-native value (X64) instead of the
+          # remapped one. GitHub's expression language has no
+          # case-folding function, so the remap is an &&/|| chain over
+          # runner.arch. The 'X64' case is not in the official docs but
+          # is what the actual runner images report; keep both
           # spellings. Any other value (e.g. a 32-bit 'ARM') passes
           # through raw and is used verbatim. No uname/shell needed to
           # detect the arch: the runner reports it.
-          RUNNER_ARCH: ${{ runner.arch == 'AMD64' && 'amd64' || runner.arch == 'X64' && 'amd64' || runner.arch == 'ARM64' && 'arm64' || runner.arch }}
+          FLUE_ARCH: ${{ runner.arch == 'AMD64' && 'amd64' || runner.arch == 'X64' && 'amd64' || runner.arch == 'ARM64' && 'arm64' || runner.arch }}
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
@@ -253,8 +257,8 @@ jobs:
           # consumed. Only the runner-native binary can execute here (no
           # QEMU), so it's the one edge we verify; the other arch holds
           # by the same COPY --from symmetry.
-          ./dist/flue_${tag}_linux_${RUNNER_ARCH} extract-broker /tmp/flue-broker-embedded
-          cmp /tmp/flue-broker-embedded "dist/brokers/${RUNNER_ARCH}/flue-broker"
+          ./dist/flue_${tag}_linux_${FLUE_ARCH} extract-broker /tmp/flue-broker-embedded
+          cmp /tmp/flue-broker-embedded "dist/brokers/${FLUE_ARCH}/flue-broker"
       - name: Attest the amd64 broker
         uses: actions/attest@v4
         with:
