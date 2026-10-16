@@ -425,7 +425,9 @@ func runChild(args []string, sockPath string, ctrl net.Conn, sigc <-chan os.Sign
 		// the child and exit non-zero.
 		log.Warn("flue-broker: host gone")
 		_ = cmd.Process.Kill()
-		<-childDone
+		if err := <-childDone; err != nil {
+			log.Debug("flue-broker: wait after kill", "err", err)
+		}
 		log.Warn("flue-broker: child killed after host departure")
 		return 1
 	case err := <-childDone:
