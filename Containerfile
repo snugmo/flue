@@ -37,13 +37,14 @@
 #     --build-arg VERSION=<tag> \
 #     -t <image> -f Containerfile .
 #
-# The build stage's broker-bundle embed source comes from the build
-# context, not from a stage: a signed cmd/flue/flue-broker.sigstore
-# in the context wins (the release workflow places the platform's
-# cosign-signed bundle there; a local user may sign their own broker
-# first), else the committed placeholder template
-# (cmd/flue/flue-broker.sigstore.placeholder) is copied over — so a
-# bare local build succeeds with the labeled placeholder, and an
+# The build stage's sigstore-bundle embed source (the flue broker
+# sigstore-bundle subcommand's file, cmd/flue/flue-broker.sigstore)
+# comes from the build context, not from a stage: a signed
+# cmd/flue/flue-broker.sigstore in the context wins (the release
+# workflow places the platform's cosign-signed bundle there; a local
+# user may sign their own broker first), else the committed placeholder
+# template (cmd/flue/flue-broker.sigstore.placeholder) is copied over —
+# so a bare local build succeeds with the labeled placeholder, and an
 # unsigned build is never confused with a signed one (see
 # cmd/flue/embed.go).
 #

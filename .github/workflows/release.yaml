@@ -8,8 +8,8 @@
 #     flue-broker stage) are exported, attested, and cosign-signed
 #     (Sigstore keyless) — the signature is embedded in every flue as
 #     the broker's sigstore bundle, so a consumer who recovers a
-#     broker from any flue can verify it offline (flue broker-bundle
-#     + cosign verify-blob --bundle);
+#     broker from any flue can verify it offline (flue broker
+#     sigstore-bundle + cosign verify-blob --bundle);
 #   - the image is pushed to ghcr.io/snugmo/flue, attested with SLSA
 #     build provenance (one attestation per architecture), and signed
 #     (Sigstore keyless);
@@ -358,7 +358,7 @@ jobs:
           # runner-native binary can execute here (no QEMU), so it's the
           # one edge we verify; the other arch holds by the same
           # COPY --from symmetry.
-          ./dist/flue_${tag}_linux_${FLUE_ARCH} extract-broker /tmp/flue-broker-embedded
+          ./dist/flue_${tag}_linux_${FLUE_ARCH} broker executable /tmp/flue-broker-embedded
           cmp /tmp/flue-broker-embedded "dist/brokers/${FLUE_ARCH}/flue-broker"
       - name: Verify the embedded broker bundle is byte-identical
         env:
@@ -371,7 +371,7 @@ jobs:
           # architecture's broker — the one its build stage's context
           # copy embedded. So the extracted broker and its bundle are
           # exactly the signed pair: cosign verify-blob --bundle passes.
-          ./dist/flue_${tag}_linux_${FLUE_ARCH} broker-bundle /tmp/flue-broker-bundle
+          ./dist/flue_${tag}_linux_${FLUE_ARCH} broker sigstore-bundle /tmp/flue-broker-bundle
           cmp /tmp/flue-broker-bundle "dist/brokers/${FLUE_ARCH}/flue-broker.sigstore"
       - name: Attest the amd64 broker
         uses: actions/attest@v4
