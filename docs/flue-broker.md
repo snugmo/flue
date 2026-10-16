@@ -26,7 +26,9 @@ connections. The file header in `main.go` is the authoritative overview.
   generated instead, so pin `-sock` for standalone mode.
 - Names itself `flue-broker` (`PR_SET_NAME` at startup, so `ps` and
   `/proc/<pid>/comm` show it that way) — this is what makes an injected
-  broker, exec'd from the memfd as `/proc/self/fd/4`, readable in `ps`.
+  broker, exec'd from the memfd as `/proc/self/fd/4`, readable in `ps`
+  (the host side of that injection is in
+  [embedded-broker.md](embedded-broker.md)).
 - **Socket path**: when `-sock` is unset (or empty), the broker
   generates `flue-<8hex>.sock` under the best available runtime
   directory (`$XDG_RUNTIME_DIR` if set and writable, then

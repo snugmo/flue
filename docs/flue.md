@@ -39,8 +39,9 @@ commands with flags).
     TCGETS ioctl — x/sys v0.49.0 has no `unix.IsTerminal`).
   - **Memfd injection is the default** (`--inject-broker` defaults on):
     instead of the image's `flue-broker`, flue hands the broker in a
-    `memfd` and the container execs it via `/proc/self/fd/4` — see the
-    memfd injection bullet under **Embedded broker**. Disable it with
+    `memfd` and the container execs it via `/proc/self/fd/4` — see
+    [embedded-broker.md](embedded-broker.md) for the mechanics. Disable
+    it with
     `--no-inject-broker`, `--inject-broker=false`, or
     `FLUE_INJECT_BROKER=0` (a set flag wins over the env var). pflag,
     unlike stdlib flag, does not auto-generate `--no-<flag>` forms, so
@@ -51,25 +52,16 @@ commands with flags).
     generates a unique per-session path (XDG_RUNTIME_DIR → /run/user/<uid>
     → /run → /tmp) unless `-sock` is given, and exports it to the wrapped
     command as `SSH_AUTH_SOCK` (see the broker doc).
-- **broker executable** — `flue broker executable <filename>`: writes
-  the embedded `flue-broker` (see Embedded broker below) to
-  `<filename>`, mode 0755, byte-identical to the built broker. It
-  takes no flags.
-- **broker sha256** — `flue broker sha256`: prints the SHA256 of the
-  embedded broker as a bare hex digest — the value `sha256sum` of the
-  file `executable` writes — for comparing against another source. It
-  takes no arguments and no flags.
-- **broker sigstore-bundle** — `flue broker sigstore-bundle
-  <filename>`: writes the embedded broker's sigstore bundle (the
-  second `go:embed` source, see Embedded broker below) to
-  `<filename>`, mode 0644. Paired with `executable`, it makes a
-  recovered broker verifiable offline (`cosign verify-blob <broker>
-  --bundle <bundle>`). It warns — without failing — when the embedded
-  bundle is the local placeholder (a flue built without a signed
-  broker), which cannot verify the broker. It takes no flags.
-
-The `broker` group is declared in `cmd/flue/broker.go`; none of its
-sub-subcommands needs an agent socket.
+- **broker** — the group in `cmd/flue/broker.go` that gets the embedded
+  `flue-broker` (see **Embedded broker** below) out as files:
+  `executable <filename>` writes the binary (mode 0755, byte-identical
+  to the built broker), `sha256` prints the broker's digest as a bare
+  hex digest, and `sigstore-bundle <filename>` writes the signature
+  bundle (mode 0644, warns without failing when it is the local
+  placeholder). None of the sub-subcommands needs an agent socket, and
+  none takes flags. Usage, offline verification of a recovered broker,
+  and the injection that runs the same bytes in memory are in
+  [embedded-broker.md](embedded-broker.md).
 
 The two agent subcommands share the socketpair machinery in
 `runChildWithAgent`, which returns the child's exit code. The root
@@ -230,10 +222,10 @@ listener.
 - `cmd/flue/embed.go` declares `//go:embed flue-broker.bin`: the complete
   `flue-broker` binary built when flue was built. go:embed stores the
   file's bytes verbatim, so the embedded copy is 100% identical to the
-  build source, and `flue broker executable` (below) is how that file
-  comes back out as a file; `flue enter` uses the same bytes, by
-  default, to run the broker entirely in memory (see the memfd
-  injection bullet below).
+  build source, and `flue broker executable` is how that file comes
+  back out as a file; `flue enter` uses the same bytes, by default, to
+  run the broker entirely in memory (see the memfd injection bullet
+  below and [embedded-broker.md](embedded-broker.md)).
 - `cmd/flue/embed.go` also declares `//go:embed flue-broker.sigstore`:
   the broker's sigstore bundle, stored verbatim like the binary. For a
   release `flue` it is the bundle the release workflow's
@@ -245,22 +237,19 @@ listener.
   cmd/flue/flue-broker.sigstore cmd/flue/flue-broker.bin`); for a
   bare local build it is a copy of the committed placeholder
   template, and `broker sigstore-bundle` says so when it writes it out.
-- **Memfd injection** (`cmd/flue/inject.go`): `flue enter` runs the broker
-  entirely in memory by default (`--no-inject-broker` falls back to the
-  image's `flue-broker`). `injectBrokerMemfd` creates a memfd
-  named `flue-broker` with `MFD_EXEC | MFD_CLOEXEC | MFD_ALLOW_SEALING`
-  and writes the embedded bytes into it; the memfd is passed to the
-  container as fd 4 (`--preserve-fds 2`, control socketpair stays on fd 3)
-  and the container execs `/proc/self/fd/4`, so the broker never touches
-  the container's filesystem — it works in a container with no writable
-  filesystem and no `flue-broker` in the image. `MFD_EXEC` (Linux ≥ 6.3)
-  opts the memfd into execution against the `vm.memfd_noexec` sysctl,
-  which otherwise refuses to exec memfd-backed files; on a kernel that
-  does not know the flag (older than 6.3, `EINVAL`) flue falls back to a
-  plain memfd, which such kernels still let processes exec. A system-level
-  refusal — `EACCES`, e.g. `vm.memfd_noexec=2` — is a hard error pointing
-  at `--no-inject-broker` or changing the sysctl. In `/proc/self/fd` the
-  injected broker shows up as `memfd:flue-broker (deleted)`.
+- **Memfd injection** (`cmd/flue/inject.go`): `flue enter` runs the
+  broker entirely in memory by default (`--no-inject-broker` falls back
+  to the image's `flue-broker`). `injectBrokerMemfd` creates a sealed
+  memfd (named `flue-broker`, `MFD_EXEC | MFD_CLOEXEC |
+  MFD_ALLOW_SEALING`, written with the embedded bytes and sealed
+  read-only/fixed-size so a container process cannot rewrite the running
+  broker), passes it to the container as fd 4, and the container execs
+  `/proc/self/fd/4` — the full mechanics, including the `EINVAL`
+  fallback for pre-6.3 kernels (no `MFD_EXEC`) and the hard error on a
+  system-level refusal such as `vm.memfd_noexec=2`, are in
+  [embedded-broker.md](embedded-broker.md). The same doc covers how the
+  injection interacts with the session check (injected = trusted = the
+  check stays on; `--no-inject-broker` = off).
 - **Build order**: both embed sources must exist before flue is
   compiled — build `flue-broker` first, to `cmd/flue/flue-broker.bin`
   (the AGENTS.md Build/Test commands and the Containerfile all do
