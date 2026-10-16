@@ -473,5 +473,5 @@ jobs:
           # annotated; with a lightweight tag (no notes file written)
           # fall back to GitHub's auto-generated notes, which
           # softprops appends while generate_release_notes is on.
-          body-path: ${{ steps.notes.outputs.file }}
+          body_path: ${{ steps.notes.outputs.file }}
           generate_release_notes: ${{ steps.notes.outputs.annotated == 'true' && 'false' || 'true' }}
