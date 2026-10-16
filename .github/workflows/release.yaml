@@ -412,6 +412,30 @@ jobs:
       # Mint the OIDC token cosign's keyless (fulcio) signing needs.
       id-token: write
     steps:
+      # The tag's commit — and, via the fetch in the next step, the
+      # annotated tag's message: the release body comes from the tag.
+      - uses: actions/checkout@v7
+      # The release body is the annotated tag's message (the curated
+      # release notes). GitHub's auto-generated notes (a changelog
+      # link and a commit list) are not a substitute, so softprops'
+      # generate_release_notes stays on only for lightweight tags
+      # that carry no message of their own.
+      - name: Read the tag's release notes
+        id: notes
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          # Make sure the annotated tag object itself is present,
+          # not just the commit it points at (a lightweight tag
+          # fetches only the commit).
+          git fetch origin "refs/tags/${tag}:refs/tags/${tag}" --force
+          if [[ "$(git cat-file -t "refs/tags/${tag}")" == "tag" ]]; then
+            # The tag object is a header (object/type/tag/tagger),
+            # one blank line, then the message: keep the message.
+            git cat-file -p "refs/tags/${tag}" | sed -n '/^$/,$p' | tail -n +2 > release-notes.md
+            echo "file=release-notes.md" >> "${GITHUB_OUTPUT}"
+            echo "annotated=true" >> "${GITHUB_OUTPUT}"
+          fi
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
@@ -445,4 +469,9 @@ jobs:
           files: |
             flue_*
             SHA256SUMS
-          generate_release_notes: true
+          # The body is the tag's curated notes when the tag is
+          # annotated; with a lightweight tag (no notes file written)
+          # fall back to GitHub's auto-generated notes, which
+          # softprops appends while generate_release_notes is on.
+          body-path: ${{ steps.notes.outputs.file }}
+          generate_release_notes: ${{ steps.notes.outputs.annotated == 'true' && 'false' || 'true' }}
