@@ -210,7 +210,7 @@ jobs:
           set -euo pipefail
           for arch in amd64 arm64; do
             mkdir -p "ctx/${arch}"
-            tar --exclude=.git -cf - . | tar -xf - -C "ctx/${arch}"
+            tar --exclude=.git --exclude=ctx -cf - . | tar -xf - -C "ctx/${arch}"
             cp "dist/brokers/${arch}/flue-broker.sigstore" "ctx/${arch}/cmd/flue/flue-broker.sigstore"
           done
       # No QEMU: the Containerfile's golang stages are pinned to
