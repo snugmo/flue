@@ -56,11 +56,12 @@ commands with flags).
   `flue-broker` (see **Embedded broker** below) out as files:
   `executable <filename>` writes the binary (mode 0755, byte-identical
   to the built broker), `sha256` prints the broker's digest as a bare
-  hex digest, and `sigstore-bundle <filename>` writes the signature
-  bundle (mode 0644, warns without failing when it is the local
-  placeholder). None of the sub-subcommands needs an agent socket, and
-  none takes flags. Usage, offline verification of a recovered broker,
-  and the injection that runs the same bytes in memory are in
+  hex digest, and `sigstore-bundle [filename]` writes the signature
+  bundle (mode 0644 — or to stdout with no filename, or `-`) and warns
+  without failing when it is the local placeholder. None of the
+  sub-subcommands needs an agent socket, and none takes flags. Usage,
+  offline verification of a recovered broker, and the injection that
+  runs the same bytes in memory are in
   [embedded-broker.md](embedded-broker.md).
 
 The two agent subcommands share the socketpair machinery in
@@ -264,12 +265,16 @@ listener.
   time, not in a container later), then writes atomically — a temp file
   in the target directory, `chmod 0755`, rename — so the target is
   never left half-written. It refuses a directory as target.
-- **`broker sigstore-bundle`** (`cmd/flue/bundle.go`): writes the
-  embedded bundle (mode 0644) with the same atomic write as `executable`
-  (shared `writeFileAtomic`). It first detects the local placeholder by
-  its JSON `kind` field (`FlueLocalPlaceholder`) and logs a warning that
-  the written bundle will not verify the extracted broker with cosign —
-  the write still happens, so the command stays scriptable.
+- **`broker sigstore-bundle`** (`cmd/flue/bundle.go`): with a
+  filename, writes the embedded bundle with the same atomic write as
+  `executable` (shared `writeFileAtomic`), mode 0644; with no filename
+  (the default) or `-`, writes it to `cmd.OutOrStdout()` instead. Both
+  forms call `warnPlaceholderBundle` first: it detects the local
+  placeholder by its JSON `kind` field (`FlueLocalPlaceholder`) and
+  logs a warning that the bundle will not verify the extracted broker
+  with cosign — the output still happens, so the command stays
+  scriptable, and the warning goes to stderr (or `--log-file`), never
+  into the bundle's destination, so the stdout form stays pipe-clean.
 - **Architecture**: the embedded broker is built for the same
   architecture as this flue binary (one source tree, one build). The
   Containerfile's build stage builds the broker to the embed path before

@@ -120,21 +120,26 @@ $ sha256sum /usr/local/bin/flue-broker   # from a container or a separate build
 8ea5d136dd59…                            # a match means the same broker
 ```
 
-### `flue broker sigstore-bundle <filename>`
+### `flue broker sigstore-bundle [filename]`
 
-Writes the embedded broker's sigstore bundle to `<filename>`, mode 0644
-(`cmd/flue/bundle.go`, the same atomic write as `executable`). It is the
-other half of the pair below: together, the two files let anyone verify a
-recovered broker offline.
+Writes the embedded broker's sigstore bundle out: to `<filename>`,
+mode 0644, when a filename is given (`cmd/flue/bundle.go`, the same
+atomic write as `executable`), and to **stdout** when none is — or when
+it is `-` — so the bundle can be piped or redirected (`flue broker
+sigstore-bundle - > flue-broker.sigstore`). It is the other half of the
+pair below: together, the two files let anyone verify a recovered broker
+offline.
 
 One caveat: a `flue` built without a signed broker (a bare local build)
 carries the committed placeholder template instead of a real bundle.
 `broker sigstore-bundle` detects it by its JSON `kind` field
-(`FlueLocalPlaceholder`) and logs a warning that the written bundle
-cannot verify the extracted broker — the write still happens, so the
-command stays scriptable. A placeholder carries no signature, so cosign
-cannot verify it; it exists so a bare build is labeled as unverifiable
-rather than mistaken for a signed one.
+(`FlueLocalPlaceholder`) and logs a warning that the emitted bundle
+cannot verify the extracted broker — the output still happens (file or
+stdout), so the command stays scriptable, and in the stdout form the
+warning goes to stderr so the bundle itself stays pipe-clean. A
+placeholder carries no signature, so cosign cannot verify it; it exists
+so a bare build is labeled as unverifiable rather than mistaken for a
+signed one.
 
 ## Verifying a recovered broker
 
@@ -142,7 +147,7 @@ The pair is the offline verification recipe:
 
 ```sh
 flue broker executable /tmp/flue-broker
-flue broker sigstore-bundle /tmp/flue-broker.sigstore
+flue broker sigstore-bundle - > /tmp/flue-broker.sigstore   # or: flue broker sigstore-bundle /tmp/flue-broker.sigstore
 cosign verify-blob /tmp/flue-broker --bundle /tmp/flue-broker.sigstore
 ```
 
