@@ -138,19 +138,21 @@
 // flue-broker, an image's /usr/local/bin/flue-broker, another flue's
 // embed — without writing the binary out.
 //
-//	flue broker sigstore-bundle <filename>
+//	flue broker sigstore-bundle [filename]
 //
 // Writes the embedded broker's sigstore bundle back out: the cosign
 // signature, signing certificate, and chain for the embedded
 // flue-broker's bytes, byte-identical to the bundle that was embedded
-// when flue was built. Together with broker executable it is how an
-// extracted broker is verified *offline* with cosign (cosign verify-blob
+// when flue was built. The filename form writes that file (mode 0644);
+// with no filename, or with "-", the bundle goes to stdout. Together
+// with broker executable it is how an extracted broker is verified
+// *offline* with cosign (cosign verify-blob
 // <file> --bundle <bundle> — no registry or network lookup at verify
 // time): in a release build the release workflow signed the broker it
 // built (Sigstore keyless, the identity being the workflow file at the
 // pushed ref); in a local build it is a bundle you signed the broker
 // with, or the placeholder — which broker sigstore-bundle warns about
-// when it writes it, since it carries no signature.
+// when it writes or prints it, since it carries no signature.
 //
 // version — prints the build version (the same one-line string the root
 // --version flag prints):

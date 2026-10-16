@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -137,6 +138,46 @@ func TestCobraBrokerBundle(t *testing.T) {
 	}
 	if !bytes.Equal(got, data) {
 		t.Fatalf("written bytes differ from the embed source (%d vs %d bytes)", len(got), len(data))
+	}
+}
+
+// TestCobraBrokerBundleStdout runs the sub-subcommand through the root
+// command in both stdout forms — an explicit "-" and no filename at all
+// (the default) — and checks the bundle comes out on the command's
+// stdout, byte-identical to the embed source file.
+func TestCobraBrokerBundleStdout(t *testing.T) {
+	data, err := os.ReadFile("flue-broker.sigstore")
+	if err != nil {
+		t.Fatalf("read embed source: %v", err)
+	}
+	for _, args := range [][]string{{}, {"-"}} {
+		t.Run(fmt.Sprintf("%q", args), func(t *testing.T) {
+			buf := &bytes.Buffer{}
+			rootCmd.SetOut(buf)
+			rootCmd.SetErr(buf)
+			rootCmd.SetArgs(append([]string{"broker", "sigstore-bundle"}, args...))
+			t.Cleanup(func() { rootCmd.SetArgs(nil) })
+			if err := rootCmd.Execute(); err != nil {
+				t.Fatalf("Execute([broker sigstore-bundle %v]) = %v", args, err)
+			}
+			if !bytes.Equal(buf.Bytes(), data) {
+				t.Fatalf("stdout bytes differ from the embed source (%d vs %d bytes)", buf.Len(), len(data))
+			}
+		})
+	}
+}
+
+// TestCobraBrokerBundleTooManyArgs verifies the sub-subcommand accepts at
+// most one filename (RangeArgs(0, 1)): two are rejected, not silently
+// ignored.
+func TestCobraBrokerBundleTooManyArgs(t *testing.T) {
+	buf := &bytes.Buffer{}
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"broker", "sigstore-bundle", "a", "b"})
+	t.Cleanup(func() { rootCmd.SetArgs(nil) })
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatal("Execute([broker sigstore-bundle a b]) = nil, want an args error")
 	}
 }
 

@@ -45,7 +45,7 @@ func TestCobraSubcommands(t *testing.T) {
 	for name, wantUse := range map[string]string{
 		"executable":      "executable <filename>",
 		"sha256":          "sha256",
-		"sigstore-bundle": "sigstore-bundle <filename>",
+		"sigstore-bundle": "sigstore-bundle [filename]",
 	} {
 		c, ok := byBroker[name]
 		if !ok {

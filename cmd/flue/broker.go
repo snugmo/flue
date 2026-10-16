@@ -26,11 +26,12 @@ var brokerCmd = &cobra.Command{
 		digest (the value sha256sum of the file executable
 		writes), for comparing against another source.
 
-	flue broker sigstore-bundle <filename>
+	flue broker sigstore-bundle [filename]
 		Writes the embedded broker's sigstore bundle (cosign
 		signature, signing certificate, and chain) to
-		<filename>, mode 0644. Together with executable it is
-		how a recovered broker is verified offline (cosign
+		<filename>, mode 0644 — or to stdout when no filename
+		is given (or it is "-"). Together with executable it
+		is how a recovered broker is verified offline (cosign
 		verify-blob --bundle).
 
 None of these subcommands needs an agent socket.`,
