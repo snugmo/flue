@@ -256,12 +256,12 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
-          digest="$(docker buildx imagetools create \
+          docker buildx imagetools create \
             -t "${IMAGE}:${tag}" -t "${IMAGE}:latest" \
-            "${IMAGE}:${tag}-amd64" "${IMAGE}:${tag}-arm64" \
-            | grep -oE 'sha256:[0-9a-f]{64}' | head -n 1)"
-          if [[ -z "$digest" ]]; then
-            echo "ERROR: imagetools create produced no digest" >&2
+            "${IMAGE}:${tag}-amd64" "${IMAGE}:${tag}-arm64"
+          digest="$(docker buildx imagetools inspect "${IMAGE}:${tag}" --format '{{.Digest}}')"
+          if [[ -z "$digest" || "$digest" == "null" ]]; then
+            echo "ERROR: could not resolve the manifest-list digest for ${IMAGE}:${tag}" >&2
             exit 1
           fi
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
