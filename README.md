@@ -34,9 +34,10 @@ Both binaries are built from source (`cmd/flue-broker/` and `cmd/flue/`)
 and are fully static (no runtime deps). The published image
 (`ghcr.io/snugmo/flue`) is just the `flue` binary at `/flue`, with the
 `flue-broker` built at the same time embedded in it — recoverable via
-`flue extract-broker` — plus the broker's cosign-signed sigstore
-bundle (`flue broker-bundle`), so a recovered broker is verifiable
-offline with `cosign verify-blob --bundle` (see Release image).
+`flue broker executable` — plus the broker's cosign-signed sigstore
+bundle (`flue broker sigstore-bundle`), so a recovered broker is
+verifiable offline with `cosign verify-blob --bundle` (see Release
+image).
 
 > **Field-verified end to end.** The full path has been exercised for real:
 > laptop `ssh-agent` → host workstation → a snugmo container, where
@@ -186,32 +187,34 @@ container then needs the `flue-broker` binary — either from an image that
 provides one, or by installing a copy:
 
 ```sh
-flue extract-broker /tmp/flue-broker
+flue broker executable /tmp/flue-broker
 podman cp /tmp/flue-broker <container>:/usr/local/bin/flue-broker
 ```
 
 `flue` embeds the `flue-broker` built at the same time (`go:embed`), so
-`extract-broker` writes out a byte-identical copy (mode 0755) — built for
-the same architecture as your `flue`. Unlike `exec` and `enter`,
-`extract-broker` needs no agent socket and takes no flags.
+`broker executable` writes out a byte-identical copy (mode 0755) —
+built for the same architecture as your `flue`. Unlike `exec` and
+`enter`, the `broker` subcommands need no agent socket and take no
+flags.
 
-`flue broker-sha256` prints the SHA256 of the embedded broker as a bare
-hex digest — the value `sha256sum` of the extracted binary — so it can be
-compared against another source without writing the binary out:
+`flue broker sha256` prints the SHA256 of the embedded broker as a bare
+hex digest — the value `sha256sum` of the extracted binary — so it can
+be compared against another source without writing the binary out:
 
 ```sh
-$ flue broker-sha256
+$ flue broker sha256
 8ea5d136dd59…
 $ sha256sum /usr/local/bin/flue-broker   # from a container or a separate build
 8ea5d136dd59…                            # a match means the same broker
 ```
 
-`flue broker-bundle` writes the embedded broker's sigstore bundle to a
-file — the other half of the pair, for offline verification:
+`flue broker sigstore-bundle` writes the embedded broker's sigstore
+bundle to a file — the other half of the pair, for offline
+verification:
 
 ```sh
-flue extract-broker /tmp/flue-broker
-flue broker-bundle /tmp/flue-broker.sigstore
+flue broker executable /tmp/flue-broker
+flue broker sigstore-bundle /tmp/flue-broker.sigstore
 cosign verify-blob /tmp/flue-broker --bundle /tmp/flue-broker.sigstore
 ```
 
@@ -222,7 +225,7 @@ certificate's identity with the same
 `--certificate-identity`/`--certificate-oidc-issuer` pair as the
 release signature in the Release image section. A `flue` built
 without a signed broker carries the labeled placeholder bundle
-instead, and `broker-bundle` warns that it cannot verify the
+instead, and `broker sigstore-bundle` warns that it cannot verify the
 extracted broker.
 
 ### Version
@@ -351,11 +354,11 @@ cosign verify-blob "flue_${tag}_linux_amd64" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 
 # 4. The broker embedded in a release flue: recover the signed pair
-#    from the binary itself (extract-broker + broker-bundle) and
-#    verify it offline — the bundle's certificate carries the same
-#    identity as the image signature
-flue_${tag}_linux_amd64 extract-broker /tmp/flue-broker
-flue_${tag}_linux_amd64 broker-bundle /tmp/flue-broker.sigstore
+#    from the binary itself (broker executable + broker
+#    sigstore-bundle) and verify it offline — the bundle's certificate
+#    carries the same identity as the image signature
+flue_${tag}_linux_amd64 broker executable /tmp/flue-broker
+flue_${tag}_linux_amd64 broker sigstore-bundle /tmp/flue-broker.sigstore
 cosign verify-blob /tmp/flue-broker \
   --bundle /tmp/flue-broker.sigstore \
   --certificate-identity "$identity" \

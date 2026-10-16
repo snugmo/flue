@@ -62,7 +62,8 @@ subject that fixed it). Update this file when an item is addressed.
 15. Redundant code: second `<-hostGone`, `_ = n`, dead `dir == ""`,
     `cmd.Env = os.Environ()` — **fixed**. (`keyFingerprintFromBlob` stays:
     it works on a raw blob without parsing a key.)
-16. `extract-broker` does not `fsync` before rename — **fixed**.
+16. `broker executable` (then `extract-broker`) does not `fsync`
+    before rename — **fixed**.
 17. `dialAgent` reads the global `sockPath` — **fixed** (the path travels
     on `agentFilter.sock`; the global remains only as the PreRun→Run
     handoff).

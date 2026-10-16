@@ -6,9 +6,9 @@ agent needs when changing the code.
 
 ## Modes
 
-flue is a cobra CLI with six subcommands; this section covers `exec`,
-`enter`, `extract-broker`, and `broker-bundle`, while `broker-sha256`
-and `version` are informational. The global flags (`--sock`, `--allow-key`,
+flue is a cobra CLI with four subcommands: `exec`, `enter`, `broker`
+(itself the group of the three sub-subcommands below), and `version`
+(informational). The global flags (`--sock`, `--allow-key`,
 `--allow-key-type`, `--log-level`, `--log-file`) are persistent on the
 root and go before the subcommand; a subcommand's arguments follow the
 subcommand name, and a `--` separates them from the target command so the
@@ -51,17 +51,25 @@ commands with flags).
     generates a unique per-session path (XDG_RUNTIME_DIR → /run/user/<uid>
     → /run → /tmp) unless `-sock` is given, and exports it to the wrapped
     command as `SSH_AUTH_SOCK` (see the broker doc).
-- **extract-broker** — `flue extract-broker <filename>`: writes the
-  embedded `flue-broker` (see Embedded broker below) to `<filename>`,
-  mode 0755, byte-identical to the built broker. It takes no flags.
-- **broker-bundle** — `flue broker-bundle <filename>`: writes the
-  embedded broker's sigstore bundle (the second `go:embed` source,
-  see Embedded broker below) to `<filename>`, mode 0644. Paired with
-  `extract-broker`, it makes a recovered broker verifiable offline
-  (`cosign verify-blob <broker> --bundle <bundle>`). It warns —
-  without failing — when the embedded bundle is the local
-  placeholder (a flue built without a signed broker), which cannot
-  verify the broker. It takes no flags.
+- **broker executable** — `flue broker executable <filename>`: writes
+  the embedded `flue-broker` (see Embedded broker below) to
+  `<filename>`, mode 0755, byte-identical to the built broker. It
+  takes no flags.
+- **broker sha256** — `flue broker sha256`: prints the SHA256 of the
+  embedded broker as a bare hex digest — the value `sha256sum` of the
+  file `executable` writes — for comparing against another source. It
+  takes no arguments and no flags.
+- **broker sigstore-bundle** — `flue broker sigstore-bundle
+  <filename>`: writes the embedded broker's sigstore bundle (the
+  second `go:embed` source, see Embedded broker below) to
+  `<filename>`, mode 0644. Paired with `executable`, it makes a
+  recovered broker verifiable offline (`cosign verify-blob <broker>
+  --bundle <bundle>`). It warns — without failing — when the embedded
+  bundle is the local placeholder (a flue built without a signed
+  broker), which cannot verify the broker. It takes no flags.
+
+The `broker` group is declared in `cmd/flue/broker.go`; none of its
+sub-subcommands needs an agent socket.
 
 The two agent subcommands share the socketpair machinery in
 `runChildWithAgent`, which returns the child's exit code. The root
@@ -69,9 +77,9 @@ The two agent subcommands share the socketpair machinery in
 `$FLUE_LOG_LEVEL`, else `info`) and the log destination (a set
 `--log-file`, else stderr) for every subcommand, but
 resolves the agent socket path only for the ones annotated with
-`needsAgentAnnotation` (`exec`, `enter`) — so `extract-broker` runs
-without `SSH_AUTH_SOCK` being set. A bare `flue` (no subcommand) is a
-usage error.
+`needsAgentAnnotation` (`exec`, `enter`) — so the `broker`
+sub-subcommands run without `SSH_AUTH_SOCK` being set. A bare `flue`
+(no subcommand) is a usage error.
 
 ## Control channel
 
@@ -222,9 +230,10 @@ listener.
 - `cmd/flue/embed.go` declares `//go:embed flue-broker.bin`: the complete
   `flue-broker` binary built when flue was built. go:embed stores the
   file's bytes verbatim, so the embedded copy is 100% identical to the
-  build source, and `flue extract-broker` (below) is how that file comes
-  back out as a file; `flue enter` uses the same bytes, by default, to
-  run the broker entirely in memory (see the memfd injection bullet below).
+  build source, and `flue broker executable` (below) is how that file
+  comes back out as a file; `flue enter` uses the same bytes, by
+  default, to run the broker entirely in memory (see the memfd
+  injection bullet below).
 - `cmd/flue/embed.go` also declares `//go:embed flue-broker.sigstore`:
   the broker's sigstore bundle, stored verbatim like the binary. For a
   release `flue` it is the bundle the release workflow's
@@ -235,7 +244,7 @@ listener.
   user signed with (`cosign sign-blob --key <key> --bundle
   cmd/flue/flue-broker.sigstore cmd/flue/flue-broker.bin`); for a
   bare local build it is a copy of the committed placeholder
-  template, and `broker-bundle` says so when it writes it out.
+  template, and `broker sigstore-bundle` says so when it writes it out.
 - **Memfd injection** (`cmd/flue/inject.go`): `flue enter` runs the broker
   entirely in memory by default (`--no-inject-broker` falls back to the
   image's `flue-broker`). `injectBrokerMemfd` creates a memfd
@@ -261,23 +270,23 @@ listener.
   compiling `cmd/flue` fails with "no matching files found": a
   deliberate hard failure, so a flue without its broker (or its
   bundle) is never built silently.
-- **`extract-broker`** (`cmd/flue/extract.go`): checks the embedded blob's
-  ELF magic first (a non-broker embed source fails at extraction time, not
-  in a container later), then writes atomically — a temp file in the
-  target directory, `chmod 0755`, rename — so the target is never left
-  half-written. It refuses a directory as target.
-- **`broker-bundle`** (`cmd/flue/bundle.go`): writes the embedded bundle
-  (mode 0644) with the same atomic write as `extract-broker` (shared
-  `writeFileAtomic`). It first detects the local placeholder by its
-  JSON `kind` field (`FlueLocalPlaceholder`) and logs a warning that
-  the written bundle will not verify the extracted broker with cosign
-  — the write still happens, so the command stays scriptable.
+- **`broker executable`** (`cmd/flue/extract.go`): checks the embedded
+  blob's ELF magic first (a non-broker embed source fails at extraction
+  time, not in a container later), then writes atomically — a temp file
+  in the target directory, `chmod 0755`, rename — so the target is
+  never left half-written. It refuses a directory as target.
+- **`broker sigstore-bundle`** (`cmd/flue/bundle.go`): writes the
+  embedded bundle (mode 0644) with the same atomic write as `executable`
+  (shared `writeFileAtomic`). It first detects the local placeholder by
+  its JSON `kind` field (`FlueLocalPlaceholder`) and logs a warning that
+  the written bundle will not verify the extracted broker with cosign —
+  the write still happens, so the command stays scriptable.
 - **Architecture**: the embedded broker is built for the same
   architecture as this flue binary (one source tree, one build). The
   Containerfile's build stage builds the broker to the embed path before
   each architecture's flue, so a flue from the image embeds a broker
   built for the image's architecture — the image ships no separate
-  broker, `flue extract-broker` recovers the embedded one.
+  broker, `flue broker executable` recovers the embedded one.
 
 ## Dependencies
 

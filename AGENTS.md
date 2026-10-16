@@ -23,7 +23,7 @@ README.md           usage, flags, how-it-works, security
 
 | Task           | Command |
 | -------------- | ------- |
-| Build binaries | `go build -o cmd/flue/flue-broker.bin ./cmd/flue-broker && (test -f cmd/flue/flue-broker.sigstore || cp cmd/flue/flue-broker.sigstore.placeholder cmd/flue/flue-broker.sigstore) && go build -o flue ./cmd/flue && cp cmd/flue/flue-broker.bin flue-broker` (the parenthesized step places the placeholder broker-bundle embed source unless a signed one is already there — see the embed bullet below) |
+| Build binaries | `go build -o cmd/flue/flue-broker.bin ./cmd/flue-broker && (test -f cmd/flue/flue-broker.sigstore || cp cmd/flue/flue-broker.sigstore.placeholder cmd/flue/flue-broker.sigstore) && go build -o flue ./cmd/flue && cp cmd/flue/flue-broker.bin flue-broker` (the parenthesized step places the placeholder sigstore-bundle embed source unless a signed one is already there — see the embed bullet below) |
 | Test           | `go build -o cmd/flue/flue-broker.bin ./cmd/flue-broker && (test -f cmd/flue/flue-broker.sigstore || cp cmd/flue/flue-broker.sigstore.placeholder cmd/flue/flue-broker.sigstore) && go test ./...` |
 | Build image    | `buildah build --isolation chroot --layers --format docker --build-arg VERSION=<tag> -t <image> -f Containerfile .` (see the Containerfile header; the image is the host's architecture by default, or `--platform linux/<arch>` for another — never `TARGETOS`/`TARGETARCH` build-args: they would override the per-platform builtins for every platform) |
 | Forward agent  | `flue exec -- podman exec --preserve-fds 1 -e SSH_AUTH_SOCK=/tmp/flue.sock <container> flue-broker -sock /tmp/flue.sock` |
@@ -57,8 +57,9 @@ README.md           usage, flags, how-it-works, security
   (the Build/Test commands do this when no bundle is present). If either
   file is missing, compiling `cmd/flue` fails with "no matching files
   found" — a deliberate hard failure. The embedded bytes are stored
-  verbatim, so `flue extract-broker` / `flue broker-bundle` produce a
-  broker and its bundle 100% identical to the build sources, and an
+  verbatim, so `flue broker executable` / `flue broker sigstore-bundle`
+  produce a broker and its bundle 100% identical to the build sources,
+  and an
   extracted broker is verifiable offline with
   `cosign verify-blob --bundle` (the release bundle's identity is the
   release workflow — see the README's verify section). The `.sigstore`

@@ -91,7 +91,7 @@ chain once per platform):
   a static binary needs no libc, no runtime, no shell. The
   `flue-broker` is not a separate file in the image — it is embedded in
   `flue` (along with its sigstore bundle), recoverable via
-  `flue extract-broker` and `flue broker-bundle`.
+  `flue broker executable` and `flue broker sigstore-bundle`.
 
 ## Release image (Release workflow)
 
@@ -131,8 +131,9 @@ The `image` job:
   manifest-list digest and copies the `/flue` file out — a
   downloaded binary is byte-identical to the one that was pushed,
   signed, and attested — and cross-checks both embedded pairs
-  byte-for-byte: an `extract-broker` run against the exported broker,
-  and a `broker-bundle` run against the signed bundle;
+  byte-for-byte: a `broker executable` run against the exported
+  broker, and a `broker sigstore-bundle` run against the signed
+  bundle;
 - attests the two `flue-broker` files (a `subject-path` attestation
   each) — the same files the flue build stage's `COPY --from`
   consumed as the `go:embed` sources, so the attested broker is the
