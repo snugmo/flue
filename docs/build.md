@@ -14,7 +14,7 @@ buildah build --isolation chroot --layers --format docker \
 buildah push ghcr.io/snugmo/flue:<tag>
 ```
 
-- The tag is the version with the leading `v` stripped (e.g. `0.1.0`),
+- The tag is the version with the leading `v` stripped (e.g. `0.2.0`),
   so the image ref is `ghcr.io/snugmo/flue:<tag>` (a custom registry
   works the same way — adjust the image reference).
 - No platform `--build-arg`s in the command: the Containerfile
