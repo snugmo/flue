@@ -16,7 +16,7 @@ import (
 
 // TestInjectBrokerMemfdContent verifies that injectBrokerMemfd produces a memfd
 // whose bytes are identical to the embedded flue-broker (the same guarantee as
-// extract-broker), and that it is a real memfd carrying the expected name.
+// broker executable), and that it is a real memfd carrying the expected name.
 func TestInjectBrokerMemfdContent(t *testing.T) {
 	if !looksLikeELF(flueBrokerBin) {
 		t.Skip("embedded broker is not an ELF (build flue-broker first)")

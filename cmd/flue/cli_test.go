@@ -11,22 +11,21 @@ import (
 )
 
 // TestCobraSubcommands guards the CLI surface: every subcommand must be
-// registered on the root with its expected name and use-line. This
-// catches accidental renames (e.g. dropping a subcommand or retyping a
-// use-line) that the pure-function tests (enterTarget, enterExecArgs) do
-// not cover.
+// registered on the root with its expected name and use-line, and the
+// broker group must carry its three sub-subcommands. This catches
+// accidental renames (e.g. dropping a subcommand or retyping a use-line)
+// that the pure-function tests (enterTarget, enterExecArgs) do not
+// cover.
 func TestCobraSubcommands(t *testing.T) {
 	byName := map[string]*cobra.Command{}
 	for _, c := range rootCmd.Commands() {
 		byName[c.Name()] = c
 	}
 	for name, wantUse := range map[string]string{
-		"exec":           "exec [command [args...]]",
-		"enter":          "enter [container] [command [args...]]",
-		"extract-broker": "extract-broker <filename>",
-		"broker-bundle":  "broker-bundle <filename>",
-		"broker-sha256":  "broker-sha256",
-		"version":        "version",
+		"exec":    "exec [command [args...]]",
+		"enter":   "enter [container] [command [args...]]",
+		"broker":  "broker",
+		"version": "version",
 	} {
 		c, ok := byName[name]
 		if !ok {
@@ -34,6 +33,26 @@ func TestCobraSubcommands(t *testing.T) {
 		}
 		if c.Use != wantUse {
 			t.Errorf("subcommand %q: Use = %q, want %q", name, c.Use, wantUse)
+		}
+	}
+	if brokerCmd != byName["broker"] {
+		t.Fatal("the broker subcommand registered on the root is not brokerCmd")
+	}
+	byBroker := map[string]*cobra.Command{}
+	for _, c := range brokerCmd.Commands() {
+		byBroker[c.Name()] = c
+	}
+	for name, wantUse := range map[string]string{
+		"executable":      "executable <filename>",
+		"sha256":          "sha256",
+		"sigstore-bundle": "sigstore-bundle <filename>",
+	} {
+		c, ok := byBroker[name]
+		if !ok {
+			t.Fatalf("sub-subcommand %q not registered on the broker group", name)
+		}
+		if c.Use != wantUse {
+			t.Errorf("sub-subcommand %q: Use = %q, want %q", name, c.Use, wantUse)
 		}
 	}
 }
@@ -61,9 +80,9 @@ func TestCobraVersion(t *testing.T) {
 	}
 }
 
-// TestCobraBrokerSha256 runs the broker-sha256 subcommand and checks the
-// printed line: it must be the hex SHA256 of the embed source file — the
-// value `sha256sum` of any binary identical to the embedded broker.
+// TestCobraBrokerSha256 runs the broker sha256 sub-subcommand and checks
+// the printed line: it must be the hex SHA256 of the embed source file —
+// the value `sha256sum` of any binary identical to the embedded broker.
 func TestCobraBrokerSha256(t *testing.T) {
 	data, err := os.ReadFile("flue-broker.bin")
 	if err != nil {
@@ -76,10 +95,10 @@ func TestCobraBrokerSha256(t *testing.T) {
 	// PersistentPreRun does not require an agent socket.
 	rootCmd.SetOut(buf)
 	rootCmd.SetErr(buf)
-	rootCmd.SetArgs([]string{"broker-sha256"})
+	rootCmd.SetArgs([]string{"broker", "sha256"})
 	t.Cleanup(func() { rootCmd.SetArgs(nil) })
 	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("Execute([broker-sha256]) = %v", err)
+		t.Fatalf("Execute([broker sha256]) = %v", err)
 	}
 	if got := buf.String(); got != want {
 		t.Errorf("output = %q, want %q", got, want)

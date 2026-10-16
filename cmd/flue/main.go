@@ -68,7 +68,8 @@
 // enter, --session-check=required|advisory|off overrides the choice (an
 // explicit choice is logged at info; the default at handover).
 //
-// flue is a cobra CLI with six subcommands. The global flags (--sock,
+// flue is a cobra CLI with four subcommands: exec, enter, broker (which
+// itself has three sub-subcommands), and version. The global flags (--sock,
 // --allow-key, --allow-key-type, --log-level, --log-file) are
 // persistent: place them before the subcommand. The subcommand's
 // arguments follow the subcommand name, and a --
@@ -118,40 +119,38 @@
 // XDG_RUNTIME_DIR, else /run/user/<uid>, else /run, else /tmp) and is
 // exported to the wrapped command as SSH_AUTH_SOCK.
 //
-// extract-broker — writes the embedded broker back out:
+// broker — the group that exposes the embedded flue-broker (see
+// embed.go), with three sub-subcommands, none of which needs an agent
+// socket (the root PersistentPreRun resolves the agent socket only for
+// the subcommands that proxy it, exec and enter):
 //
-//	flue extract-broker <filename>
+//	flue broker executable <filename>
 //
-// The result is a byte-identical copy of the built flue-broker (mode
-// 0755). It needs no agent socket: the root PersistentPreRun resolves
-// the agent socket only for the subcommands that proxy it (exec, enter).
+// Writes the embedded broker back out: the result is a byte-identical
+// copy of the built flue-broker (mode 0755).
 //
-// broker-bundle — writes the embedded broker's sigstore bundle back out
-// (see embed.go): the cosign signature, signing certificate, and chain
-// for the embedded flue-broker's bytes, byte-identical to the bundle
-// that was embedded when flue was built:
+//	flue broker sha256
 //
-//	flue broker-bundle <filename>
+// Prints the SHA256 of the embedded flue-broker (the same bytes broker
+// executable writes) as a bare hex digest. That is the value `sha256sum`
+// of the extracted (or release tarball's) flue-broker, so the embedded
+// broker can be compared against any other source — a separately built
+// flue-broker, an image's /usr/local/bin/flue-broker, another flue's
+// embed — without writing the binary out.
 //
-// Together with extract-broker it is how an extracted broker is verified
-// *offline* with cosign (cosign verify-blob <file> --bundle <bundle> —
-// no registry or network lookup at verify time): in a release build the
-// release workflow signed the broker it built (Sigstore keyless, the
-// identity being the workflow file at the pushed ref); in a local build
-// it is a bundle you signed the broker with, or the placeholder — which
-// broker-bundle warns about when it writes it, since it carries no
-// signature. Like extract-broker it needs no agent socket.
+//	flue broker sigstore-bundle <filename>
 //
-// broker-sha256 — prints the SHA256 of the embedded flue-broker (the
-// same bytes extract-broker writes) as a bare hex digest:
-//
-//	flue broker-sha256
-//
-// That is the value `sha256sum` of the extracted (or release tarball's)
-// flue-broker, so the embedded broker can be compared against any other
-// source — a separately built flue-broker, an image's
-// /usr/local/bin/flue-broker, another flue's embed — without writing the
-// binary out. Like extract-broker it needs no agent socket.
+// Writes the embedded broker's sigstore bundle back out: the cosign
+// signature, signing certificate, and chain for the embedded
+// flue-broker's bytes, byte-identical to the bundle that was embedded
+// when flue was built. Together with broker executable it is how an
+// extracted broker is verified *offline* with cosign (cosign verify-blob
+// <file> --bundle <bundle> — no registry or network lookup at verify
+// time): in a release build the release workflow signed the broker it
+// built (Sigstore keyless, the identity being the workflow file at the
+// pushed ref); in a local build it is a bundle you signed the broker
+// with, or the placeholder — which broker sigstore-bundle warns about
+// when it writes it, since it carries no signature.
 //
 // version — prints the build version (the same one-line string the root
 // --version flag prints):
@@ -175,7 +174,7 @@
 // signed local build, or the committed placeholder template in an
 // unsigned local build. So a flue extracted from anywhere — the image,
 // a release asset, a local build — carries its broker and the means to
-// verify it offline (broker-bundle, above).
+// verify it offline (broker sigstore-bundle, above).
 package main
 
 import (
@@ -295,7 +294,7 @@ separates them from the target command, so the target command's own flags
 are passed through verbatim.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// No subcommand given: the classic usage-error case.
-		fmt.Fprintln(os.Stderr, `flue: missing subcommand (want "exec", "enter", "extract-broker", "broker-bundle", "broker-sha256", or "version")`)
+		fmt.Fprintln(os.Stderr, `flue: missing subcommand (want "exec", "enter", "broker", or "version")`)
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, cmd.Root().UsageString())
 		os.Exit(1)
@@ -304,8 +303,8 @@ are passed through verbatim.`,
 
 // needsAgentAnnotation marks the subcommands that proxy the host agent.
 // The root PersistentPreRun resolves the agent socket only for annotated
-// commands, so a subcommand that does not need an agent (extract-broker)
-// runs without SSH_AUTH_SOCK being set.
+// commands, so a subcommand that does not need an agent (the broker
+// sub-subcommands) runs without SSH_AUTH_SOCK being set.
 const needsAgentAnnotation = "flue/needs-agent"
 
 // execCmd is the passthrough form: it runs the given command (after --),
@@ -445,7 +444,8 @@ func init() {
 			}
 		}
 	}
-	rootCmd.AddCommand(execCmd, enterCmd, extractCmd, brokerBundleCmd, brokerSha256Cmd, versionCmd)
+	brokerCmd.AddCommand(brokerExecutableCmd, brokerSha256Cmd, brokerBundleCmd)
+	rootCmd.AddCommand(execCmd, enterCmd, brokerCmd, versionCmd)
 }
 
 // parseLevel maps a --log-level flag value to a slog.Level.

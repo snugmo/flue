@@ -11,13 +11,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// extractCmd is the extract-broker subcommand: it writes the flue-broker
-// binary embedded in flue (see embed.go) to a file, byte-identical to the
-// flue-broker that was built when flue was built.
-var extractCmd = &cobra.Command{
-	Use:   "extract-broker <filename>",
+// brokerExecutableCmd is the broker executable subcommand
+// (flue broker executable): it writes the flue-broker binary embedded in
+// flue (see embed.go) to a file, byte-identical to the flue-broker that
+// was built when flue was built.
+var brokerExecutableCmd = &cobra.Command{
+	Use:   "executable <filename>",
 	Short: "Write the embedded flue-broker binary to a file",
-	Long: `extract-broker writes the flue-broker binary embedded in this flue
+	Long: `executable writes the flue-broker binary embedded in this flue
 binary to <filename>, mode 0755, byte-identical to the flue-broker that
 was built when flue was built. It is how flue can place a broker in a
 container whose image does not provide one: extract (on the host, or
@@ -32,29 +33,30 @@ Unlike exec and enter, this subcommand needs no agent socket.`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		if err := writeEmbeddedBroker(args[0]); err != nil {
-			fatalf("flue: extract-broker: %v", err)
+			fatalf("flue: broker executable: %v", err)
 		}
 	},
 }
 
-// brokerSha256Cmd is the broker-sha256 subcommand: it prints the SHA256
-// of the embedded flue-broker (the same bytes extract-broker writes) as a
-// bare hex digest — the value `sha256sum` of the extracted binary — so the
-// embedded broker can be compared against any other source (a separately
-// built flue-broker, an image's /usr/local/bin/flue-broker, another
-// flue's embed) without writing the binary out. Like extract-broker it
-// needs no agent socket.
+// brokerSha256Cmd is the broker sha256 subcommand
+// (flue broker sha256): it prints the SHA256 of the embedded flue-broker
+// (the same bytes broker executable writes) as a bare hex digest — the
+// value `sha256sum` of the extracted binary — so the embedded broker can
+// be compared against any other source (a separately built flue-broker,
+// an image's /usr/local/bin/flue-broker, another flue's embed) without
+// writing the binary out. Like the other broker subcommands it needs no
+// agent socket.
 var brokerSha256Cmd = &cobra.Command{
-	Use:   "broker-sha256",
+	Use:   "sha256",
 	Short: "Print the SHA256 of the embedded flue-broker",
 	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		sum, err := embeddedBrokerSha256()
 		if err != nil {
-			fatalf("flue: broker-sha256: %v", err)
+			fatalf("flue: broker sha256: %v", err)
 		}
 		if _, err := fmt.Fprintln(cmd.OutOrStdout(), sum); err != nil {
-			fatalf("flue: broker-sha256: %v", err)
+			fatalf("flue: broker sha256: %v", err)
 		}
 	},
 }
@@ -93,8 +95,8 @@ func writeEmbeddedBroker(path string) error {
 // final mode is set on the temp file before it becomes the target
 // (for the broker that is the executable bit, set before the rename).
 // It refuses a target that is a directory and fails if the target
-// directory does not exist. Shared by the extract-broker (0755) and
-// broker-bundle (0644) writes.
+// directory does not exist. Shared by the broker executable (0755) and
+// broker sigstore-bundle (0644) writes.
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path) // "." for a bare filename, never ""
 	st, err := os.Stat(dir)

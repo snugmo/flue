@@ -7,7 +7,7 @@ import (
 // flueBrokerBin is the full flue-broker binary, embedded verbatim (by the
 // embed directive below) from the build-time file cmd/flue/flue-broker.bin.
 // It lets flue hand a container-side broker to a container whose image does
-// not provide one (extract-broker, see extract.go).
+// not provide one (flue broker executable, see extract.go).
 //
 // Identity: go:embed stores the file's bytes untransformed, so the embedded
 // copy is 100% identical to the flue-broker that was built as its source.
@@ -62,9 +62,9 @@ var flueBrokerBin []byte
 //     the embed path — by the host Build/Test commands in AGENTS.md and
 //     by the Containerfile's build stage (a cp -n fallback) — so a
 //     plain local build never fails on the missing file. The
-//     placeholder is clearly labeled as such: flue broker-bundle warns
-//     when it writes one, and cosign cannot verify it (it carries no
-//     signature).
+//     placeholder is clearly labeled as such: flue broker sigstore-bundle
+//     warns when it writes one, and cosign cannot verify it (it carries
+//     no signature).
 //
 // If the file is missing at compile time, the build fails with "no
 // matching files found" — the same deliberate hard failure as the

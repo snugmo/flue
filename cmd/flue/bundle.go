@@ -6,17 +6,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// brokerBundleCmd is the broker-bundle subcommand: it writes the sigstore
-// bundle embedded in flue (see embed.go) to a file, byte-identical to the
-// bundle that was embedded when flue was built. Together with
-// extract-broker it is how an extracted broker is verified offline with
-// cosign: the bundle carries the cosign signature, signing certificate,
-// and chain for the broker's bytes — no registry or network lookup needed
-// at verify time.
+// brokerBundleCmd is the broker sigstore-bundle subcommand
+// (flue broker sigstore-bundle): it writes the sigstore bundle embedded
+// in flue (see embed.go) to a file, byte-identical to the bundle that
+// was embedded when flue was built. Together with broker executable it
+// is how an extracted broker is verified offline with cosign: the bundle
+// carries the cosign signature, signing certificate, and chain for the
+// broker's bytes — no registry or network lookup needed at verify time.
 var brokerBundleCmd = &cobra.Command{
-	Use:   "broker-bundle <filename>",
+	Use:   "sigstore-bundle <filename>",
 	Short: "Write the embedded flue-broker sigstore bundle to a file",
-	Long: `broker-bundle writes the sigstore bundle embedded in this flue
+	Long: `sigstore-bundle writes the sigstore bundle embedded in this flue
 binary to <filename>, mode 0644, byte-identical to the bundle that was
 embedded when flue was built.
 
@@ -29,8 +29,8 @@ with (any cosign key, or keyless where supported) or the placeholder
 (see below). Extracted together with the broker, the pair verifies
 offline:
 
-	flue extract-broker ./flue-broker
-	flue broker-bundle ./flue-broker.sigstore
+	flue broker executable ./flue-broker
+	flue broker sigstore-bundle ./flue-broker.sigstore
 	cosign verify-blob ./flue-broker --bundle ./flue-broker.sigstore \
 	  --certificate-identity "<identity>" \
 	  --certificate-oidc-issuer "<issuer>"
@@ -43,13 +43,13 @@ pass --key <your public key> instead of the identity flags.
 When the embedded bundle is the placeholder — a flue built outside the
 release workflow without signing the broker first — a warning is
 printed: the written bundle carries no signature and cannot verify the
-broker extract-broker writes.
+broker broker executable writes.
 
 Unlike exec and enter, this subcommand needs no agent socket.`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		if err := writeEmbeddedBundle(args[0]); err != nil {
-			fatalf("flue: broker-bundle: %v", err)
+			fatalf("flue: broker sigstore-bundle: %v", err)
 		}
 	},
 }
@@ -83,7 +83,7 @@ func isPlaceholderBundle(b []byte) bool {
 // bundle is the placeholder (a flue built without a release or
 // self-signed broker signature) a warning is logged first: the written
 // bundle carries no signature and will not verify the broker
-// extract-broker writes.
+// broker executable writes.
 func writeEmbeddedBundle(path string) error {
 	if isPlaceholderBundle(flueBrokerBundle) {
 		log.Warn("flue: the embedded broker bundle is the local placeholder (no release or self-signed broker signature): the written bundle will not verify the extracted broker with cosign")

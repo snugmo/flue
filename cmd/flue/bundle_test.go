@@ -8,7 +8,7 @@ import (
 )
 
 // TestBrokerBundleRoundTrip verifies the core guarantee: the file written
-// by broker-bundle is byte-identical to the embed source on disk
+// by broker sigstore-bundle is byte-identical to the embed source on disk
 // (cmd/flue/flue-broker.sigstore), and is a regular non-executable file
 // (mode 0644).
 func TestBrokerBundleRoundTrip(t *testing.T) {
@@ -113,10 +113,10 @@ func TestIsPlaceholderBundle(t *testing.T) {
 	}
 }
 
-// TestCobraBrokerBundle runs the broker-bundle subcommand through the
-// root command and checks the written file: it must be byte-identical to
-// the embed source file. The subcommand carries no needs-agent
-// annotation, so executing it needs no agent socket.
+// TestCobraBrokerBundle runs the broker sigstore-bundle sub-subcommand
+// through the root command and checks the written file: it must be
+// byte-identical to the embed source file. The subcommand carries no
+// needs-agent annotation, so executing it needs no agent socket.
 func TestCobraBrokerBundle(t *testing.T) {
 	data, err := os.ReadFile("flue-broker.sigstore")
 	if err != nil {
@@ -126,10 +126,10 @@ func TestCobraBrokerBundle(t *testing.T) {
 	buf := &bytes.Buffer{}
 	rootCmd.SetOut(buf)
 	rootCmd.SetErr(buf)
-	rootCmd.SetArgs([]string{"broker-bundle", path})
+	rootCmd.SetArgs([]string{"broker", "sigstore-bundle", path})
 	t.Cleanup(func() { rootCmd.SetArgs(nil) })
 	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("Execute([broker-bundle]) = %v", err)
+		t.Fatalf("Execute([broker sigstore-bundle]) = %v", err)
 	}
 	got, err := os.ReadFile(path)
 	if err != nil {
@@ -140,18 +140,18 @@ func TestCobraBrokerBundle(t *testing.T) {
 	}
 }
 
-// TestNeedsAgentAnnotations includes broker-bundle: like extract-broker,
-// it works without SSH_AUTH_SOCK being set (the root PersistentPreRun
-// must not resolve the agent socket for it).
+// TestBrokerBundleNoAgentAnnotation includes broker sigstore-bundle: like
+// broker executable, it works without SSH_AUTH_SOCK being set (the root
+// PersistentPreRun must not resolve the agent socket for it).
 func TestBrokerBundleNoAgentAnnotation(t *testing.T) {
 	if brokerBundleCmd.Annotations[needsAgentAnnotation] != "" {
-		t.Error("broker-bundle must not be annotated as needing the agent socket")
+		t.Error("broker sigstore-bundle must not be annotated as needing the agent socket")
 	}
 }
 
 // TestBrokerBundlePreRunWithoutAgent verifies the root PersistentPreRun
-// does not require an agent socket for broker-bundle (a regression here
-// would os.Exit in fatalf and fail the test binary).
+// does not require an agent socket for broker sigstore-bundle (a
+// regression here would os.Exit in fatalf and fail the test binary).
 func TestBrokerBundlePreRunWithoutAgent(t *testing.T) {
 	old, had := os.LookupEnv("SSH_AUTH_SOCK")
 	os.Unsetenv("SSH_AUTH_SOCK")

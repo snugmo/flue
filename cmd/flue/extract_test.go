@@ -10,7 +10,7 @@ import (
 )
 
 // TestExtractBrokerRoundTrip verifies the core guarantee: the file
-// written by extract-broker is byte-identical to the embed source on
+// written by broker executable is byte-identical to the embed source on
 // disk (cmd/flue/flue-broker.bin — the built flue-broker), and is
 // executable (mode 0755).
 func TestExtractBrokerRoundTrip(t *testing.T) {
@@ -118,21 +118,21 @@ func TestEmbeddedBrokerIsELF(t *testing.T) {
 
 // TestNeedsAgentAnnotations guards which subcommands make the root
 // PersistentPreRun resolve the agent socket: exec and enter must,
-// extract-broker must not (it works without SSH_AUTH_SOCK).
+// the broker sub-subcommands must not (they work without SSH_AUTH_SOCK).
 func TestNeedsAgentAnnotations(t *testing.T) {
 	for _, c := range []*cobra.Command{execCmd, enterCmd} {
 		if c.Annotations[needsAgentAnnotation] == "" {
 			t.Errorf("subcommand %q is missing the needs-agent annotation", c.Name())
 		}
 	}
-	if extractCmd.Annotations[needsAgentAnnotation] != "" {
-		t.Error("extract-broker must not be annotated as needing the agent socket")
+	if brokerExecutableCmd.Annotations[needsAgentAnnotation] != "" {
+		t.Error("broker executable must not be annotated as needing the agent socket")
 	}
 }
 
 // TestExtractBrokerPreRunWithoutAgent verifies the root PersistentPreRun
-// does not require an agent socket for extract-broker (a regression here
-// would os.Exit in fatalf and fail the test binary).
+// does not require an agent socket for broker executable (a regression
+// here would os.Exit in fatalf and fail the test binary).
 func TestExtractBrokerPreRunWithoutAgent(t *testing.T) {
 	old, had := os.LookupEnv("SSH_AUTH_SOCK")
 	os.Unsetenv("SSH_AUTH_SOCK")
@@ -142,5 +142,5 @@ func TestExtractBrokerPreRunWithoutAgent(t *testing.T) {
 		}
 	})
 	sockArg = ""
-	rootCmd.PersistentPreRun(extractCmd, nil)
+	rootCmd.PersistentPreRun(brokerExecutableCmd, nil)
 }
