@@ -148,7 +148,7 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@v4.1.2
         with:
-          cosign-release: v3.0.6
+          cosign-release: v3.1.2
       # The brokers are not release assets (each ships inside its
       # architecture's flue), but both are exported here, before any
       # image build, so they can be signed (below): the signed bundles
@@ -446,7 +446,7 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@v4.1.2
         with:
-          cosign-release: v3.0.6
+          cosign-release: v3.1.2
       - name: Sign the release binaries (Sigstore keyless)
         run: |
           set -euo pipefail
