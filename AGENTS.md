@@ -59,8 +59,7 @@ README.md           usage, flags, how-it-works, security
   found" — a deliberate hard failure. The embedded bytes are stored
   verbatim, so `flue broker executable` / `flue broker sigstore-bundle`
   produce a broker and its bundle 100% identical to the build sources,
-  and an
-  extracted broker is verifiable offline with
+  and an extracted broker is verifiable offline with
   `cosign verify-blob --bundle` (the release bundle's identity is the
   release workflow — see the README's verify section). The `.sigstore`
   file is gitignored (a build artifact) but *not* containerignored: it
