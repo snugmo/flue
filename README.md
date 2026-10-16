@@ -98,8 +98,10 @@ filter. When your command exits, `flue enter` returns its exit code.
 The broker is **not taken from the image by default**: `flue` writes the
 embedded `flue-broker` into an in-memory `memfd` (fd 4, `--preserve-fds 2`)
 and the container execs it via `/proc/self/fd/4`, so the broker never
-touches the container's filesystem. It works in a container with no
-writable filesystem and no `flue-broker` in the image at all. Disable
+touches the container's filesystem — it works in a container with no
+writable filesystem and no `flue-broker` in the image at all (the
+injection mechanics are in
+[docs/embedded-broker.md](docs/embedded-broker.md)). Disable
 injection to use the image's `flue-broker` instead:
 
 ```sh
@@ -184,7 +186,7 @@ wrapper mode.)
 
 Only relevant when you disable injection (`--no-inject-broker`): the
 container then needs the `flue-broker` binary — either from an image that
-provides one, or by installing a copy:
+provides one, or by installing a copy of the embedded one:
 
 ```sh
 flue broker executable /tmp/flue-broker
@@ -197,36 +199,14 @@ built for the same architecture as your `flue`. Unlike `exec` and
 `enter`, the `broker` subcommands need no agent socket and take no
 flags.
 
-`flue broker sha256` prints the SHA256 of the embedded broker as a bare
-hex digest — the value `sha256sum` of the extracted binary — so it can
-be compared against another source without writing the binary out:
-
-```sh
-$ flue broker sha256
-8ea5d136dd59…
-$ sha256sum /usr/local/bin/flue-broker   # from a container or a separate build
-8ea5d136dd59…                            # a match means the same broker
-```
-
-`flue broker sigstore-bundle` writes the embedded broker's sigstore
-bundle to a file — the other half of the pair, for offline
-verification:
-
-```sh
-flue broker executable /tmp/flue-broker
-flue broker sigstore-bundle /tmp/flue-broker.sigstore
-cosign verify-blob /tmp/flue-broker --bundle /tmp/flue-broker.sigstore
-```
-
-The bundle is self-contained (signature, certificate, chain), so the
-verify needs no registry or network lookup. For a release `flue`, the
-release workflow signed it over that very broker — pin the
-certificate's identity with the same
-`--certificate-identity`/`--certificate-oidc-issuer` pair as the
-release signature in the Release image section. A `flue` built
-without a signed broker carries the labeled placeholder bundle
-instead, and `broker sigstore-bundle` warns that it cannot verify the
-extracted broker.
+The usual flow never gets here — `flue enter` injects the embedded
+broker into the container in memory by default, so no broker file is
+ever written or installed. For how that injection works (the memfd, its
+seals, the fd-4 handoff, the kernel fallbacks) and for the other two
+`broker` sub-subcommands (`sha256`, `sigstore-bundle`) — including
+offline verification of a recovered broker with
+`cosign verify-blob --bundle` — see
+[docs/embedded-broker.md](docs/embedded-broker.md).
 
 ### Version
 
