@@ -115,9 +115,10 @@ The `image` job:
   a local output; `GOVERSION` pinned to the `go.mod` `go` directive
   and the same `VERSION` as the image, so the exported bytes are the
   image's bytes);
-- signs each exported broker with `cosign sign-blob --keyless` — the
-  bundle's certificate identity is the release workflow, so the
-  signed pair proves the broker was built by this workflow;
+- signs each exported broker with `cosign sign-blob` — keyless, the
+  default when no key is supplied (cosign v3 dropped the explicit
+  `--keyless` flag) — so the bundle's certificate identity is the
+  release workflow, proving the broker was built by this workflow;
 - builds and pushes `ghcr.io/snugmo/flue:<tag>-<arch>` per
   architecture (each image embedding that architecture's signed
   bundle), then assembles the `<tag>` and `:latest` manifest list;

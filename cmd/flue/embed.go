@@ -55,7 +55,7 @@ var flueBrokerBin []byte
 //	cosign sign-blob --key <key> \
 //	  --bundle cmd/flue/flue-broker.sigstore cmd/flue/flue-broker.bin
 //
-//	(or --keyless where supported) — before compiling flue.
+//	(or keyless — omit the key in a CI context) — before compiling flue.
 //   - A placeholder: when no signed bundle is present, the committed
 //     template cmd/flue/flue-broker.sigstore.placeholder (its "kind"
 //     field is flueLocalPlaceholderKind, see bundle.go) is copied to

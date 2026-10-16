@@ -147,6 +147,8 @@ jobs:
       # the broker sign (below) as well as the image sign.
       - name: Install cosign
         uses: sigstore/cosign-installer@v4.1.2
+        with:
+          cosign-release: v3.0.6
       # The brokers are not release assets (each ships inside its
       # architecture's flue), but both are exported here, before any
       # image build, so they can be signed (below): the signed bundles
@@ -189,7 +191,7 @@ jobs:
         run: |
           set -euo pipefail
           for arch in amd64 arm64; do
-            cosign sign-blob --yes --keyless \
+            cosign sign-blob --yes \
               --bundle "dist/brokers/${arch}/flue-broker.sigstore" \
               "dist/brokers/${arch}/flue-broker"
           done
@@ -416,6 +418,8 @@ jobs:
       # (only v4.0.0+ and a v3), so @v4 does not resolve.
       - name: Install cosign
         uses: sigstore/cosign-installer@v4.1.2
+        with:
+          cosign-release: v3.0.6
       - name: Sign the release binaries (Sigstore keyless)
         run: |
           set -euo pipefail
@@ -426,7 +430,7 @@ jobs:
           # so the .sigstore files created here are not iterated.
           for f in flue_*; do
             [[ -f "$f" ]] || continue
-            cosign sign-blob --yes --keyless --bundle "${f}.sigstore" "$f"
+            cosign sign-blob --yes --bundle "${f}.sigstore" "$f"
           done
       # After signing, so the sums cover the bundles as well.
       - name: Generate SHA256SUMS

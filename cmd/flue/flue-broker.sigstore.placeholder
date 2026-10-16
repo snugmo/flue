@@ -1,4 +1,4 @@
 {
   "kind": "FlueLocalPlaceholder",
-  "note": "placeholder sigstore bundle: this flue was built without a release or self-signed broker signature, so the extracted flue-broker cannot be verified with cosign. To make it verifiable, sign the built broker (cosign sign-blob --key <key> --bundle cmd/flue/flue-broker.sigstore cmd/flue/flue-broker.bin, or --keyless in a supported CI context) and rebuild flue."
+  "note": "placeholder sigstore bundle: this flue was built without a release or self-signed broker signature, so the extracted flue-broker cannot be verified with cosign. To make it verifiable, sign the built broker (cosign sign-blob --key <key> --bundle cmd/flue/flue-broker.sigstore cmd/flue/flue-broker.bin, or keyless, omitting the key, in a supported CI context) and rebuild flue."
 }
