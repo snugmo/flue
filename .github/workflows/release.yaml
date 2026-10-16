@@ -248,9 +248,12 @@ jobs:
       # Assemble the two per-arch images into the release's manifest
       # list (the tag and latest). imagetools create copies the
       # existing child manifests into a new index — no rebuild, no
-      # re-upload of blobs — and prints the new list's digest. The
-      # per-arch tags stay published alongside the list: they are the
-      # imagetools sources and let consumers pull one arch directly.
+      # re-upload of blobs — but its stdout is progress output, so the
+      # list's digest is resolved separately via inspect's default
+      # output (the top-level "Digest:" line; the --format template
+      # fields vary across buildx versions). The per-arch tags stay
+      # published alongside the list: they are the imagetools sources
+      # and let consumers pull one arch directly.
       - name: Assemble the multi-arch manifest list
         id: list
         run: |
@@ -259,7 +262,7 @@ jobs:
           docker buildx imagetools create \
             -t "${IMAGE}:${tag}" -t "${IMAGE}:latest" \
             "${IMAGE}:${tag}-amd64" "${IMAGE}:${tag}-arm64"
-          digest="$(docker buildx imagetools inspect "${IMAGE}:${tag}" --format '{{.Digest}}')"
+          digest="$(docker buildx imagetools inspect "${IMAGE}:${tag}" | awk '/^Digest:/{print $2}')"
           if [[ -z "$digest" || "$digest" == "null" ]]; then
             echo "ERROR: could not resolve the manifest-list digest for ${IMAGE}:${tag}" >&2
             exit 1
