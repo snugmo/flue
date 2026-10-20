@@ -163,6 +163,12 @@ continues from the items above.
     scan verifies the broker is the session's only live member;
     membership is inherited by `fork` only, so such a session can later
     hold only the broker and its descendants — with or without a tty.
+    (Later refined: that "only live member" test was a proxy that
+    misfired when the broker — its own session's leader — had already
+    forked its wrapped command before the host's `/proc` walk ran, so a
+    required interactive enter aborted on a busy host. It is now decided
+    from the session's leader: the broker leads it, or a per-exec helper
+    led it and exited — immune to that race.)
 31. **Fail closed when the check was expected but can't be enabled
     (review item 1)** — **fixed** (`🛑 fix: fail closed when the session
     check cannot be enabled`, d6e0959). `sessionCheckMode` carries the

@@ -144,20 +144,24 @@ listener.
   control channel above) give flue the broker's pid (in flue's pid
   namespace) and session id (`/proc/<pid>/stat` field 6 — the session
   leader's pid in the namespace of `/proc` — via `sessionIDOfPID`).
-- The check is active when the broker's session is **private**: its
-  only live member at handover time (before the broker forks its
-  wrapped command) is the broker itself (`sessionIsPrivate` scans
-  `/proc` once to decide). Session membership is inherited by fork
-  only — a process can never join an existing session — so a private
-  session can later contain only the broker and its descendants, which
-  is exactly the "legitimate client" set. A session is private when
-  this exec created it: the broker is its leader (older runtimes, with
-  `-t`: the pty setup does the `setsid` in the exec'd process), or it
-  was led by a short-lived per-exec helper that has already exited
-  (recent runtimes, with or without a tty). An exec whose process
-  shares a session with the container's other processes — the
-  container's init session, the classic no-tty case — is not private,
-  and the check is off.
+- The check is active when the broker's session is **private** — a
+  closed set that can hold only this exec's processes. `sessionIsPrivate`
+  decides from the session's **leader**, reading a single
+  `/proc/<pid>/stat` entry. Session membership is inherited by fork
+  only — a process can never join an existing session — so a session is
+  a closed set exactly when its leader is the broker (every member then
+  forks from the broker) or when the leader has exited: a per-exec
+  helper that led the session and then died leaves the broker as the
+  sole surviving lineage. Either way the session can later contain only
+  the broker and its descendants, the "legitimate client" set. A
+  private session is one this exec created: the broker is its leader
+  (older runtimes, with `-t`: the pty setup does the `setsid` in the
+  exec'd process), or it was led by a short-lived per-exec helper that
+  has already exited (recent runtimes, with or without a tty). A session
+  led by a live foreign process is **not** private — the container's
+  init session, where older runtimes place an exec, where the exec and
+  every other container process share one session — and the check is off
+  for it.
 - The check's **mode** depends on how the broker was started
   (`sessionCheckMode`):
   - **required** — `flue enter` from a terminal (injected broker +
