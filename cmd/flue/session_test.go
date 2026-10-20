@@ -154,7 +154,7 @@ func TestSessionCheckGate(t *testing.T) {
 		{"private session, broker is the leader", 4242, 4242, true, true, true},
 		{"private session, led by an exited helper", 4242, 7, true, true, true},
 		{"shared session (e.g. the container's init)", 4242, 7, false, true, false},
-		{"privacy scan failed", 4242, 7, false, false, false},
+		{"privacy check failed", 4242, 7, false, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pol := &policy{
@@ -169,14 +169,18 @@ func TestSessionCheckGate(t *testing.T) {
 	}
 }
 
-// TestSessionIsPrivate verifies the private-session scan against a fake
-// /proc tree: a session whose only live member is the broker is private;
-// any other live process in it is not; an unreadable /proc is an error.
+// TestSessionIsPrivate verifies the closed-set test against a fake /proc
+// tree. Private: the broker leads its session (whether or not it has
+// already forked a wrapped command — the case the old "no other live
+// member" test misread as shared), or it is a member led by a helper that
+// has exited (its /proc entry gone or its pid recycled into another
+// session). Not private: a live, non-broker process leads the session
+// (the container's init). An unreadable /proc entry (for a reason other
+// than "the leader is gone") fails closed.
 func TestSessionIsPrivate(t *testing.T) {
-	tt := t.TempDir()
 	// writeStat mirrors the real /proc layout: a per-pid directory
 	// holding a "stat" file.
-	writeStat := func(name, line string) {
+	writeStat := func(t *testing.T, tt, name, line string) {
 		t.Helper()
 		dir := filepath.Join(tt, name)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -186,39 +190,112 @@ func TestSessionIsPrivate(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-
-	oldProcRoot := procRoot
-	procRoot = tt
-	defer func() { procRoot = oldProcRoot }()
-
-	// broker pid 100 in session 100; pid 101 in a different session.
-	writeStat("100", "100 (broker) S 1 100 100 0")
-	writeStat("101", "101 (other) S 1 101 200 0")
-	writeStat("not-a-pid", "x (y) S 1 2 3 0")
-
-	if private, err := sessionIsPrivate(100, 100); err != nil || !private {
-		t.Fatalf("sessionIsPrivate(100, 100) = %v, %v; want true, nil", private, err)
+	// withProcRoot runs f with procRoot pointed at a fresh temp dir, then
+	// restores it.
+	withProcRoot := func(t *testing.T, f func(tt string)) {
+		tt := t.TempDir()
+		old := procRoot
+		procRoot = tt
+		defer func() { procRoot = old }()
+		f(tt)
 	}
 
-	// A second live member in the broker's session: not private.
-	writeStat("102", "102 (member) S 1 101 100 0")
-	if private, err := sessionIsPrivate(100, 100); err != nil || private {
-		t.Fatalf("sessionIsPrivate(100, 100) = %v, %v; want false, nil", private, err)
-	}
+	t.Run("broker leads its session, sole member", func(t *testing.T) {
+		withProcRoot(t, func(tt string) {
+			writeStat(t, tt, "100", "100 (broker) S 1 100 100 0")
+			if private, err := sessionIsPrivate(100, 100); err != nil || !private {
+				t.Fatalf("sessionIsPrivate(100,100) = %v, %v; want true, nil", private, err)
+			}
+		})
+	})
+
+	// Regression: the wrapped command is already forked and is a member of
+	// the broker-led session. The old "no other live member" test read
+	// this descendant as a foreign member and reported the session shared;
+	// the leader test must call it private.
+	t.Run("broker leads its session, wrapped command forked", func(t *testing.T) {
+		withProcRoot(t, func(tt string) {
+			writeStat(t, tt, "100", "100 (broker) S 1 100 100 0")
+			writeStat(t, tt, "101", "101 (bash) S 100 101 100 0")
+			if private, err := sessionIsPrivate(100, 100); err != nil || !private {
+				t.Fatalf("sessionIsPrivate(100,100) = %v, %v; want true, nil (a descendant is not foreign)", private, err)
+			}
+		})
+	})
+
+	// A live, non-broker process leads the session (the container's init):
+	// not private.
+	t.Run("live foreign leader (init session)", func(t *testing.T) {
+		withProcRoot(t, func(tt string) {
+			writeStat(t, tt, "100", "100 (broker) S 200 100 200 0")
+			writeStat(t, tt, "200", "200 (init) S 1 200 200 0")
+			if private, err := sessionIsPrivate(100, 200); err != nil || private {
+				t.Fatalf("sessionIsPrivate(100,200) = %v, %v; want false, nil (live foreign leader)", private, err)
+			}
+		})
+	})
+
+	// The broker is a member led by a helper that has exited (no live
+	// leader at that pid): private.
+	t.Run("leader exited", func(t *testing.T) {
+		withProcRoot(t, func(tt string) {
+			writeStat(t, tt, "100", "100 (broker) S 200 100 200 0")
+			// no /proc/200: the helper is gone
+			if private, err := sessionIsPrivate(100, 200); err != nil || !private {
+				t.Fatalf("sessionIsPrivate(100,200) = %v, %v; want true, nil (leader exited)", private, err)
+			}
+		})
+	})
+
+	// Leader exited AND the wrapped command is already forked (the fork
+	// race in the member case): still private.
+	t.Run("leader exited, wrapped command forked", func(t *testing.T) {
+		withProcRoot(t, func(tt string) {
+			writeStat(t, tt, "100", "100 (broker) S 200 100 200 0")
+			writeStat(t, tt, "101", "101 (bash) S 100 101 200 0")
+			if private, err := sessionIsPrivate(100, 200); err != nil || !private {
+				t.Fatalf("sessionIsPrivate(100,200) = %v, %v; want true, nil (leader gone, descendant not foreign)", private, err)
+			}
+		})
+	})
+
+	// The leader's pid was recycled by a process in a different session:
+	// the original leader is gone, so private.
+	t.Run("leader pid recycled", func(t *testing.T) {
+		withProcRoot(t, func(tt string) {
+			writeStat(t, tt, "100", "100 (broker) S 200 100 200 0")
+			writeStat(t, tt, "200", "200 (recycled) S 1 200 300 0") // its session is 300, not 200
+			if private, err := sessionIsPrivate(100, 200); err != nil || !private {
+				t.Fatalf("sessionIsPrivate(100,200) = %v, %v; want true, nil (recycled pid)", private, err)
+			}
+		})
+	})
 
 	// Unknown broker pid or session: not private, no error.
-	if private, err := sessionIsPrivate(0, 100); private || err != nil {
-		t.Fatalf("sessionIsPrivate(0, 100) = %v, %v; want false, nil", private, err)
-	}
-	if private, err := sessionIsPrivate(100, 0); private || err != nil {
-		t.Fatalf("sessionIsPrivate(100, 0) = %v, %v; want false, nil", private, err)
-	}
+	t.Run("unknown broker or session", func(t *testing.T) {
+		withProcRoot(t, func(tt string) {
+			if private, err := sessionIsPrivate(0, 100); private || err != nil {
+				t.Fatalf("sessionIsPrivate(0,100) = %v, %v; want false, nil", private, err)
+			}
+			if private, err := sessionIsPrivate(100, 0); private || err != nil {
+				t.Fatalf("sessionIsPrivate(100,0) = %v, %v; want false, nil", private, err)
+			}
+		})
+	})
 
-	// A broken /proc root: an error (the caller fails closed).
-	procRoot = filepath.Join(tt, "no-such-dir")
-	if private, err := sessionIsPrivate(100, 100); private || err == nil {
-		t.Fatalf("sessionIsPrivate on a broken /proc = %v, %v; want false, error", private, err)
-	}
+	// /proc unreadable for a reason other than "the leader is gone" (here:
+	// the leader's /proc entry is a file, so reading its "stat" is an
+	// ENOTDIR, not ENOENT): fail closed.
+	t.Run("unreadable /proc fails closed", func(t *testing.T) {
+		withProcRoot(t, func(tt string) {
+			if err := os.WriteFile(filepath.Join(tt, "200"), []byte("x\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if private, err := sessionIsPrivate(100, 200); private || err == nil {
+				t.Fatalf("sessionIsPrivate(100,200) on unreadable /proc = %v, %v; want false, error", private, err)
+			}
+		})
+	})
 }
 
 // TestReceiveListenerCheckModes verifies the mode handling at handover:
@@ -732,4 +809,143 @@ func runSessionBroker() {
 		os.Exit(1) // refused (closed before a response) or broken
 	}
 	os.Exit(0)
+}
+
+// TestReceiveListenerRequiredModeWrappedCommand is the end-to-end form of
+// the interactive-enter failure: an injected broker run with a tty makes
+// the session check required, the broker leads its own session (a pty
+// exec), and it has already forked its wrapped command. The old
+// "no other live member" test read that descendant as a foreign member
+// and aborted the session; the leader-based test must keep the check
+// enabled instead. A child copy of this binary plays the broker: it
+// setsid, forks a wrapped command (a member of its session) before the
+// handover, and hands the listener over. The parent requires the check and
+// asserts it comes up (no abort).
+func TestReceiveListenerRequiredModeWrappedCommand(t *testing.T) {
+	if os.Getenv(envSessionRole) == "broker-wrapped" {
+		runSessionBrokerWrapped() // does not return
+	}
+	if runtime.GOOS != "linux" {
+		t.Skip("session ids come from /proc")
+	}
+
+	tmp := t.TempDir()
+	ctrlL, err := net.Listen("unix", filepath.Join(tmp, "ctrl"))
+	if err != nil {
+		t.Fatalf("listen ctrl: %v", err)
+	}
+	t.Cleanup(func() { ctrlL.Close() })
+
+	broker := exec.Command(os.Args[0], "-test.run="+t.Name())
+	broker.Env = append(os.Environ(),
+		envSessionRole+"=broker-wrapped",
+		envSessionCtrl+"="+ctrlL.Addr().String(),
+		envSessionSock+"="+filepath.Join(tmp, "broker.sock"))
+	if err := broker.Start(); err != nil {
+		t.Fatalf("start broker child: %v", err)
+	}
+	t.Cleanup(func() { _ = broker.Process.Kill() })
+
+	// Accept the control connection, enable SO_PASSCRED on it (accepted
+	// sockets do not inherit the option from the listener), and tell the
+	// child to hand over its listener.
+	ctrlC := make(chan net.Conn, 1)
+	go func() {
+		if c, err := ctrlL.Accept(); err == nil {
+			ctrlC <- c
+		}
+	}()
+	var ctrl net.Conn
+	select {
+	case ctrl = <-ctrlC:
+	case <-time.After(15 * time.Second):
+		t.Fatalf("broker child did not connect within 15s")
+	}
+	defer ctrl.Close()
+	{
+		rc, err := ctrl.(*net.UnixConn).SyscallConn()
+		if err != nil {
+			t.Fatalf("syscall conn: %v", err)
+		}
+		var ctrlFD int
+		_ = rc.Control(func(fd uintptr) { ctrlFD = int(fd) })
+		if err := unix.SetsockoptInt(ctrlFD, unix.SOL_SOCKET, unix.SO_PASSCRED, 1); err != nil {
+			t.Fatalf("SO_PASSCRED: %v", err)
+		}
+	}
+	if _, err := ctrl.Write([]byte{'r'}); err != nil { // "ready": hand over
+		t.Fatalf("signal child: %v", err)
+	}
+
+	// Required mode: the injected-broker-with-tty case.
+	var pol policy
+	pol.sessionCheckMode = sessionCheckRequired
+	var cs clientSet
+	listener, acceptDone, rerr := receiveListener(ctrl, &pol, &cs)
+	t.Cleanup(func() {
+		cs.closeAll()
+		cs.Wait()
+		if listener != nil {
+			listener.Close()
+		}
+		<-acceptDone
+	})
+	if rerr != nil {
+		t.Fatalf("receiveListener aborted a required session whose broker leads a private session with a wrapped command already forked: %v", rerr)
+	}
+	if !sessionCheckActive(&pol) {
+		t.Fatalf("check not active (pid %d, session %d, private %v, known %v); the broker leads its own session, so it must be private",
+			pol.brokerPID, pol.brokerSession, pol.sessionPrivate, pol.sessionPrivateKnown)
+	}
+}
+
+// runSessionBrokerWrapped runs in the child copy for
+// TestReceiveListenerRequiredModeWrappedCommand. It setsid (becoming the
+// leader of a new session, as a pty exec does), then — before handing the
+// listener over — forks a wrapped command (a member of its session, the
+// situation the old privacy test misread as shared), hands the listener
+// over, and blocks until the test tears it down.
+func runSessionBrokerWrapped() {
+	if _, err := unix.Setsid(); err != nil {
+		os.Exit(90)
+	}
+	sock := os.Getenv(envSessionSock)
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		os.Exit(91)
+	}
+	ctrl, err := net.Dial("unix", os.Getenv(envSessionCtrl))
+	if err != nil {
+		l.Close()
+		os.Exit(92)
+	}
+	lf, err := l.(*net.UnixListener).File()
+	if err != nil {
+		l.Close()
+		ctrl.Close()
+		os.Exit(93)
+	}
+	if _, err := ctrl.Read(make([]byte, 1)); err != nil { // wait for "ready"
+		l.Close()
+		ctrl.Close()
+		os.Exit(94)
+	}
+	// The wrapped command: a child of this session-leading process, so a
+	// member of the broker's session. Started before the handover so it
+	// is present when the host checks the session. `sleep 2` self-
+	// terminates, so tearing this process down afterwards orphans nothing
+	// that lingers.
+	if err := exec.Command("sleep", "2").Start(); err != nil {
+		lf.Close()
+		ctrl.Close()
+		os.Exit(97)
+	}
+	oob := unix.UnixRights(int(lf.Fd()))
+	if _, _, err := ctrl.(*net.UnixConn).WriteMsgUnix([]byte{0}, oob, nil); err != nil {
+		lf.Close()
+		ctrl.Close()
+		os.Exit(94)
+	}
+	lf.Close() // close only the dup; l keeps the listener
+	select {} // block until the test tears us down
 }
