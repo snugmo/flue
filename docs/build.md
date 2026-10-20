@@ -38,14 +38,14 @@ buildah push ghcr.io/snugmo/flue:<tag>
   `flue-broker`, `cmd/flue/flue-broker.bin`) out of the build context —
   the stages build their own: the embed source is placed by the flue
   build stage from the `flue-broker` stage (one per target platform).
-  `cmd/flue/flue-broker.sigstore` is deliberately kept in the context:
+  `cmd/flue/flue-broker.sigstore.json` is deliberately kept in the context:
   it is the build-context input for the broker bundle's `go:embed`
   source (a signed one, when present; else the stage's `cp -n`
   fallback copies the committed placeholder template).
 - Building the host-side helpers for local use is the AGENTS.md
   Build command: `flue-broker` first, to the `go:embed` path
   `cmd/flue/flue-broker.bin` (which `flue` embeds); then, when no
-  signed `cmd/flue/flue-broker.sigstore` is present, a copy of the
+  signed `cmd/flue/flue-broker.sigstore.json` is present, a copy of the
   committed placeholder template to that path (the bundle's second
   `go:embed` source); then `flue`; then a copy of that same broker
   file to the repo root.
@@ -82,7 +82,7 @@ chain once per platform):
   places that platform's broker file on the `go:embed` path
   `cmd/flue/flue-broker.bin` (a flue without its broker is a
   deliberate hard failure), and the broker's sigstore bundle on
-  `cmd/flue/flue-broker.sigstore` — a signed context copy when
+  `cmd/flue/flue-broker.sigstore.json` — a signed context copy when
   present, else `cp -n` falls back to the committed placeholder
   template — before compiling.
 - **final**: `FROM scratch` — the image is the single static binary at
@@ -99,7 +99,7 @@ The release image is built from the same `Containerfile` — one
 `buildx` build per architecture, each from its own copy of the build
 context (`ctx/<arch>`, the repo without `.git`) with that
 architecture's signed broker bundle placed at
-`cmd/flue/flue-broker.sigstore`. A single multi-arch buildx
+`cmd/flue/flue-broker.sigstore.json`. A single multi-arch buildx
 invocation shares one build context across its platforms, so the
 per-platform signed bundles cannot ride one build; the two
 single-platform images are then assembled into the `<tag>` and

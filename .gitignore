@@ -20,7 +20,7 @@
 # release-workflow-signed bundle, a locally signed bundle, or a copy of
 # the committed .placeholder template — see cmd/flue/embed.go). The
 # .placeholder template itself is committed and not ignored.
-/cmd/flue/flue-broker.sigstore
+/cmd/flue/flue-broker.sigstore.json
 
 # Test binary, built with `go test -c`
 *.test

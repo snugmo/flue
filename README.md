@@ -248,10 +248,10 @@ platform (one static binary) and staged in a single `flue-broker`
 scratch stage; then `flue` for the same platform is built in a
 second golang stage, which places that platform's broker file on the
 `go:embed` path `cmd/flue/flue-broker.bin`, and the broker's sigstore
-bundle on `cmd/flue/flue-broker.sigstore`, before compiling. The
+bundle on `cmd/flue/flue-broker.sigstore.json`, before compiling. The
 broker's embed source comes from the stage (a flue without its broker
 is a deliberate hard failure); the bundle's is a build-context input
-— a signed `cmd/flue/flue-broker.sigstore` wins when present (the
+— a signed `cmd/flue/flue-broker.sigstore.json` wins when present (the
 release workflow places each platform's there; a local user may sign
 their own broker first) — else the stage copies the committed
 placeholder template over, so a bare local build succeeds, labeled
@@ -296,7 +296,7 @@ byte-for-byte from the built image. A broker recovered from any
 `gh attestation verify`, or offline with `cosign verify-blob
 --bundle` using the bundle the same `flue` ships. Each release binary
 is additionally signed (Sigstore keyless) and ships its signature as a
-self-contained `.sigstore` bundle next to it, so a binary can be
+self-contained `.sigstore.json` bundle next to it, so a binary can be
 verified offline — no registry or network lookup.
 
 Every release image carries two signed claims, keyed to the image's
@@ -329,7 +329,7 @@ gh attestation verify ghcr.io/snugmo/flue:$tag --source snugmo/flue
 # 3. Binaries: each asset ships a self-contained sigstore bundle
 #    (same identity as the image signature: same workflow file, same ref)
 cosign verify-blob "flue_${tag}_linux_amd64" \
-  --bundle "flue_${tag}_linux_amd64.sigstore" \
+  --bundle "flue_${tag}_linux_amd64.sigstore.json" \
   --certificate-identity "$identity" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 
@@ -338,9 +338,9 @@ cosign verify-blob "flue_${tag}_linux_amd64" \
 #    sigstore-bundle) and verify it offline — the bundle's certificate
 #    carries the same identity as the image signature
 flue_${tag}_linux_amd64 broker executable /tmp/flue-broker
-flue_${tag}_linux_amd64 broker sigstore-bundle /tmp/flue-broker.sigstore
+flue_${tag}_linux_amd64 broker sigstore-bundle /tmp/flue-broker.sigstore.json
 cosign verify-blob /tmp/flue-broker \
-  --bundle /tmp/flue-broker.sigstore \
+  --bundle /tmp/flue-broker.sigstore.json \
   --certificate-identity "$identity" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 ```

@@ -170,7 +170,7 @@
 // the compile, so a flue without its broker is never built silently. The
 // embedded bytes are the built broker's, untransformed, so identical.
 // Alongside the binary, flue embeds the broker's sigstore bundle
-// (go:embed reads cmd/flue/flue-broker.sigstore): the cosign signature,
+// (go:embed reads cmd/flue/flue-broker.sigstore.json): the cosign signature,
 // certificate, and chain for those same bytes — signed by the release
 // workflow in a release, by a local cosign key (or keyless context) in a
 // signed local build, or the committed placeholder template in an

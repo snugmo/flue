@@ -38,12 +38,12 @@
 #     -t <image> -f Containerfile .
 #
 # The build stage's sigstore-bundle embed source (the flue broker
-# sigstore-bundle subcommand's file, cmd/flue/flue-broker.sigstore)
+# sigstore-bundle subcommand's file, cmd/flue/flue-broker.sigstore.json)
 # comes from the build context, not from a stage: a signed
-# cmd/flue/flue-broker.sigstore in the context wins (the release
+# cmd/flue/flue-broker.sigstore.json in the context wins (the release
 # workflow places the platform's cosign-signed bundle there; a local
 # user may sign their own broker first), else the committed placeholder
-# template (cmd/flue/flue-broker.sigstore.placeholder) is copied over —
+# template (cmd/flue/flue-broker.sigstore.json.placeholder) is copied over —
 # so a bare local build succeeds with the labeled placeholder, and an
 # unsigned build is never confused with a signed one (see
 # cmd/flue/embed.go).
@@ -129,14 +129,14 @@ COPY cmd/ cmd/
 COPY --from=flue-broker /flue-broker cmd/flue/flue-broker.bin
 # The broker's sigstore bundle (the second go:embed source, see
 # cmd/flue/embed.go): the COPY of cmd/ above already brought in the
-# context's cmd/flue/flue-broker.sigstore when one is present (the
+# context's cmd/flue/flue-broker.sigstore.json when one is present (the
 # release workflow places the platform's cosign-signed bundle in each
 # platform's build context; a local user may sign their own broker
 # first) — and the committed placeholder template, which this cp -n
 # copies to the embed path only when no signed bundle is present.
 # So a signed context always wins over the placeholder, a bare local
 # build falls back to it, and go:embed never sees a missing file.
-RUN cp -n cmd/flue/flue-broker.sigstore.placeholder cmd/flue/flue-broker.sigstore
+RUN cp -n cmd/flue/flue-broker.sigstore.json.placeholder cmd/flue/flue-broker.sigstore.json
 RUN set -eu; CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" go build -ldflags="-s -w -X main.version=${VERSION}" -o flue ./cmd/flue
 
 # The final stage: FROM scratch, one static binary at the root. It

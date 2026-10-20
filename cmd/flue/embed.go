@@ -38,7 +38,7 @@ var flueBrokerBin []byte
 // flueBrokerBundle is the sigstore bundle for the embedded flue-broker
 // (the flueBrokerBin above): the cosign signature, signing certificate,
 // and certificate chain for the broker's bytes, embedded verbatim from
-// the build-time file cmd/flue/flue-broker.sigstore. Together with the
+// the build-time file cmd/flue/flue-broker.sigstore.json. Together with the
 // embedded binary it is how an extracted broker is verified *offline*
 // with cosign (verify-blob --bundle): the broker and its bundle always
 // travel together, inside every flue.
@@ -53,11 +53,11 @@ var flueBrokerBin []byte
 //   - A locally signed build: the user signs the built broker —
 //
 //	cosign sign-blob --key <key> \
-//	  --bundle cmd/flue/flue-broker.sigstore cmd/flue/flue-broker.bin
+//	  --bundle cmd/flue/flue-broker.sigstore.json cmd/flue/flue-broker.bin
 //
 //	(or keyless — omit the key in a CI context) — before compiling flue.
 //   - A placeholder: when no signed bundle is present, the committed
-//     template cmd/flue/flue-broker.sigstore.placeholder (its "kind"
+//     template cmd/flue/flue-broker.sigstore.json.placeholder (its "kind"
 //     field is flueLocalPlaceholderKind, see bundle.go) is copied to
 //     the embed path — by the host Build/Test commands in AGENTS.md and
 //     by the Containerfile's build stage (a cp -n fallback) — so a
@@ -74,5 +74,5 @@ var flueBrokerBin []byte
 // (.containerignore), because it is a build-context input the build
 // stage consumes.
 //
-//go:embed flue-broker.sigstore
+//go:embed flue-broker.sigstore.json
 var flueBrokerBundle []byte

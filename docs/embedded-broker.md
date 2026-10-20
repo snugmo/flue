@@ -126,7 +126,7 @@ Writes the embedded broker's sigstore bundle out: to `<filename>`,
 mode 0644, when a filename is given (`cmd/flue/bundle.go`, the same
 atomic write as `executable`), and to **stdout** when none is — or when
 it is `-` — so the bundle can be piped or redirected (`flue broker
-sigstore-bundle - > flue-broker.sigstore`). It is the other half of the
+sigstore-bundle - > flue-broker.sigstore.json`). It is the other half of the
 pair below: together, the two files let anyone verify a recovered broker
 offline.
 
@@ -147,8 +147,8 @@ The pair is the offline verification recipe:
 
 ```sh
 flue broker executable /tmp/flue-broker
-flue broker sigstore-bundle - > /tmp/flue-broker.sigstore   # or: flue broker sigstore-bundle /tmp/flue-broker.sigstore
-cosign verify-blob /tmp/flue-broker --bundle /tmp/flue-broker.sigstore
+flue broker sigstore-bundle - > /tmp/flue-broker.sigstore.json   # or: flue broker sigstore-bundle /tmp/flue-broker.sigstore.json
+cosign verify-blob /tmp/flue-broker --bundle /tmp/flue-broker.sigstore.json
 ```
 
 The bundle is self-contained (signature, certificate, chain), so the

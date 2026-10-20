@@ -28,8 +28,8 @@ can be piped or redirected.
 Extracted together with the broker, the pair verifies offline:
 
 	flue broker executable ./flue-broker
-	flue broker sigstore-bundle ./flue-broker.sigstore
-	cosign verify-blob ./flue-broker --bundle ./flue-broker.sigstore \
+	flue broker sigstore-bundle ./flue-broker.sigstore.json
+	cosign verify-blob ./flue-broker --bundle ./flue-broker.sigstore.json \
 	  --certificate-identity "<identity>" \
 	  --certificate-oidc-issuer "<issuer>"
 
@@ -71,7 +71,7 @@ Unlike exec and enter, this subcommand needs no agent socket.`,
 
 // flueLocalPlaceholderKind is the value of the "kind" field in the
 // committed placeholder bundle template
-// (cmd/flue/flue-broker.sigstore.placeholder): the marker that
+// (cmd/flue/flue-broker.sigstore.json.placeholder): the marker that
 // distinguishes the unsigned local build's placeholder from a real
 // sigstore bundle (which uses a different kind, e.g. "Bundle").
 const flueLocalPlaceholderKind = "FlueLocalPlaceholder"

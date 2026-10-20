@@ -10,14 +10,14 @@ import (
 
 // TestBrokerBundleRoundTrip verifies the core guarantee: the file written
 // by broker sigstore-bundle is byte-identical to the embed source on disk
-// (cmd/flue/flue-broker.sigstore), and is a regular non-executable file
+// (cmd/flue/flue-broker.sigstore.json), and is a regular non-executable file
 // (mode 0644).
 func TestBrokerBundleRoundTrip(t *testing.T) {
-	want, err := os.ReadFile("flue-broker.sigstore")
+	want, err := os.ReadFile("flue-broker.sigstore.json")
 	if err != nil {
 		t.Fatalf("read embed source: %v", err)
 	}
-	path := filepath.Join(t.TempDir(), "flue-broker.sigstore")
+	path := filepath.Join(t.TempDir(), "flue-broker.sigstore.json")
 	if err := writeEmbeddedBundle(path); err != nil {
 		t.Fatalf("writeEmbeddedBundle(%q): %v", path, err)
 	}
@@ -41,11 +41,11 @@ func TestBrokerBundleRoundTrip(t *testing.T) {
 // replaces it (a normal re-extract), ending with the identical bytes
 // again.
 func TestBrokerBundleOverwrite(t *testing.T) {
-	want, err := os.ReadFile("flue-broker.sigstore")
+	want, err := os.ReadFile("flue-broker.sigstore.json")
 	if err != nil {
 		t.Fatalf("read embed source: %v", err)
 	}
-	path := filepath.Join(t.TempDir(), "flue-broker.sigstore")
+	path := filepath.Join(t.TempDir(), "flue-broker.sigstore.json")
 	if err := os.WriteFile(path, []byte("stale"), 0o644); err != nil {
 		t.Fatalf("write stale file: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestWriteEmbeddedBundleErrors(t *testing.T) {
 	})
 
 	t.Run("directory does not exist", func(t *testing.T) {
-		path := filepath.Join(dir, "no-such-dir", "flue-broker.sigstore")
+		path := filepath.Join(dir, "no-such-dir", "flue-broker.sigstore.json")
 		if err := writeEmbeddedBundle(path); err == nil {
 			t.Fatalf("writeEmbeddedBundle(missing dir) succeeded, want error")
 		}
@@ -89,7 +89,7 @@ func TestWriteEmbeddedBundleErrors(t *testing.T) {
 // input are all treated as real bundles (cosign is the authority on what
 // a real one is — this only gates the warning).
 func TestIsPlaceholderBundle(t *testing.T) {
-	ph, err := os.ReadFile("flue-broker.sigstore.placeholder")
+	ph, err := os.ReadFile("flue-broker.sigstore.json.placeholder")
 	if err != nil {
 		t.Fatalf("read placeholder template: %v", err)
 	}
@@ -119,11 +119,11 @@ func TestIsPlaceholderBundle(t *testing.T) {
 // byte-identical to the embed source file. The subcommand carries no
 // needs-agent annotation, so executing it needs no agent socket.
 func TestCobraBrokerBundle(t *testing.T) {
-	data, err := os.ReadFile("flue-broker.sigstore")
+	data, err := os.ReadFile("flue-broker.sigstore.json")
 	if err != nil {
 		t.Fatalf("read embed source: %v", err)
 	}
-	path := filepath.Join(t.TempDir(), "flue-broker.sigstore")
+	path := filepath.Join(t.TempDir(), "flue-broker.sigstore.json")
 	buf := &bytes.Buffer{}
 	rootCmd.SetOut(buf)
 	rootCmd.SetErr(buf)
@@ -146,7 +146,7 @@ func TestCobraBrokerBundle(t *testing.T) {
 // (the default) — and checks the bundle comes out on the command's
 // stdout, byte-identical to the embed source file.
 func TestCobraBrokerBundleStdout(t *testing.T) {
-	data, err := os.ReadFile("flue-broker.sigstore")
+	data, err := os.ReadFile("flue-broker.sigstore.json")
 	if err != nil {
 		t.Fatalf("read embed source: %v", err)
 	}

@@ -68,7 +68,7 @@ jobs:
           CGO_ENABLED: 0
         run: go build -ldflags="-s -w" -o cmd/flue/flue-broker.bin ./cmd/flue-broker
       - name: Place the placeholder broker bundle (embed source)
-        run: test -f cmd/flue/flue-broker.sigstore || cp cmd/flue/flue-broker.sigstore.placeholder cmd/flue/flue-broker.sigstore
+        run: test -f cmd/flue/flue-broker.sigstore.json || cp cmd/flue/flue-broker.sigstore.json.placeholder cmd/flue/flue-broker.sigstore.json
       - name: Test
         run: go test ./...
 
@@ -84,7 +84,7 @@ jobs:
           CGO_ENABLED: 0
         run: go build -ldflags="-s -w" -o cmd/flue/flue-broker.bin ./cmd/flue-broker
       - name: Place the placeholder broker bundle (embed source)
-        run: test -f cmd/flue/flue-broker.sigstore || cp cmd/flue/flue-broker.sigstore.placeholder cmd/flue/flue-broker.sigstore
+        run: test -f cmd/flue/flue-broker.sigstore.json || cp cmd/flue/flue-broker.sigstore.json.placeholder cmd/flue/flue-broker.sigstore.json
       - uses: golangci/golangci-lint-action@v9
         with:
           version: latest
@@ -181,7 +181,7 @@ jobs:
       # One sigstore bundle per broker, next to it: the bundle carries
       # the signature, certificate, and chain, so a consumer who
       # recovers the broker from any flue verifies it offline (cosign
-      # verify-blob <file> --bundle <file>.sigstore) — no registry or
+      # verify-blob <file> --bundle <file>.sigstore.json) — no registry or
       # network lookup needed. The bundle is embedded in flue (below),
       # so the extracted broker and its bundle always travel together.
       # The identity is this workflow file at the pushed ref, under
@@ -192,7 +192,7 @@ jobs:
           set -euo pipefail
           for arch in amd64 arm64; do
             cosign sign-blob --yes \
-              --bundle "dist/brokers/${arch}/flue-broker.sigstore" \
+              --bundle "dist/brokers/${arch}/flue-broker.sigstore.json" \
               "dist/brokers/${arch}/flue-broker"
           done
       # Each platform's flue embeds that platform's broker and bundle,
@@ -200,7 +200,7 @@ jobs:
       # its platforms), so the image is built once per platform, each
       # with its own context: a copy of the checkout with that
       # platform's signed bundle placed on the go:embed path
-      # (cmd/flue/flue-broker.sigstore — the Containerfile's build
+      # (cmd/flue/flue-broker.sigstore.json — the Containerfile's build
       # stage consumes the context copy, falling back to the committed
       # placeholder template only when no bundle is present). The two
       # single-platform pushes are assembled into the release's
@@ -211,7 +211,7 @@ jobs:
           for arch in amd64 arm64; do
             mkdir -p "ctx/${arch}"
             tar --exclude=.git --exclude=ctx -cf - . | tar -xf - -C "ctx/${arch}"
-            cp "dist/brokers/${arch}/flue-broker.sigstore" "ctx/${arch}/cmd/flue/flue-broker.sigstore"
+            cp "dist/brokers/${arch}/flue-broker.sigstore.json" "ctx/${arch}/cmd/flue/flue-broker.sigstore.json"
           done
       # No QEMU: the Containerfile's golang stages are pinned to
       # $BUILDPLATFORM and each compiles its own target platform
@@ -377,7 +377,7 @@ jobs:
           # copy embedded. So the extracted broker and its bundle are
           # exactly the signed pair: cosign verify-blob --bundle passes.
           ./dist/flue_${tag}_linux_${FLUE_ARCH} broker sigstore-bundle /tmp/flue-broker-bundle
-          cmp /tmp/flue-broker-bundle "dist/brokers/${FLUE_ARCH}/flue-broker.sigstore"
+          cmp /tmp/flue-broker-bundle "dist/brokers/${FLUE_ARCH}/flue-broker.sigstore.json"
       - name: Attest the amd64 broker
         uses: actions/attest@v4
         with:
@@ -452,12 +452,12 @@ jobs:
           set -euo pipefail
           # One bundle per binary, next to it: the bundle carries the
           # signature, certificate, and chain, so a consumer verifies
-          # offline with cosign verify-blob <file> --bundle <file>.sigstore
+          # offline with cosign verify-blob <file> --bundle <file>.sigstore.json
           # — no registry or network lookup needed. The glob expands once,
-          # so the .sigstore files created here are not iterated.
+          # so the .sigstore.json files created here are not iterated.
           for f in flue_*; do
             [[ -f "$f" ]] || continue
-            cosign sign-blob --yes --bundle "${f}.sigstore" "$f"
+            cosign sign-blob --yes --bundle "${f}.sigstore.json" "$f"
           done
       # After signing, so the sums cover the bundles as well.
       - name: Generate SHA256SUMS
@@ -465,7 +465,7 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v3
         with:
-          # flue_* covers the binaries and their .sigstore bundles.
+          # flue_* covers the binaries and their .sigstore.json bundles.
           files: |
             flue_*
             SHA256SUMS

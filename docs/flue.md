@@ -227,7 +227,7 @@ listener.
   back out as a file; `flue enter` uses the same bytes, by default, to
   run the broker entirely in memory (see the memfd injection bullet
   below and [embedded-broker.md](embedded-broker.md)).
-- `cmd/flue/embed.go` also declares `//go:embed flue-broker.sigstore`:
+- `cmd/flue/embed.go` also declares `//go:embed flue-broker.sigstore.json`:
   the broker's sigstore bundle, stored verbatim like the binary. For a
   release `flue` it is the bundle the release workflow's
   `cosign sign-blob --bundle` wrote over this very broker file
@@ -235,7 +235,7 @@ listener.
   `cosign verify-blob <broker> --bundle <bundle>` needs no registry
   or network); for a locally signed build it is whatever bundle the
   user signed with (`cosign sign-blob --key <key> --bundle
-  cmd/flue/flue-broker.sigstore cmd/flue/flue-broker.bin`); for a
+  cmd/flue/flue-broker.sigstore.json cmd/flue/flue-broker.bin`); for a
   bare local build it is a copy of the committed placeholder
   template, and `broker sigstore-bundle` says so when it writes it out.
 - **Memfd injection** (`cmd/flue/inject.go`): `flue enter` runs the
@@ -254,7 +254,7 @@ listener.
 - **Build order**: both embed sources must exist before flue is
   compiled — build `flue-broker` first, to `cmd/flue/flue-broker.bin`
   (the AGENTS.md Build/Test commands and the Containerfile all do
-  this), and have a bundle at `cmd/flue/flue-broker.sigstore` —
+  this), and have a bundle at `cmd/flue/flue-broker.sigstore.json` —
   signed by the release workflow or a local user, else a copy of the
   committed placeholder template. If either file is missing,
   compiling `cmd/flue` fails with "no matching files found": a
