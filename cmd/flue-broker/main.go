@@ -67,6 +67,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -192,6 +193,10 @@ func setProcName(name string) {
 	buf := make([]byte, len(name)+1)
 	copy(buf, name)
 	_ = unix.Prctl(unix.PR_SET_NAME, uintptr(unsafe.Pointer(&buf[0])), 0, 0, 0)
+	// KeepAlive: the pointer-to-uintptr handoff is only defined within
+	// that call expression, and without this the compiler may collect
+	// the buffer while prctl still reads it.
+	runtime.KeepAlive(buf)
 }
 
 // run is the broker proper; it returns the process exit code.
