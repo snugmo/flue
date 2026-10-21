@@ -274,3 +274,105 @@ three smaller points. Numbering continues from the items above.
     the session, which is the very thing the scan excludes). The file
     header's "place them before the subcommand" no longer breaks
     oddly.
+
+## Code review 2026-10-21 (11 findings)
+
+42. **Shutdown can hang when the host agent stalls (code-review
+    item 1, high)** — **fixed** (`🐛 fix: close upstream agent conns on
+    session shutdown`, ddf68ef). `handleClient` wrapped only the client
+    side in an `idleConn`; when the host agent accepts but never
+    answers, `ServeAgent` blocks on the upstream read with no deadline,
+    `closeAll` closed the client but not the upstream, and
+    `clients.Wait()` hung on the live handler. The upstream is now
+    tracked in the `clientSet` (`track`/`untrack`), `closeAll` closes
+    every tracked conn, and `track` returning false covers the race
+    where shutdown lands mid-`dialAgent`. Regression:
+    `TestHandleClientShutdownUnblocksStalledAgent` (a fake agent that
+    holds the connection; the handler must return after `closeAll`).
+43. **A handover flue cannot serve must abort the session (code-review
+    item 2, high)** — **fixed** (`🛡️ fix: abort the session on a
+    handover flue cannot serve`, 903f11b). Every post-read rejection in
+    `receiveListener` returned a nil error, so the caller proceeded to
+    `cmd.Wait()` with no listener (or an unusable one) and served a
+    broken session; the session-check decision switch also ran before
+    the fd validation, so required mode could log "session check on"
+    and then silently continue. The validation (truncated control
+    message, no fd, `getsockopt` failure, not a listening Unix stream
+    socket, no `*net.UnixListener` wrap) now happens first, each path
+    returns a real error that aborts, and the required-mode abort
+    closes the validated listener. Tests:
+    `TestReceiveListenerRejectsNoListenerFD`,
+    `TestReceiveListenerRejectsTruncatedMessage`, and
+    `TestReceiveListenerRejectsWrongFds` now asserting the error.
+44. **No warning when the key filter is open (code-review item 3,
+    low)** — **fixed** (`⚠️ fix: warn at session start when the key
+    filter is open`, 3d8de33). With neither `--allow-key` nor
+    `--allow-key-type` set, every key in the host agent was listed and
+    signable from the container silently; a session started that way
+    now logs a `warn` at handover naming both flags.
+45. **`--log-file` followed symlinks (code-review item 4, low)** —
+    **fixed** (`🔒 fix: open --log-file with O_NOFOLLOW`, db34937). A
+    log path in a shared directory could be pre-planted as a symlink,
+    redirecting log output to an arbitrary file with the user's
+    privileges; the open now passes `unix.O_NOFOLLOW`, so a planted
+    symlink fails the open instead.
+46. **The host kept the broker memfd pinned for the whole session
+    (code-review item 5, low)** — **fixed** (`📦 fix: release the host
+    memfd copy once the child has it`, 0224156). The memfd's
+    `os.File` was closed by a `defer` in `runEnter`'s scope, so the
+    host held its copy (and the in-memory broker bytes behind it)
+    until session end; `runChildWithAgent` now closes every preserved
+    file (alongside the control end) as soon as `cmd.Start()` succeeds
+    — the child owns its duplicate from then on.
+47. **`setProcName`'s unsafe.Pointer handoff lacked a KeepAlive
+    (code-review item 6, low)** — **fixed** (`🛡️ fix: keep the prctl
+    name buffer alive across the unsafe.Pointer handoff`, 0f7ce2c).
+    The `uintptr(unsafe.Pointer(&buf[0]))` conversion is defined only
+    within the `Prctl` call expression; `runtime.KeepAlive(buf)` now
+    keeps the heap buffer valid while the kernel reads it.
+48. **README still described the old member-scan privacy test
+    (code-review item 7, docs)** — **fixed** (`📝 docs: describe the
+    session-privacy gate from the leader test`, 93ebd15). Two
+    passages said a session is private when the broker is "its only
+    live member at handover" — the pre-`sessionIsPrivate` scan. Both
+    now describe the leader test: the broker leads the session, or the
+    leader that led it (a per-exec helper) has already exited.
+49. **`enterDashDash`'s comment gave wrong reasoning (code-review
+    item 8, docs)** — **fixed** (`📝 docs: correct the enterDashDash
+    anchor reasoning`, 3426755). The comment claimed no global flag
+    value could precede the subcommand's `enter` word — false (e.g.
+    `flue --sock enter enter box -- bash`). The code is correct for a
+    different reason: everything computed is suffix-based, so any
+    anchor before the first separator yields the same split; the
+    comment now says that.
+50. **The session check ran on the accept path (code-review item 9,
+    medium)** — **fixed** (`⚖️ fix: run the session check off the
+    accept path`, fafc651). `checkClientSession` (a `/proc` read plus
+    two `getsockopt` calls plus `pidfd_send_signal`) ran synchronously
+    in the single accept goroutine, before the client cap, so a
+    process connecting in a loop could starve `Accept()` for
+    legitimate connects. The check now runs in the per-connection
+    handler, after `clients.add` bounds the parallelism;
+    `docs/flue.md` notes the placement.
+51. **Release workflow actions ran from mutable tags (code-review
+    item 10, supply chain)** — **fixed** (`🔏 chore: pin release
+    workflow actions to commit SHAs`, 6ab4d6d). All fifteen `uses:` in
+    `release.yaml` now pin immutable commit SHAs (the tag kept as a
+    trailing comment), so a release is never signed and attested by
+    action code that moves; the golangci-lint job pins
+    `version: v2.15.0` instead of `latest` (lint was non-reproducible),
+    and every checkout sets `persist-credentials: false` (nothing in
+    the workflow pushes to the git remote; the repo is public, so the
+    release job's tag fetch needs no token) — the GITHUB_TOKEN no
+    longer sits in `.git/config` inside a build workspace.
+52. **Lint surface covered only errcheck (code-review item 11, low)**
+    — **fixed** (`🔍 chore: enable the gosec linter`, 3d1accd). gosec
+    now runs alongside errcheck in the lint job. Test files are
+    excluded like errcheck (their findings are the scaffolding: fake
+    `/proc` trees at real permissions, dials to the test's own
+    sockets, the test binary spawning itself). The six production
+    findings are audited and suppressed with `#nosec` plus the
+    reason: the two `exec.Command` calls that are the tools' entire
+    purpose (flue's child, the broker's wrapped command), the
+    audited `unsafe.Pointer` prctl name handoff, and a
+    `CreateTemp`/`Remove` pair the taint analysis cannot see through.
