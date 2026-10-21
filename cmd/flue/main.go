@@ -855,11 +855,12 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preser
 	clients := clientSet{max: maxClients}
 	listener, acceptDone, checkErr := receiveListener(ctrl, pol, &clients)
 
-	// The session check was required but cannot be enabled: fail closed.
-	// Close the control connection now — before the wait below, which
-	// would otherwise deadlock: the broker keeps its wrapped command
-	// alive until the host goes away — so the broker kills the command
-	// and exits, and this session is never served without the check.
+	// The handover is unusable, or the session check was required but
+	// cannot be enabled: fail closed. Close the control connection now —
+	// before the wait below, which would otherwise deadlock: the broker
+	// keeps its wrapped command alive until the host goes away — so the
+	// broker kills the command and exits, and the session is never
+	// served broken (or without the second gate).
 	if checkErr != nil {
 		log.Error("flue: session aborted", "err", checkErr)
 		closeQuiet(ctrl)
@@ -1336,6 +1337,74 @@ func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listen
 	} else if cerr != nil {
 		log.Warn("flue: no broker credentials in handover message", "err", cerr)
 	}
+	// The received fd is validated before the session check's state is
+	// decided and logged: a handover that carries no usable listener is a
+	// session failure (the returned error makes the caller abort), and
+	// deciding the check first (the old order) made a required-mode
+	// failure log "session check on" and then silently proceed to a
+	// session with no listener at all.
+	if flags&unix.MSG_CTRUNC != 0 {
+		log.Warn("flue: control message truncated; discarding")
+		perr = errors.New("truncated")
+	}
+	if perr != nil {
+		for _, fd := range fds {
+			closeFD(fd)
+		}
+		return nil, closedChannel(), fmt.Errorf("handover control message is unusable: %v", perr)
+	}
+	// Expect exactly one listener fd; use the first, close any extras.
+	listenFd := -1
+	for _, r := range fds {
+		if listenFd < 0 {
+			listenFd = r
+		} else {
+			closeFD(r)
+		}
+	}
+	if listenFd < 0 {
+		log.Warn("flue: no listener fd received")
+		return nil, closedChannel(), errors.New("handover message carried no listener fd")
+	}
+
+	// The received fd must be what the broker hands over: a listening Unix
+	// stream socket. FileListener alone accepts any listening socket (a
+	// compromised container could hand over a TCP listener), so validate
+	// with getsockopt on the raw fd — the same pattern the broker uses for
+	// its control fd (checkControlFD). On any mismatch: log, close, and
+	// fail the session (the returned error makes the caller abort).
+	domain, eDomain := unix.GetsockoptInt(listenFd, unix.SOL_SOCKET, unix.SO_DOMAIN)
+	typ, eType := unix.GetsockoptInt(listenFd, unix.SOL_SOCKET, unix.SO_TYPE)
+	acceptConn, eAccept := unix.GetsockoptInt(listenFd, unix.SOL_SOCKET, unix.SO_ACCEPTCONN)
+	if eDomain != nil || eType != nil || eAccept != nil ||
+		domain != unix.AF_UNIX || typ != unix.SOCK_STREAM || acceptConn != 1 {
+		log.Warn("flue: received fd is not a listening Unix stream socket",
+			"domain", domain, "type", typ, "acceptconn", acceptConn,
+			"err", errors.Join(eDomain, eType, eAccept))
+		closeFD(listenFd)
+		return nil, closedChannel(), errors.New("received fd is not a listening Unix stream socket")
+	}
+
+	// Wrap the received listener fd in a *net.UnixListener so Accept works.
+	// FileListener dups the fd, so close the os.File right away: otherwise
+	// the original stays open and the socket keeps listening even after the
+	// caller closes the returned listener. The type assertion rejects
+	// anything that is not a Unix listener, even though the getsockopt
+	// check above should already have excluded it.
+	lf := os.NewFile(uintptr(listenFd), "flue-listener")
+	fileListener, err := net.FileListener(lf)
+	closeFile(lf)
+	if err != nil {
+		log.Warn("flue: listener fd", "err", err)
+		return nil, closedChannel(), fmt.Errorf("wrap the received listener fd: %v", err)
+	}
+	listener, ok := fileListener.(*net.UnixListener)
+	if !ok {
+		closeListener(fileListener)
+		log.Warn("flue: listener fd did not wrap as a Unix listener")
+		return nil, closedChannel(), errors.New("received listener did not wrap as a Unix listener")
+	}
+
 	// The state of the client session check for this session, decided
 	// once here so the user can see whether the second gate applies. In
 	// required mode (injected broker with a tty) a check that cannot be
@@ -1350,75 +1419,13 @@ func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listen
 	case sessionCheckActive(pol):
 		log.Info("flue: session check on", "session", pol.brokerSession)
 	case pol.sessionCheckMode == sessionCheckRequired:
-		// The received fds (if any) would be closed later only on the
-		// normal path; close them here since the session ends now.
-		for _, fd := range fds {
-			closeFD(fd)
-		}
+		// The session ends before it is served: close the validated
+		// listener (its raw fd was already consumed by the wrap above).
+		closeListener(listener)
 		return nil, closedChannel(),
 			fmt.Errorf("session check is required but could not be enabled: %s", sessionCheckOffReason(pol))
 	default:
 		log.Info("flue: session check off", "reason", sessionCheckOffReason(pol))
-	}
-	if flags&unix.MSG_CTRUNC != 0 {
-		log.Warn("flue: control message truncated; discarding")
-		perr = errors.New("truncated")
-	}
-	if perr != nil {
-		for _, fd := range fds {
-			closeFD(fd)
-		}
-		return nil, closedChannel(), nil
-	}
-	// Expect exactly one listener fd; use the first, close any extras.
-	listenFd := -1
-	for _, r := range fds {
-		if listenFd < 0 {
-			listenFd = r
-		} else {
-			closeFD(r)
-		}
-	}
-	if listenFd < 0 {
-		log.Warn("flue: no listener fd received")
-		return nil, closedChannel(), nil
-	}
-
-	// The received fd must be what the broker hands over: a listening Unix
-	// stream socket. FileListener alone accepts any listening socket (a
-	// compromised container could hand over a TCP listener), so validate
-	// with getsockopt on the raw fd — the same pattern the broker uses for
-	// its control fd (checkControlFD). On any mismatch: log, close, reject.
-	domain, eDomain := unix.GetsockoptInt(listenFd, unix.SOL_SOCKET, unix.SO_DOMAIN)
-	typ, eType := unix.GetsockoptInt(listenFd, unix.SOL_SOCKET, unix.SO_TYPE)
-	acceptConn, eAccept := unix.GetsockoptInt(listenFd, unix.SOL_SOCKET, unix.SO_ACCEPTCONN)
-	if eDomain != nil || eType != nil || eAccept != nil ||
-		domain != unix.AF_UNIX || typ != unix.SOCK_STREAM || acceptConn != 1 {
-		log.Warn("flue: received fd is not a listening Unix stream socket",
-			"domain", domain, "type", typ, "acceptconn", acceptConn,
-			"err", errors.Join(eDomain, eType, eAccept))
-		closeFD(listenFd)
-		return nil, closedChannel(), nil
-	}
-
-	// Wrap the received listener fd in a *net.UnixListener so Accept works.
-	// FileListener dups the fd, so close the os.File right away: otherwise
-	// the original stays open and the socket keeps listening even after the
-	// caller closes the returned listener. The type assertion rejects
-	// anything that is not a Unix listener, even though the getsockopt
-	// check above should already have excluded it.
-	lf := os.NewFile(uintptr(listenFd), "flue-listener")
-	fileListener, err := net.FileListener(lf)
-	closeFile(lf)
-	if err != nil {
-		log.Warn("flue: listener fd", "err", err)
-		return nil, closedChannel(), nil
-	}
-	listener, ok := fileListener.(*net.UnixListener)
-	if !ok {
-		closeListener(fileListener)
-		log.Warn("flue: listener fd did not wrap as a Unix listener")
-		return nil, closedChannel(), nil
 	}
 	log.Debug("flue: accepting on handed-over listener")
 

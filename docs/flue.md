@@ -86,11 +86,15 @@ sub-subcommands run without `SSH_AUTH_SOCK` being set. A bare `flue`
   message, and `receiveListener` turns
   that pid into the broker's session id (`policy.brokerSession`), the
   reference the client session check compares against.
-- The received fd is validated before use: `getsockopt` on the raw fd must
-  report `AF_UNIX` / `SOCK_STREAM` / `SO_ACCEPTCONN=1`, and the wrapped
-  result must be a `*net.UnixListener`. Anything else (e.g. a TCP listener
-  from a host-networked container) is logged, closed, and rejected — the
-  accept loop only ever runs on a Unix listener.
+- A handover flue cannot serve fails the session: a truncated or
+  unparseable control message, a message with no fd, an fd that fails
+  validation (`getsockopt` on the raw fd must report `AF_UNIX` /
+  `SOCK_STREAM` / `SO_ACCEPTCONN=1` — a TCP listener from a
+  host-networked container is the case this exists to catch), or an fd
+  that does not wrap as a `*net.UnixListener` is logged, the received fd
+  is closed, and the caller aborts (closes the control channel so the
+  broker kills its command). The accept loop only ever runs on a
+  validated Unix listener.
 - The connection stays open until the broker is gone (so the broker never
   sees a premature "host gone") and is closed after `cmd.Wait()`.
 

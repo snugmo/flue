@@ -122,13 +122,15 @@ func openSocketsContains(inode string) bool {
 	return false
 }
 
-// TestReceiveListenerRejectsWrongFds verifies that receiveListener rejects
-// an fd that is not a listening Unix stream socket: a SOCK_SEQPACKET
-// socket (right domain, wrong type), an un-listened stream socket
-// (SO_ACCEPTCONN 0), and a TCP listener (wrong domain). Each rejection
-// must return no listener and close the received copy of the fd (the
-// last condition checked via the socket inode: the test closes its own
-// reference first, so a live socket in the fd table is flue's copy).
+// TestReceiveListenerRejectsWrongFds verifies that receiveListener fails
+// the session (non-nil error, no listener) for an fd that is not a
+// listening Unix stream socket: a SOCK_SEQPACKET socket (right domain,
+// wrong type), an un-listened stream socket (SO_ACCEPTCONN 0), and a TCP
+// listener (wrong domain) — a compromised container handing over a
+// foreign listener. Each rejection must also close the received copy of
+// the fd (the last condition checked via the socket inode: the test
+// closes its own reference first, so a live socket in the fd table is
+// flue's copy).
 func TestReceiveListenerRejectsWrongFds(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -179,11 +181,11 @@ func TestReceiveListenerRejectsWrongFds(t *testing.T) {
 
 			var cs clientSet
 			listener, acceptDone, rerr := receiveListener(host, &policy{}, &cs)
-			if rerr != nil {
-				t.Fatalf("receiveListener: %v", rerr)
+			if rerr == nil {
+				t.Fatalf("receiveListener accepted a %s fd (no error)", tc.name)
 			}
 			if listener != nil {
-				t.Fatalf("receiveListener accepted a %s fd", tc.name)
+				t.Fatalf("receiveListener returned a listener for a %s fd", tc.name)
 			}
 			<-acceptDone // a rejected handover returns a closed channel
 			if inode != "" && openSocketsContains(inode) {
@@ -191,6 +193,54 @@ func TestReceiveListenerRejectsWrongFds(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestReceiveListenerRejectsNoListenerFD verifies that a handover message
+// that carries no fd at all fails the session: the caller must abort
+// (flue would otherwise serve a session whose agent socket nobody
+// accepts, and in-container clients would block on connect forever)
+// instead of logging a warning and proceeding.
+func TestReceiveListenerRejectsNoListenerFD(t *testing.T) {
+	host, broker := makeControlPair(t)
+	// The broker's message with no SCM_RIGHTS: nothing to hand over.
+	if _, _, err := broker.(*net.UnixConn).WriteMsgUnix([]byte{0}, nil, nil); err != nil {
+		t.Fatalf("write msg: %v", err)
+	}
+	broker.Close()
+
+	var cs clientSet
+	listener, acceptDone, rerr := receiveListener(host, &policy{}, &cs)
+	if rerr == nil {
+		t.Fatal("receiveListener accepted a handover with no listener fd")
+	}
+	if listener != nil {
+		t.Fatal("receiveListener returned a listener for a handover with no fd")
+	}
+	<-acceptDone
+}
+
+// TestReceiveListenerRejectsTruncatedMessage verifies that a control
+// message that does not fit the receive buffer (MSG_CTRUNC) fails the
+// session instead of being silently discarded.
+func TestReceiveListenerRejectsTruncatedMessage(t *testing.T) {
+	host, broker := makeControlPair(t)
+	// A message longer than the 4096-byte receive buffer truncates on
+	// read (SEQPACKET delivers the part that fits and sets MSG_CTRUNC).
+	payload := make([]byte, 5000)
+	if _, _, err := broker.(*net.UnixConn).WriteMsgUnix(payload, nil, nil); err != nil {
+		t.Fatalf("write msg: %v", err)
+	}
+	broker.Close()
+
+	var cs clientSet
+	listener, acceptDone, rerr := receiveListener(host, &policy{}, &cs)
+	if rerr == nil {
+		t.Fatal("receiveListener accepted a truncated handover message")
+	}
+	if listener != nil {
+		t.Fatal("receiveListener returned a listener for a truncated message")
+	}
+	<-acceptDone
 }
 
 // TestClientSetCloseAll verifies that closeAll unblocks a handler stuck on
