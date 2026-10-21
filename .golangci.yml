@@ -1,7 +1,7 @@
 version: "2"
 linters:
-  enable: [errcheck]
+  enable: [errcheck, gosec]
   exclusions:
     rules:
       - path: _test\.go
-        linters: [errcheck]
+        linters: [errcheck, gosec]

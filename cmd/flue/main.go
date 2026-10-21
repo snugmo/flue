@@ -429,11 +429,13 @@ func init() {
 		} else {
 			// --log-file moves the logs (including refusal warnings)
 			// somewhere other than the user's tty; stderr otherwise.
-			// O_NOFOLLOW: a path in a shared directory can be pre-planted
-			// as a symlink, and following it would append log output to
-			// an arbitrary file with the user's privileges.
 			var out io.Writer = os.Stderr
 			if logFile != "" {
+				// #nosec G304 — --log-file is the user's explicit choice
+				// of where their own log goes; O_NOFOLLOW stops a path in
+				// a shared directory from being pre-planted as a symlink
+				// that would append log output to an arbitrary file with
+				// the user's privileges.
 				f, ferr := os.OpenFile(logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY|unix.O_NOFOLLOW, 0o600)
 				if ferr != nil {
 					fatalf("flue: open log file %s: %v", logFile, ferr)
@@ -820,6 +822,8 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preser
 	childFd := os.NewFile(uintptr(b), "flue-control-child")
 	defer closeFile(childFd)
 
+	// #nosec G204 — this is the tool: the child is the user's own
+	// container command (or a resolved image broker), not an injection.
 	cmd := exec.Command(cmdPath, cmdArgs...)
 	// The control socketpair is always the first preserved fd (fd 3). Any
 	// additional preserved files follow in order as fd 4, 5, ... — for

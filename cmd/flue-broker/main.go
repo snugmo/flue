@@ -192,6 +192,8 @@ func setProcName(name string) {
 	}
 	buf := make([]byte, len(name)+1)
 	copy(buf, name)
+	// #nosec G103 — audited: a NUL-terminated heap buffer (above), kept
+	// alive across the call, read only by prctl; a cosmetic failure.
 	_ = unix.Prctl(unix.PR_SET_NAME, uintptr(unsafe.Pointer(&buf[0])), 0, 0, 0)
 	// KeepAlive: the pointer-to-uintptr handoff is only defined within
 	// that call expression, and without this the compiler may collect
@@ -374,6 +376,8 @@ func runChild(args []string, sockPath string, ctrl net.Conn, sigc <-chan os.Sign
 		}
 	}
 
+	// #nosec G204 — the wrapped command is the broker's entire purpose:
+	// it is the user's own container command, resolved above.
 	cmd := exec.Command(cmdPath, args[1:]...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -511,6 +515,8 @@ func writableDir(dir string) bool {
 	}
 	name := f.Name()
 	_ = f.Close()
+	// #nosec G703 — the path comes from os.CreateTemp inside dir; no
+	// traversal is possible (the taint analysis cannot see that).
 	_ = os.Remove(name)
 	return true
 }
