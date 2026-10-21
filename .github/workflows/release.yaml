@@ -35,11 +35,18 @@
 # ubuntu-26.04 deliberately in a later release once tested here.
 # (github.com/actions/runner-images#14748)
 #
-# Action versions are pinned to their Node 24 majors (checkout, setup-go,
-# golangci-lint, upload/download-artifact, action-gh-release): the older
-# majors run on Node 20, which GitHub's runners now deprecate in favour
-# of Node 24. Bumping to the Node 24 majors clears that deprecation warning
-# without changing any input in use here.
+# Every action is pinned to a commit SHA (the tag the SHA came from is
+# kept in a trailing comment): this workflow signs and attests releases,
+# so a mutable tag on a third-party repo is a supply-chain hole, and the
+# SHAs make each release auditable down to the exact action code that ran.
+# Re-pinning is a deliberate, reviewed change. The Node 24 majors (the
+# older ones run on the deprecated Node 20 runtime) are the baseline.
+#
+# The checkouts use persist-credentials: false: no job pushes to the git
+# remote (the release job's tag fetch works unauthenticated — the repo is
+# public), so the GITHUB_TOKEN never sits in .git/config inside a
+# workspace (the image job's build contexts tar the workspace minus .git,
+# but not taking the risk is the point).
 name: Release
 
 on:
@@ -54,8 +61,10 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache: true
@@ -75,8 +84,10 @@ jobs:
   lint:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
       - name: Build broker (embed source)
@@ -85,9 +96,9 @@ jobs:
         run: go build -ldflags="-s -w" -o cmd/flue/flue-broker.bin ./cmd/flue-broker
       - name: Place the placeholder broker bundle (embed source)
         run: test -f cmd/flue/flue-broker.sigstore.json || cp cmd/flue/flue-broker.sigstore.json.placeholder cmd/flue/flue-broker.sigstore.json
-      - uses: golangci/golangci-lint-action@v9
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
-          version: latest
+          version: v2.15.0
 
   image:
     needs: [test]
@@ -115,7 +126,9 @@ jobs:
       # name never changes and the tags are explicit below).
       IMAGE: ghcr.io/snugmo/flue
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Image refs
         id: refs
         run: |
@@ -135,18 +148,18 @@ jobs:
             # build cache or of a new golang:1.27.x patch landing.
             echo "goversion=$(awk '/^go /{print $2}' go.mod)"
           } >> "${GITHUB_OUTPUT}"
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - name: Log in to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # Pinned to a specific release: cosign-installer has no bare "v4" tag
-      # (only v4.0.0+ and a v3), so @v4 does not resolve. Installed before
-      # the broker sign (below) as well as the image sign.
+      # The SHA is cosign-installer v4.1.2: the repo has no bare "v4"
+      # tag (only v4.0.0+ and a v3), so @v4 would not resolve. Installed
+      # before the broker sign (below) as well as the image sign.
       - name: Install cosign
-        uses: sigstore/cosign-installer@v4.1.2
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: v3.1.3
       # The brokers are not release assets (each ships inside its
@@ -219,7 +232,7 @@ jobs:
       # runs natively on the runner.
       - name: Build and push the amd64 image
         id: build-amd64
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: ctx/amd64
           file: Containerfile
@@ -233,7 +246,7 @@ jobs:
             CREATED=${{ steps.refs.outputs.created }}
       - name: Build and push the arm64 image
         id: build-arm64
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: ctx/arm64
           file: Containerfile
@@ -278,14 +291,14 @@ jobs:
       # predicate from the workflow's OIDC claims, which is why it
       # works per platform the same way it did for the manifest list.)
       - name: Attest the amd64 image (SLSA provenance)
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.build-amd64.outputs.digest }}
           push-to-registry: true
           create-storage-record: true
       - name: Attest the arm64 image (SLSA provenance)
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.build-arm64.outputs.digest }}
@@ -379,11 +392,11 @@ jobs:
           ./dist/flue_${tag}_linux_${FLUE_ARCH} broker sigstore-bundle /tmp/flue-broker-bundle
           cmp /tmp/flue-broker-bundle "dist/brokers/${FLUE_ARCH}/flue-broker.sigstore.json"
       - name: Attest the amd64 broker
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: ${{ github.workspace }}/dist/brokers/amd64/flue-broker
       - name: Attest the arm64 broker
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: ${{ github.workspace }}/dist/brokers/arm64/flue-broker
       # Only the flue binaries go in the artifact (the broker and its
@@ -394,7 +407,7 @@ jobs:
       # extract step above produced — github.ref_name keeps the v and
       # would point at paths that do not exist.
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: flue_${{ steps.refs.outputs.tag }}
           path: |
@@ -414,7 +427,9 @@ jobs:
     steps:
       # The tag's commit — and, via the fetch in the next step, the
       # annotated tag's message: the release body comes from the tag.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       # The release body is the annotated tag's message (the curated
       # release notes). GitHub's auto-generated notes (a changelog
       # link and a commit list) are not a substitute, so softprops'
@@ -436,15 +451,15 @@ jobs:
             echo "file=release-notes.md" >> "${GITHUB_OUTPUT}"
             echo "annotated=true" >> "${GITHUB_OUTPUT}"
           fi
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: artifacts
       - name: Flatten
         run: find artifacts -type f -exec mv {} . \;
-      # Pinned to a specific release: cosign-installer has no bare "v4" tag
-      # (only v4.0.0+ and a v3), so @v4 does not resolve.
+      # The SHA is cosign-installer v4.1.2: the repo has no bare "v4"
+      # tag (only v4.0.0+ and a v3), so @v4 would not resolve.
       - name: Install cosign
-        uses: sigstore/cosign-installer@v4.1.2
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: v3.1.3
       - name: Sign the release binaries (Sigstore keyless)
@@ -463,7 +478,7 @@ jobs:
       - name: Generate SHA256SUMS
         run: sha256sum flue_* > SHA256SUMS
       - name: Publish release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           # flue_* covers the binaries and their .sigstore.json bundles.
           files: |
