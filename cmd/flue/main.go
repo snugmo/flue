@@ -616,7 +616,8 @@ func runEnter(args []string, sockPath string) int {
 		if err != nil {
 			fatalf("flue: enter: %v", err)
 		}
-		defer closeFile(mf)
+		// The host keeps no copy past cmd.Start(): runChildWithAgent closes
+		// every preserved file once the child has its own duplicate.
 		preserved = []*os.File{mf}
 	}
 
@@ -828,11 +829,16 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preser
 		fatalf("flue: start %s: %v", cmdPath, err)
 	}
 
-	// Close the host copy of end B; the child now owns it. This goes
-	// through childFd (which owns the fd) rather than a raw unix.Close, so
-	// the deferred close above is a harmless no-op instead of a second
-	// close of a possibly reused fd number.
+	// Close the host copies of everything passed to the child: end B
+	// (through childFd, which owns the fd, rather than a raw unix.Close,
+	// so the deferred close above is a harmless no-op instead of a second
+	// close of a possibly reused fd number) and the additional preserved
+	// files (the broker memfd) — the child owns its duplicates now, and
+	// keeping the host copies open only pins their fds until session end.
 	closeFile(childFd)
+	for _, f := range preserved {
+		closeFile(f)
+	}
 
 	// The host's control socket is end A. net.FileConn dups the fd, so the
 	// os.File is closed right away; left open it would keep the original
