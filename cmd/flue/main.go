@@ -429,9 +429,12 @@ func init() {
 		} else {
 			// --log-file moves the logs (including refusal warnings)
 			// somewhere other than the user's tty; stderr otherwise.
+			// O_NOFOLLOW: a path in a shared directory can be pre-planted
+			// as a symlink, and following it would append log output to
+			// an arbitrary file with the user's privileges.
 			var out io.Writer = os.Stderr
 			if logFile != "" {
-				f, ferr := os.OpenFile(logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+				f, ferr := os.OpenFile(logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY|unix.O_NOFOLLOW, 0o600)
 				if ferr != nil {
 					fatalf("flue: open log file %s: %v", logFile, ferr)
 				}
