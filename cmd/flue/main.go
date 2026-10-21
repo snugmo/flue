@@ -850,6 +850,15 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preser
 		refusals:             &refusalLimiter{},
 	}
 
+	// The default filter is open: with neither --allow-key nor
+	// --allow-key-type set, every key in the host agent is listed and
+	// signable from the container. The safe configuration is the one the
+	// user has to remember, so say so at session start (the info line
+	// below records the filter for the session).
+	if len(pol.allow) == 0 && len(pol.allowTypes) == 0 {
+		log.Warn("flue: no --allow-key or --allow-key-type set: every key in the host agent is listed and signable from the container")
+	}
+
 	log.Info("flue: agent", "sock", sockPath, "filter", allowKeys.describe(), "filter-types", allowKeyTypes.describe(), "exec", append([]string{cmdPath}, cmdArgs...))
 
 	clients := clientSet{max: maxClients}
