@@ -193,7 +193,10 @@ listener.
   <reason>`), a `warn` with the reason in off mode, and an `error`
   that aborts the session in required mode when the check cannot be
   enabled.
-- Each accepted connection is checked before it is proxied:
+- Each accepted connection is checked before it is proxied — in the
+  per-connection handler, not on the accept path, so a process that
+  connects in a loop cannot hold up `Accept()` (the live-connection cap
+  bounds how many checks run in parallel):
   `getsockopt(SO_PEERCRED)` on the accepted connection yields the
   client's pid in flue's pid namespace — the kernel records it at
   connect time and translates it to the reader's namespace, so a client

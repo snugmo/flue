@@ -1455,10 +1455,8 @@ func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listen
 				continue
 			}
 			delay = 0
-			if !checkClientSession(conn, pol) {
-				closeQuiet(conn)
-				continue
-			}
+			// The cap is applied before the session check, which bounds
+			// how many checks (and handlers) can run in parallel.
 			if !clients.add(conn) {
 				// Rate-limited like the session-check refusals
 				// (lograte.go): a container process can connect in a
@@ -1469,6 +1467,15 @@ func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listen
 			}
 			go func(c net.Conn) {
 				defer clients.done(c)
+				// The session check runs here, not on the accept path:
+				// it does a /proc read and a pidfd liveness syscall per
+				// connect, and a container process connecting in a loop
+				// must not hold up Accept() and starve legitimate
+				// clients (the cap above bounds the parallelism).
+				if !checkClientSession(c, pol) {
+					closeQuiet(c)
+					return
+				}
 				handleClient(c, pol, clients)
 			}(conn)
 		}
