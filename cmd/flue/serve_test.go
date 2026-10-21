@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -216,6 +218,86 @@ func TestClientSetCloseAll(t *testing.T) {
 	defer b.Close()
 	if cs.add(a) {
 		t.Fatal("add after closeAll accepted")
+	}
+}
+
+// TestHandleClientShutdownUnblocksStalledAgent is the regression test for
+// a hung shutdown: the host agent accepts the upstream connection and
+// never answers (for example, it is blocked on an askpass confirmation
+// the user lost, and the user exited with it pending). ServeAgent blocks
+// in the upstream read, which closing the client side (closeAll) cannot
+// unblock — closeAll must close the upstream too, and the handler must
+// return.
+func TestHandleClientShutdownUnblocksStalledAgent(t *testing.T) {
+	// A fake host agent: it accepts and, once the request is off the
+	// wire, goes silent.
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "agent.sock")
+	agentL, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	requestSeen := make(chan struct{})
+	hold := make(chan struct{})
+	t.Cleanup(func() {
+		close(hold) // release the per-connection goroutines (goleak)
+		agentL.Close() // end the accept loop
+	})
+	go func() {
+		for {
+			c, err := agentL.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				// The forwarded request: a 4-byte big-endian length
+				// (1) and the request byte.
+				if _, err := io.ReadFull(c, make([]byte, 5)); err == nil {
+					close(requestSeen) // the request is off the wire
+				}
+				<-hold
+			}(c)
+		}
+	}()
+
+	clientEnd, testEnd := net.Pipe()
+	t.Cleanup(func() {
+		clientEnd.Close()
+		testEnd.Close()
+	})
+
+	pol := &policy{sock: sockPath}
+	var cs clientSet
+	if !cs.add(clientEnd) {
+		t.Fatal("add refused")
+	}
+	finished := make(chan struct{})
+	go func() {
+		defer cs.done(clientEnd)
+		handleClient(clientEnd, pol, &cs)
+		close(finished)
+	}()
+
+	// A list request in the current agent protocol: a 4-byte big-endian
+	// length, then opcode 11 (requestIdentities). The handler dials the
+	// fake agent, forwards the request, and blocks waiting for a reply
+	// that never comes.
+	if _, err := testEnd.Write([]byte{0, 0, 0, 1, 11}); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	select {
+	case <-requestSeen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request never reached the fake agent")
+	}
+
+	cs.closeAll()
+	cs.Wait()
+	select {
+	case <-finished:
+	case <-time.After(3 * time.Second):
+		t.Fatal("handler did not return after closeAll (stalled upstream not closed)")
 	}
 }
 

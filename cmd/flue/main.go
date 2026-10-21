@@ -16,7 +16,11 @@
 // premature "host gone"), and flue blocks on its child (the `podman exec`
 // that runs the broker) exiting. In standalone mode the broker runs until
 // flue is signalled; in wrapper mode the broker exits when the wrapped
-// command does, so flue returns that command's exit status.
+// command does, so flue returns that command's exit status. On the child's
+// exit, flue closes the listener and every remaining connection — the
+// client side and the per-client upstream to the host agent (a handler can
+// be blocked reading an unresponsive agent, which closing the client side
+// alone does not unblock) — and waits for the handlers before returning.
 //
 // The filter implements agent.ExtendedAgent:
 //   - List: forwarded, but only keys allowed by the --allow-key and
@@ -1458,7 +1462,7 @@ func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listen
 			}
 			go func(c net.Conn) {
 				defer clients.done(c)
-				handleClient(c, pol)
+				handleClient(c, pol, clients)
 			}(conn)
 		}
 	}()
@@ -1466,8 +1470,9 @@ func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listen
 	return listener, acceptDone, nil
 }
 
-// clientSet tracks the live client connections so shutdown can close them
-// and wait for their handlers. The embedded WaitGroup counts handlers.
+// clientSet tracks the live client connections (and their upstream agent
+// connections, see track) so shutdown can close them and wait for their
+// handlers. The embedded WaitGroup counts handlers.
 type clientSet struct {
 	sync.WaitGroup
 	mu     sync.Mutex
@@ -1500,8 +1505,34 @@ func (s *clientSet) done(c net.Conn) {
 	s.Done()
 }
 
-// closeAll closes every live client connection, which unblocks their
-// handlers, and refuses new ones.
+// track registers c for closeAll without counting a handler: it is used
+// for the per-client upstream agent connections, which shutdown must
+// close too — closing only the client side does not unblock a handler
+// blocked reading an upstream that accepts but never answers. If closeAll
+// has already run it reports false and the caller closes c itself (the
+// shared mutex makes that race one-sided).
+func (s *clientSet) track(c net.Conn) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
+	if s.conns == nil {
+		s.conns = make(map[net.Conn]struct{})
+	}
+	s.conns[c] = struct{}{}
+	return true
+}
+
+// untrack removes c from the closeAll set (the handler is done with it).
+func (s *clientSet) untrack(c net.Conn) {
+	s.mu.Lock()
+	delete(s.conns, c)
+	s.mu.Unlock()
+}
+
+// closeAll closes every live connection — the client side and the upstream
+// agent side — which unblocks their handlers, and refuses new ones.
 func (s *clientSet) closeAll() {
 	s.mu.Lock()
 	s.closed = true
@@ -1837,8 +1868,12 @@ func closedChannel() <-chan struct{} {
 
 // handleClient proxies one client connection to the agent: it dials a
 // fresh upstream connection, wraps it with a filter carrying the session's
-// policy, and runs agent.ServeAgent until the client disconnects.
-func handleClient(client net.Conn, pol *policy) {
+// policy, and runs agent.ServeAgent until the client disconnects. The
+// upstream is registered in the client set as well (track): ServeAgent can
+// block in the upstream read (a host agent that accepts but never answers,
+// e.g. one stuck on an askpass confirmation), which closing the client
+// side cannot unblock, so closeAll closes it too.
+func handleClient(client net.Conn, pol *policy, clients *clientSet) {
 	defer closeQuiet(client)
 	client = &idleConn{Conn: client, timeout: idleTimeout}
 
@@ -1847,7 +1882,15 @@ func handleClient(client net.Conn, pol *policy) {
 		log.Warn("flue: dial upstream", "err", err)
 		return
 	}
-	defer closeQuiet(upstream)
+	defer func() {
+		closeQuiet(upstream)
+		clients.untrack(upstream)
+	}()
+	if !clients.track(upstream) {
+		// closeAll ran while the dial was in flight: the client was
+		// already closed and there is nothing left to serve.
+		return
+	}
 
 	// ServeAgent returns when the client connection ends; I/O errors there
 	// are normal (peer closed), so the result is not checked.
