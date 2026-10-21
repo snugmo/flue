@@ -364,10 +364,11 @@ cosign verify-blob /tmp/flue-broker \
    `$SSH_AUTH_SOCK` and runs `agent.ServeAgent(filter, clientConn)` —
    the filter wraps the upstream agent client and enforces the key
    allowlist. From the handover message's `SCM_CREDENTIALS` it learns
-   the broker's session id. When that session is private (its only
-   live member at handover — what an exec that created its own session
-   looks like, with or without a tty), each accepted client must share
-   it (`SO_PEERCRED` → `/proc`); clients from another session are
+   the broker's session id. When that session is private — the broker
+   leads it, or the leader that led it has already exited (what an exec
+   that created its own session looks like, with or without a tty) —
+   each accepted client must share it (`SO_PEERCRED` → `/proc`); clients
+   from another session are
    refused. For an interactive `flue enter` (injected broker with a
    tty) the check is required: if it cannot be enabled, `flue` aborts
    the session rather than serve it without the check. With
@@ -407,9 +408,10 @@ policy table above carries the per-operation detail), and it never sees a
 path or fd to the host agent socket, its directory, or `$XDG_RUNTIME_DIR`.
 The trust boundary is the allowlists, not the container.
 
-When the broker's session is private — its only live member at
-handover time, what an exec that created its own session looks like,
-with or without a tty — a second gate applies: every client must share
+When the broker's session is private — the broker leads it, or the
+leader that led it at handover has already exited, what an exec that
+created its own session looks like, with or without a tty — a second
+gate applies: every client must share
 the broker's session, so a rogue process that starts its own session
 (for example via `setsid`) or comes from another `podman exec` cannot
 even reach the agent, and a client whose session cannot be verified is
