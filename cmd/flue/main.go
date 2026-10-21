@@ -684,14 +684,18 @@ func enterTarget(args []string) (container string, cmd []string, err error) {
 // positional arguments before it (at most one) name the container. It
 // returns the tokens after the last separator, the number of positional
 // arguments before the first separator, and whether a separator appears
-// after the subcommand (found as the first `enter` word in os.Args, which
-// no global flag value can precede it as a subcommand).
+// after the subcommand.
 //
-// The count is derived arithmetically: pflag consumes only the first
-// separator and appends the remaining tokens verbatim (any later `--`
-// included), so the positional arguments cobra hands to Run are exactly
-// the pre-separator positional arguments plus everything after the first
-// separator.
+// The anchor is the first `enter` word in os.Args. It is usually the
+// subcommand, but a global flag value may equal `enter` (e.g.
+// `flue --sock enter enter box -- bash`), and the first match then lands
+// on that value instead — harmless, because everything computed below is
+// suffix-based: pflag consumes only the first separator and appends the
+// remaining tokens verbatim (any later `--` included), so the positional
+// arguments cobra hands to Run are exactly the pre-separator positional
+// arguments plus everything after the first separator, and the pre-count
+// is their length difference no matter how many leading tokens (flag
+// value, subcommand, container) the anchor's suffix carries.
 func enterDashDash(args []string) (cmd []string, preCount int, present bool) {
 	i := 0
 	for i < len(os.Args) && os.Args[i] != "enter" {
