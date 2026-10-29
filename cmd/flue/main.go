@@ -96,6 +96,15 @@
 // container (the -default-shell flag: $SHELL, /bin/bash, /bin/sh, then
 // bash or sh in $PATH); an explicit command always wins.
 //
+// Log output that goes to a terminal is written through a crlfWriter in
+// the subcommands that proxy the agent (enter, exec): their child (a
+// podman exec that requests a tty) puts the shared terminal into raw
+// mode, which disables ONLCR — a bare \n no longer returns the cursor
+// to column zero, so a record flue writes itself while the child owns
+// the terminal would end with a bare \n and the next record would start
+// where it ended. \r\n line endings render in both raw and cooked
+// mode; piped stderr and --log-file stay plain \n.
+//
 // exec — the passthrough form: run any command that receives the control
 // socketpair (typically flue-broker, or a wrapper that preserves fd 3):
 //
@@ -464,7 +473,8 @@ func init() {
 			// --log-file moves the logs (including refusal warnings)
 			// somewhere other than the user's tty; stderr otherwise.
 			var out io.Writer = os.Stderr
-			if logFile != "" {
+			switch {
+			case logFile != "":
 				// #nosec G304 — --log-file is the user's explicit choice
 				// of where their own log goes; O_NOFOLLOW stops a path in
 				// a shared directory from being pre-planted as a symlink
@@ -475,6 +485,15 @@ func init() {
 					fatalf("flue: open log file %s: %v", logFile, ferr)
 				}
 				out = f
+			case stderrIsTTY() && cmd.Annotations[needsAgentAnnotation] != "":
+				// The child (a podman exec that requests a tty) puts the
+				// shared terminal into raw mode, which disables ONLCR: a
+				// bare \n would then drop the cursor a row without
+				// returning it to column zero, so the next record would
+				// start where the previous one ended. crlfWriter
+				// terminates lines \r\n, which renders in both raw and
+				// cooked mode. Piped stderr stays plain \n.
+				out = &crlfWriter{w: os.Stderr}
 			}
 			log = slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{Level: lvl}))
 		}
@@ -814,6 +833,13 @@ func enterExecArgs(container string, cmd []string, tty, injectBroker bool) []str
 // (which fails for pipes, regular files, and sockets).
 func stdinIsTTY() bool {
 	_, err := unix.IoctlGetTermios(int(os.Stdin.Fd()), unix.TCGETS)
+	return err == nil
+}
+
+// stderrIsTTY reports whether stderr is a terminal, using the TCGETS
+// ioctl (which fails for pipes, regular files, and sockets).
+func stderrIsTTY() bool {
+	_, err := unix.IoctlGetTermios(int(os.Stderr.Fd()), unix.TCGETS)
 	return err == nil
 }
 
