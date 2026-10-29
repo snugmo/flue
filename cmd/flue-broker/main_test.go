@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -164,6 +165,273 @@ func TestRunChildExitCode(t *testing.T) {
 				t.Fatalf("runChild: got exit code %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+// makeExec writes an executable shell stand-in named name into dir and
+// returns its path.
+func makeExec(t *testing.T, dir, name string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write %s: %v", p, err)
+	}
+	return p
+}
+
+// TestValidateShell verifies the $SHELL usability check: a bare name
+// resolves in $PATH, a path is used as-is, and a file is rejected when it
+// is missing, not a regular file, not executable, or — with a
+// non-empty /etc/shells — not listed in it; a missing, empty, or
+// comment-only /etc/shells imposes no restriction.
+func TestValidateShell(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PATH", dir)
+
+	exec := makeExec(t, dir, "mysh")
+	plain := filepath.Join(dir, "plain")
+	if err := os.WriteFile(plain, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write plain: %v", err)
+	}
+	shellsFile := filepath.Join(dir, "shells")
+	absentShells := filepath.Join(dir, "shells-absent")
+
+	oldShells := shellsPath
+	t.Cleanup(func() { shellsPath = oldShells })
+	// writeShells points shellsPath at a file with the given content, or at
+	// a nonexistent path when content is nil.
+	writeShells := func(content *string) {
+		if content == nil {
+			shellsPath = absentShells
+			return
+		}
+		if err := os.WriteFile(shellsFile, []byte(*content), 0o644); err != nil {
+			t.Fatalf("write shells: %v", err)
+		}
+		shellsPath = shellsFile
+	}
+	shellsContent := func(s string) *string { return &s }
+
+	for _, tc := range []struct {
+		name     string
+		s        string
+		shells   *string
+		wantPath string
+		wantWhy  string
+	}{
+		{"bare name resolves in $PATH", "mysh", nil, exec, ""},
+		{"absolute path used as-is", exec, nil, exec, ""},
+		{"missing file", filepath.Join(dir, "nope"), nil, "", "not found"},
+		{"not executable", plain, nil, "", "not executable"},
+		{"directory is not a regular file", dir, nil, "", "not a regular file"},
+		{"listed in /etc/shells", exec, shellsContent(exec + "\n/bin/other\n"), exec, ""},
+		{"not listed in /etc/shells", exec, shellsContent("/bin/other\n"), "", "not listed in " + shellsFile},
+		{"empty /etc/shells imposes no restriction", exec, shellsContent(""), exec, ""},
+		{"comment-only /etc/shells imposes no restriction", exec, shellsContent("# only a comment\n"), exec, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writeShells(tc.shells)
+			path, why := validateShell(tc.s)
+			if path != tc.wantPath || why != tc.wantWhy {
+				t.Fatalf("validateShell(%q) = (%q, %q), want (%q, %q)", tc.s, path, why, tc.wantPath, tc.wantWhy)
+			}
+		})
+	}
+}
+
+// TestResolveDefaultShell verifies the -default-shell fallback order:
+// $SHELL (when usable) first, then the fixed candidates, then the path
+// names in $PATH, and a clear error when nothing is usable. The fixed
+// candidates and $PATH point at separate temporary directories so the
+// host's /bin is never consulted.
+func TestResolveDefaultShell(t *testing.T) {
+	oldCand, oldNames, oldShells := defaultShellCandidates, defaultShellPathNames, shellsPath
+	t.Cleanup(func() {
+		defaultShellCandidates, defaultShellPathNames, shellsPath = oldCand, oldNames, oldShells
+	})
+
+	for _, tc := range []struct {
+		name        string
+		shellEnv    string
+		shellFile   bool     // whether the $SHELL file exists in the $PATH dir
+		cand        []string // candidate names that exist
+		pathNames   []string // other names that exist in the $PATH dir
+		want        string
+		wantSource  string
+		wantErrPart string
+	}{
+		{
+			name:       "$SHELL wins when usable",
+			shellEnv:   "mysh",
+			shellFile:  true,
+			pathNames:  []string{"bash"},
+			wantSource: "$SHELL",
+		},
+		{
+			name:       "$SHELL missing falls through to the first candidate",
+			shellEnv:   "absent",
+			cand:       []string{"bash"},
+			wantSource: "cand/bash",
+		},
+		{
+			name:       "second candidate when the first is absent",
+			cand:       []string{"sh"},
+			wantSource: "cand/sh",
+		},
+		{
+			name:       "$PATH bash when no candidate exists",
+			pathNames:  []string{"bash", "sh"},
+			wantSource: "path/bash",
+		},
+		{
+			name:       "$PATH sh when only sh exists",
+			pathNames:  []string{"sh"},
+			wantSource: "path/sh",
+		},
+		{
+			name:        "nothing usable errors with the fallback order",
+			shellEnv:    "absent",
+			wantErrPart: "no usable shell found",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candDir, pathDir := t.TempDir(), t.TempDir()
+			t.Setenv("PATH", pathDir)
+			defaultShellCandidates = nil
+			for _, n := range tc.cand {
+				defaultShellCandidates = append(defaultShellCandidates, filepath.Join(candDir, n))
+			}
+			defaultShellPathNames = []string{"bash", "sh"}
+			shellsPath = filepath.Join(candDir, "shells-absent")
+			for _, n := range tc.cand {
+				makeExec(t, candDir, n)
+			}
+			for _, n := range tc.pathNames {
+				makeExec(t, pathDir, n)
+			}
+			if tc.shellFile {
+				makeExec(t, pathDir, tc.shellEnv)
+			}
+			if tc.shellEnv == "" {
+				os.Unsetenv("SHELL")
+			} else {
+				t.Setenv("SHELL", tc.shellEnv)
+			}
+
+			want := ""
+			wantSource := tc.wantSource
+			switch tc.wantSource {
+			case "$SHELL":
+				want = filepath.Join(pathDir, tc.shellEnv)
+			case "cand/bash":
+				want, wantSource = filepath.Join(candDir, "bash"), filepath.Join(candDir, "bash")
+			case "cand/sh":
+				want, wantSource = filepath.Join(candDir, "sh"), filepath.Join(candDir, "sh")
+			case "path/bash":
+				want, wantSource = filepath.Join(pathDir, "bash"), "bash in $PATH"
+			case "path/sh":
+				want, wantSource = filepath.Join(pathDir, "sh"), "sh in $PATH"
+			}
+
+			gotPath, gotSource, err := resolveDefaultShell()
+			if tc.wantErrPart != "" {
+				if err == nil {
+					t.Fatalf("resolveDefaultShell() = (%q, %q, nil), want an error", gotPath, gotSource)
+				}
+				if !strings.Contains(err.Error(), tc.wantErrPart) {
+					t.Fatalf("error %q does not contain %q", err, tc.wantErrPart)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveDefaultShell() error: %v", err)
+			}
+			if gotPath != want || gotSource != wantSource {
+				t.Fatalf("resolveDefaultShell() = (%q, %q), want (%q, %q)", gotPath, gotSource, want, wantSource)
+			}
+		})
+	}
+}
+
+// resetRunFlags restores the broker's flag variables to their declared
+// defaults. The stdlib flag package does not reset values between
+// flag.Parse calls in one process, so a run() call from an earlier test
+// can leave behind a value this test's arguments do not carry (e.g.
+// -version set by TestVersionFlag).
+func resetRunFlags() {
+	*sockPath = ""
+	*fdArg = "3"
+	*logLevel = "info"
+	*defaultShell = false
+	*showVersion = false
+}
+
+// TestRunDefaultShellFlag verifies run() end-to-end in -default-shell
+// mode: a real control socketpair dup'd onto fd 3, a $SHELL pointing at a
+// temporary script that records its run and exits 4, and the child's exit
+// code is returned.
+func TestRunDefaultShellFlag(t *testing.T) {
+	resetRunFlags()
+	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("socketpair: %v", err)
+	}
+	defer unix.Close(pair[0])
+	defer unix.Close(pair[1])
+	if err := unix.Dup2(pair[1], 3); err != nil {
+		t.Fatalf("dup2 to fd 3: %v", err)
+	}
+	defer unix.Close(3)
+
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran")
+	shell := filepath.Join(dir, "mysh")
+	if err := os.WriteFile(shell, []byte("#!/bin/sh\ntouch "+marker+"\nexit 4\n"), 0o755); err != nil {
+		t.Fatalf("write shell: %v", err)
+	}
+	t.Setenv("SHELL", shell)
+	// The default /etc/shells (restored once the earlier tests' cleanups
+	// run) would reject this /tmp script as an unlisted login shell.
+	oldShells := shellsPath
+	shellsPath = filepath.Join(dir, "shells-absent")
+	t.Cleanup(func() { shellsPath = oldShells })
+
+	oldArgs := os.Args
+	t.Cleanup(func() { os.Args = oldArgs })
+	os.Args = []string{"flue-broker", "-fd", "3", "-sock", filepath.Join(dir, "s.sock"), "-default-shell"}
+
+	if got := run(); got != 4 {
+		t.Fatalf("run() = %d, want 4 (the $SHELL child's exit code)", got)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("the $SHELL script did not run: %v", err)
+	}
+}
+
+// TestRunDefaultShellMutualExclusion verifies that -default-shell and a
+// positional command is a startup error, reported before any socket setup
+// (no control fd needed).
+func TestRunDefaultShellMutualExclusion(t *testing.T) {
+	resetRunFlags()
+	oldArgs := os.Args
+	t.Cleanup(func() { os.Args = oldArgs })
+	os.Args = []string{"flue-broker", "-default-shell", "bash"}
+
+	f, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatalf("create temp stderr: %v", err)
+	}
+	defer f.Close()
+	oldStderr := os.Stderr
+	os.Stderr = f
+	code := run()
+	os.Stderr = oldStderr
+	data, _ := os.ReadFile(f.Name())
+	if code != 1 {
+		t.Fatalf("run() = %d, want 1", code)
+	}
+	if !strings.Contains(string(data), "cannot be combined with a command") {
+		t.Errorf("output %q does not name the conflict", data)
 	}
 }
 

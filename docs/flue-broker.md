@@ -7,9 +7,10 @@ connections. The file header in `main.go` is the authoritative overview.
 
 ## Modes
 
-- **Standalone** (no arguments): hands the listener to the host, blocks
-  until the control channel reports the host gone (EOF) or a termination
-  signal (SIGTERM/SIGHUP/SIGINT) arrives, removes the socket, and exits.
+- **Standalone** (no arguments, no `-default-shell`): hands the listener
+  to the host, blocks until the control channel reports the host gone
+  (EOF) or a termination signal (SIGTERM/SIGHUP/SIGINT) arrives, removes
+  the socket, and exits.
 - **Wrapper** (`flue-broker [cmd] [args...]`): hands the listener over,
   then runs the command as a child process with `SSH_AUTH_SOCK` pointed
   at the broker's socket, and exits with the child's exit status. The
@@ -18,6 +19,10 @@ connections. The file header in `main.go` is the authoritative overview.
   child and the broker exits 1. SIGTERM/SIGHUP reaching the broker are
   forwarded to the child; SIGINT is swallowed (on a tty the child already
   gets its own copy).
+- **Default shell** (`-default-shell`, no arguments): hands the listener
+  over, then runs a shell resolved *inside the container* in wrapper mode
+  (see **Default shell resolution** below). This is what `flue enter`
+  does when no command is given.
 
 ## Mechanics
 
@@ -53,6 +58,16 @@ connections. The file header in `main.go` is the authoritative overview.
   `FD_CLOEXEC` (`markCloexecAll`, via `/proc/self/fd`) so the child does
   not inherit them. CLOEXEC only affects the exec'd child; the broker
   itself keeps using those fds.
+- **Default shell resolution** (`-default-shell`): the broker runs in the
+  container, so it resolves the shell against the container's filesystem
+  and environment, not the host's: `$SHELL` when set and non-blank and
+  usable — a path as-is, or a bare name resolved in `$PATH`; it must be
+  an existing regular file the current user may execute (`access(X_OK)`),
+  and, when `/etc/shells` exists with at least one entry, must be listed
+  in it (a missing, empty, or comment-only `/etc/shells` imposes no
+  restriction) — then `/bin/bash`, then `/bin/sh`, then `bash` and `sh`
+  found in `$PATH`. Nothing usable is a fatal error naming the order.
+  The choice and its source are logged at info.
 
 ## Dependencies
 

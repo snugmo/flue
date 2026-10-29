@@ -138,12 +138,13 @@ subcommand: `flue --allow-key SHA256:… enter <container>`. (The subcommand
 
 **flue-broker** (container-side):
 
-| Flag         | Default                               | Description                                                                                                                                                                                                                      |
-| ------------ | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `-sock`      | unique per session (`flue-<8hex>.sock`) | Unix socket path to listen on. When unset (or empty), a unique path is generated in the first writable of `$XDG_RUNTIME_DIR`, `/run/user/<uid>`, `/run`, `/tmp`; set it (e.g. to `/tmp/flue.sock`) to pin a fixed path |
-| `-fd`        | `3`                                   | File descriptor number of the preserved control socket                                                                                                                                                                           |
-| `-log-level` | `info`                                | Log level: `debug`, `info`, `warn`, or `error`                                                                                                                                                                                   |
-| `-version`   | -                                     | Print the build version and exit (no agent socket or control fd needed)                                                                                                                                                |
+| Flag             | Default                                   | Description                                                                                                                                                                                                              |
+| ------------------ | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-sock`          | unique per session (`flue-<8hex>.sock`)   | Unix socket path to listen on. When unset (or empty), a unique path is generated in the first writable of `$XDG_RUNTIME_DIR`, `/run/user/<uid>`, `/run`, `/tmp`; set it (e.g. to `/tmp/flue.sock`) to pin a fixed path   |
+| `-fd`            | `3`                                       | File descriptor number of the preserved control socket                                                                                                                                                                   |
+| `-default-shell` | `off`                                     | Run a shell resolved in the container instead of a positional command: `$SHELL` when set and usable, else `/bin/bash`, `/bin/sh`, then `bash`/`sh` in `$PATH`; what `flue enter` passes with no command                  |
+| `-log-level`     | `info`                                    | Log level: `debug`, `info`, `warn`, or `error`                                                                                                                                                                           |
+| `-version`       | -                                         | Print the build version and exit (no agent socket or control fd needed)                                                                                                                                                  |
 
 After the flags, an optional command starts wrapper mode: `flue-broker
 [command] [args…]` runs that command as a child with `SSH_AUTH_SOCK` set to

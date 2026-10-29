@@ -15,12 +15,12 @@
 // performs no protocol parsing, no key filtering, and never reads from or
 // writes to client connections.
 //
-// Two modes:
+// Three modes:
 //
-//  1. Standalone (no arguments): the broker hands over the listener and
-//     blocks until the control channel reports the host gone (EOF) or a
-//     SIGTERM/SIGHUP/SIGINT arrives, then exits and removes the socket.
-//     This is the original behavior.
+//  1. Standalone (no arguments, no -default-shell): the broker hands over
+//     the listener and blocks until the control channel reports the host
+//     gone (EOF) or a SIGTERM/SIGHUP/SIGINT arrives, then exits and
+//     removes the socket. This is the original behavior.
 //
 //  2. Wrapper (one or more arguments): the broker hands over the listener,
 //     then launches the given command as a child process inside the
@@ -33,6 +33,15 @@
 //     the container, but the agent socket is removed so they can no
 //     longer reach it — and the broker exits 1.
 //
+//  3. Default shell (-default-shell, no arguments): the broker resolves a
+//     shell inside the container and runs it in wrapper mode, in this
+//     order: $SHELL when set and usable (a path as-is, or a bare name in
+//     $PATH, that is an existing regular file the current user may
+//     execute and, when /etc/shells exists with entries, is listed in
+//     it), then /bin/bash, then /bin/sh, then bash and sh in $PATH; a
+//     clear error when none is usable. `flue enter` passes this flag when
+//     no command is given.
+//
 // Usage (see flue on the host side). Wrapper mode — get a shell inside the
 // container with the agent available (the broker sets SSH_AUTH_SOCK for
 // the child, so -e is not required):
@@ -40,9 +49,10 @@
 //	flue exec -- podman exec --preserve-fds 1 <container> flue-broker bash
 //
 // …or just `flue enter <container> [command…]`, which runs that wrapper-
-// mode podman exec for you (defaulting the command to $FLUE_ENTER_CMD
-// when set and non-blank, else /bin/sh) and injects the broker in memory
-// by default. Standalone mode (no command)
+// mode podman exec for you (with no command it passes -default-shell and
+// the broker resolves the shell in the container; $FLUE_ENTER_CMD on the
+// host, when set and non-blank, takes precedence) and injects the broker
+// in memory by default. Standalone mode (no command)
 // leaves SSH_AUTH_SOCK to the caller, so pin -sock to a fixed path:
 //
 //	flue exec -- podman exec --preserve-fds 1 \
@@ -84,6 +94,8 @@ var (
 		"File descriptor number of the preserved control socket (default 3)")
 	logLevel = flag.String("log-level", "info",
 		"log level: debug, info, warn, or error")
+	defaultShell = flag.Bool("default-shell", false,
+		"run a shell resolved in the container instead of a positional command: $SHELL when set and usable, else /bin/bash, /bin/sh, then bash or sh in $PATH")
 	showVersion = flag.Bool("version", false,
 		"print the build version and exit")
 )
@@ -210,6 +222,12 @@ func run() int {
 		fmt.Printf("flue-broker version %s\n", version)
 		return 0
 	}
+	// A command and -default-shell are mutually exclusive: with arguments
+	// the command wins by definition, so the combination can only be a
+	// mistake. Fail before any socket setup.
+	if *defaultShell && len(flag.Args()) > 0 {
+		return failf("flue-broker: -default-shell cannot be combined with a command")
+	}
 	setProcName("flue-broker")
 
 	if lvl, err := parseLevel(*logLevel); err != nil {
@@ -278,10 +296,19 @@ func run() int {
 	}
 	log.Debug("flue-broker: handed listener to host")
 
-	// Branch on mode: with arguments, run the wrapped child and return its
-	// exit status; without, block until the host goes away. The code is
-	// returned to main so the defers above (remove socket, close control)
-	// run before the process exits with it.
+	// Branch on mode: with -default-shell, resolve a shell in the
+	// container and run it; with arguments, run the wrapped child; both
+	// return the child's exit status. Without either, block until the
+	// host goes away. The code is returned to main so the defers above
+	// (remove socket, close control) run before the process exits with it.
+	if *defaultShell {
+		shell, source, err := resolveDefaultShell()
+		if err != nil {
+			return failf("flue-broker: %v", err)
+		}
+		log.Info("flue-broker: default shell", "shell", shell, "source", source)
+		return runChild([]string{shell}, *sockPath, ctrl, sigc)
+	}
 	if args := flag.Args(); len(args) > 0 {
 		return runChild(args, *sockPath, ctrl, sigc)
 	}
@@ -482,6 +509,105 @@ func withEnv(env []string, key, val string) []string {
 		out = append(out, e)
 	}
 	return append(out, prefix+val)
+}
+
+// shellsPath is the container's list of valid login shells, consulted to
+// validate $SHELL (see resolveDefaultShell); a variable so tests can point
+// it at a temporary file. defaultShellCandidates are the fixed paths tried,
+// in order, when $SHELL is not usable; defaultShellPathNames are the names
+// then looked up in $PATH (both variables for tests).
+var (
+	shellsPath = "/etc/shells"
+
+	defaultShellCandidates = []string{"/bin/bash", "/bin/sh"}
+	defaultShellPathNames  = []string{"bash", "sh"}
+)
+
+// resolveDefaultShell picks the shell to run when no command was given
+// (-default-shell): $SHELL when set and non-blank and usable, else the
+// first usable fixed candidate, then the first path name found in $PATH.
+// It returns the resolved path and a short name of the source that won
+// (for logging), or an error naming the fallback order when nothing in
+// the container is usable.
+func resolveDefaultShell() (path, source string, err error) {
+	if s := strings.TrimSpace(os.Getenv("SHELL")); s != "" {
+		if p, _ := validateShell(s); p != "" {
+			return p, "$SHELL", nil
+		}
+	}
+	for _, c := range defaultShellCandidates {
+		if executableFile(c) {
+			return c, c, nil
+		}
+	}
+	for _, n := range defaultShellPathNames {
+		if p, err := exec.LookPath(n); err == nil {
+			return p, n + " in $PATH", nil
+		}
+	}
+	return "", "", fmt.Errorf("no usable shell found (tried $SHELL, %s, and %s in $PATH); run with an explicit command instead",
+		strings.Join(defaultShellCandidates, " and "), strings.Join(defaultShellPathNames, " or "))
+}
+
+// validateShell reports whether s names a usable shell: a path (one
+// containing a slash) is used as-is, a bare name is resolved in $PATH; the
+// result must be an existing regular file the current user may execute
+// (access(X_OK)), and — when /etc/shells exists with at least one entry —
+// must be listed in it, the conventional mark of a valid login shell. It
+// returns the resolved path, or an empty path with a short reason when s
+// is not usable.
+func validateShell(s string) (path, reason string) {
+	p := s
+	if !strings.Contains(p, "/") {
+		resolved, err := exec.LookPath(p)
+		if err != nil {
+			return "", "not found in $PATH"
+		}
+		p = resolved
+	}
+	st, err := os.Stat(p)
+	if err != nil {
+		return "", "not found"
+	}
+	if !st.Mode().IsRegular() {
+		return "", "not a regular file"
+	}
+	if unix.Access(p, unix.X_OK) != nil {
+		return "", "not executable"
+	}
+	if allowed, restricted := shellsWhitelist(); restricted && !allowed[p] {
+		return "", "not listed in " + shellsPath
+	}
+	return p, ""
+}
+
+// shellsWhitelist reads /etc/shells (the conventional list of valid login
+// shells). It returns the set of listed paths and whether the file
+// exists with at least one entry: a missing, empty, or comment-only file
+// imposes no restriction (minimal container images commonly ship none),
+// so the second value is false in all those cases.
+func shellsWhitelist() (set map[string]bool, restricted bool) {
+	data, err := os.ReadFile(shellsPath)
+	if err != nil {
+		return nil, false
+	}
+	set = map[string]bool{}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		set[line] = true
+	}
+	return set, len(set) > 0
+}
+
+// executableFile reports whether p is an existing regular file the
+// current user may execute (the access(X_OK) check, like the kernel's,
+// lets root execute any file with an execute bit set).
+func executableFile(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.Mode().IsRegular() && unix.Access(p, unix.X_OK) == nil
 }
 
 // generateSocketPath returns a per-session Unix socket path: a random name
