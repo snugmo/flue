@@ -13,8 +13,9 @@ import (
 // embedded broker and its bundle are inspected and recovered without an
 // SSH agent.
 var brokerCmd = &cobra.Command{
-	Use:   "broker",
-	Short: "Expose the embedded flue-broker (executable, sha256, sigstore-bundle)",
+	Use:     "broker",
+	Short:   "Expose the embedded flue-broker (executable, sha256, sigstore-bundle)",
+	GroupID: groupLowLevel,
 	Long: `broker exposes the flue-broker embedded in this flue binary:
 
 	flue broker executable <filename>

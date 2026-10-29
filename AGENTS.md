@@ -105,6 +105,12 @@ README.md           usage, flags, how-it-works, security
 - **New flag**: add it to the flag registration in `main.go` (cobra's
   `init()` in `flue`, the `flag` block in `flue-broker`); document in the
   README `### Flags` table.
+- **New subcommand**: register it on `rootCmd` in `main.go`'s `init()`
+  and assign it a `GroupID` from the root's command groups (Commands,
+  Low-level commands, or Utility commands — see the group definitions
+  and `TestCobraHelpGroups` in `cli_test.go`): an ungrouped subcommand
+  lands in the `--help` output's trailing "Additional Commands" section
+  instead of its intended group.
 - **Socket path coupling**: the broker generates a unique per-session
   path (XDG_RUNTIME_DIR → /run/user/\<uid\> → /run → /tmp) and exports it
   as `SSH_AUTH_SOCK`; standalone mode must pin `-sock` to a fixed path.

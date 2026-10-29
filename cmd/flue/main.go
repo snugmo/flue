@@ -72,9 +72,13 @@
 // enter, --session-check=required|advisory|off overrides the choice (an
 // explicit choice is logged at info; the default at handover).
 //
-// flue is a cobra CLI with four subcommands: exec, enter, broker (which
-// itself has three sub-subcommands), and version. The global flags (--sock,
-// --allow-key, --allow-key-type, --log-level, --log-file) are
+// flue is a cobra CLI with four subcommands: enter, exec, broker (which
+// itself has three sub-subcommands), and version. The root --help output
+// lists them in three cobra command groups, in order: "Commands"
+// (enter), "Low-level commands" (exec and broker — the development and
+// debugging forms), and "Utility commands" (version, together with
+// cobra's auto-generated help and completion commands). The global flags
+// (--sock, --allow-key, --allow-key-type, --log-level, --log-file) are
 // persistent: place them before the subcommand. The subcommand's
 // arguments follow the subcommand name, and a --
 // separates them from the target command so the target's own flags are
@@ -279,6 +283,26 @@ var version = "dev"
 // (cobra prints it) and the version subcommand print.
 func versionLine() string { return fmt.Sprintf("flue version %s", version) }
 
+// The subcommands' command groups for the root --help output, in the
+// order the groups appear there. Cobra prints each group's Title
+// followed by the subcommands carrying that group's ID, and the group
+// definitions replace the default "Available Commands" heading — so
+// this puts enter (the primary user-facing command) first and keeps the
+// low-level development and debugging commands (exec, broker) and the
+// utility commands (version, plus cobra's auto-generated help and
+// completion commands) out of the main list.
+const (
+	groupUsage    = "usage"
+	groupLowLevel = "low-level"
+	groupUtility  = "utility"
+)
+
+var (
+	usageGroup    = &cobra.Group{ID: groupUsage, Title: "Commands"}
+	lowLevelGroup = &cobra.Group{ID: groupLowLevel, Title: "Low-level commands"}
+	utilityGroup  = &cobra.Group{ID: groupUtility, Title: "Utility commands"}
+)
+
 // rootCmd is the top-level `flue` command. It carries the persistent
 // (global) flags shared by the subcommands, the build version (cobra
 // turns it into the --version flag), and a PersistentPreRun that sets up
@@ -318,6 +342,7 @@ const needsAgentAnnotation = "flue/needs-agent"
 var execCmd = &cobra.Command{
 	Use:         "exec [command [args...]]",
 	Short:       "Run a command that receives the control socketpair",
+	GroupID:     groupLowLevel,
 	Annotations: map[string]string{needsAgentAnnotation: "1"},
 	Long: `exec runs any command that receives the control socketpair (fd 3)
 itself — typically flue-broker, or a wrapper that preserves fd 3.
@@ -347,6 +372,7 @@ flue blocks on the command exiting and returns its exit code.`,
 var enterCmd = &cobra.Command{
 	Use:         "enter [container] [command [args...]]",
 	Short:       "Run a command (default /bin/sh) in a container (default snugmo) with the agent",
+	GroupID:     groupUsage,
 	Annotations: map[string]string{needsAgentAnnotation: "1"},
 	Long: `enter is the primary way to use flue: it runs a podman exec against
 a container (default snugmo) with flue-broker wrapping the given command
@@ -391,8 +417,9 @@ When the command exits, enter returns its exit code.`,
 // versionCmd is the version subcommand: it prints this flue's build
 // version — the same one-line string the root --version flag prints.
 var versionCmd = &cobra.Command{
-	Use:   "version",
-	Short: "Print the version",
+	Use:     "version",
+	Short:   "Print the version",
+	GroupID: groupUtility,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println(versionLine())
 	},
@@ -457,6 +484,13 @@ func init() {
 	}
 	brokerCmd.AddCommand(brokerExecutableCmd, brokerSha256Cmd, brokerBundleCmd)
 	rootCmd.AddCommand(execCmd, enterCmd, brokerCmd, versionCmd)
+	// The root --help output renders the subcommands in the groups
+	// defined above (cobra prints each group's title, then the commands
+	// of that group, in group-definition order); the auto-generated help
+	// and completion commands are grouped with version.
+	rootCmd.AddGroup(usageGroup, lowLevelGroup, utilityGroup)
+	rootCmd.SetHelpCommandGroupID(groupUtility)
+	rootCmd.SetCompletionCommandGroupID(groupUtility)
 }
 
 // parseLevel maps a --log-level flag value to a slog.Level.

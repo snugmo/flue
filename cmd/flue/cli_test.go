@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -35,6 +36,27 @@ func TestCobraSubcommands(t *testing.T) {
 			t.Errorf("subcommand %q: Use = %q, want %q", name, c.Use, wantUse)
 		}
 	}
+	// The subcommands' help-output groups: enter leads, exec and
+	// broker are low-level, version is a utility.
+	for name, wantGroup := range map[string]string{
+		"enter":   groupUsage,
+		"exec":    groupLowLevel,
+		"broker":  groupLowLevel,
+		"version": groupUtility,
+	} {
+		if c := byName[name]; c.GroupID != wantGroup {
+			t.Errorf("subcommand %q: GroupID = %q, want %q", name, c.GroupID, wantGroup)
+		}
+	}
+	groups := map[string]bool{}
+	for _, g := range rootCmd.Groups() {
+		groups[g.ID] = true
+	}
+	for _, id := range []string{groupUsage, groupLowLevel, groupUtility} {
+		if !groups[id] {
+			t.Errorf("rootCmd has no group %q (required by the subcommands' GroupIDs)", id)
+		}
+	}
 	if brokerCmd != byName["broker"] {
 		t.Fatal("the broker subcommand registered on the root is not brokerCmd")
 	}
@@ -54,6 +76,75 @@ func TestCobraSubcommands(t *testing.T) {
 		if c.Use != wantUse {
 			t.Errorf("sub-subcommand %q: Use = %q, want %q", name, c.Use, wantUse)
 		}
+	}
+}
+
+// TestCobraHelpGroups guards the root --help output's grouping: the
+// subcommands must appear in the three sections, in order —
+// "Commands" (enter), "Low-level commands" (exec, broker), "Utility
+// commands" (version, plus cobra's auto-generated help and completion
+// commands) — so the primary user-facing command, enter, leads. A
+// subcommand left out of a group would instead appear in a trailing
+// "Additional Commands" section, which must not be present.
+func TestCobraHelpGroups(t *testing.T) {
+	buf := &bytes.Buffer{}
+	// --help short-circuits before Run and PersistentPreRun, so
+	// executing the shared root (which needs no agent socket) is safe.
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"--help"})
+	t.Cleanup(func() {
+		rootCmd.SetArgs(nil)
+		// ParseFlags mutates the root's shared pflag set: reset the
+		// help flag (set by this --help parse) so a later test that
+		// executes the root (e.g. --version) is not poisoned by it.
+		if f := rootCmd.Flags().Lookup("help"); f != nil {
+			_ = f.Value.Set("false")
+			f.Changed = false
+		}
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute([--help]) = %v", err)
+	}
+	help := buf.String()
+	// The sections follow the group definition order (cobra renders
+	// the group titles without a trailing colon); within a section
+	// the commands are listed alphabetically, each on its own line
+	// between its group's heading and the next group's heading.
+	want := []struct {
+		section string // this section's heading line
+		next    string // the following section's heading line
+		lines   []string
+	}{
+		{"\nCommands\n", "\nLow-level commands\n", []string{"\n  enter "}},
+		{"\nLow-level commands\n", "\nUtility commands\n", []string{"\n  broker ", "\n  exec "}},
+		{"\nUtility commands\n", "\nFlags:\n", []string{"\n  completion ", "\n  help ", "\n  version "}},
+	}
+	pos := -1
+	for _, w := range want {
+		i := strings.Index(help, w.section)
+		if i < 0 {
+			t.Errorf("help output missing section %q", strings.Trim(w.section, "\n"))
+			continue
+		}
+		if i <= pos {
+			t.Errorf("help output sections out of order: %q", strings.Trim(w.section, "\n"))
+			continue
+		}
+		pos = i
+		section := help[i:]
+		if j := strings.Index(section, w.next); j >= 0 {
+			section = section[:j]
+		}
+		for _, line := range w.lines {
+			if !strings.Contains(section, line) {
+				t.Errorf("help output section %q missing line %q",
+					strings.Trim(w.section, "\n"), strings.Trim(line, " \n"))
+			}
+		}
+	}
+	if strings.Contains(help, "Additional Commands:") {
+		t.Error("help output has an 'Additional Commands' section: a subcommand has no group")
 	}
 }
 
