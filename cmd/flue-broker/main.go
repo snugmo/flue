@@ -565,6 +565,9 @@ func validateShell(s string) (path, reason string) {
 		}
 		p = resolved
 	}
+	// #nosec G703 — audited: p is a shell the user themselves named
+	// ($SHELL, or a bare name resolved in $PATH); this Stat only checks
+	// it is a usable file, it performs no file operation.
 	st, err := os.Stat(p)
 	if err != nil {
 		return "", "not found"
