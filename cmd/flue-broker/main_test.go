@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -401,6 +403,79 @@ func TestResolveDefaultShell(t *testing.T) {
 			}
 			if gotPath != want || gotSource != wantSource {
 				t.Fatalf("resolveDefaultShell() = (%q, %q), want (%q, %q)", gotPath, gotSource, want, wantSource)
+			}
+		})
+	}
+}
+
+// TestResolveDefaultShellWarnsUnusableSHELL verifies that a set-but-
+// unusable $SHELL is logged at warn with the value and the reason (the
+// user's choice is being overridden, so the fallback should not be a
+// surprise), while an unset or empty $SHELL logs nothing, and that both
+// still fall through to the first usable fallback.
+func TestResolveDefaultShellWarnsUnusableSHELL(t *testing.T) {
+	pathDir := t.TempDir()
+	t.Setenv("PATH", pathDir)
+	bash := makeExec(t, pathDir, "bash")
+	noexec := filepath.Join(pathDir, "noexec")
+	if err := os.WriteFile(noexec, []byte("#!/bin/sh\n"), 0o644); err != nil {
+		t.Fatalf("write noexec: %v", err)
+	}
+
+	oldShells := shellsPath
+	t.Cleanup(func() { shellsPath = oldShells })
+	shellsPath = filepath.Join(pathDir, "shells-absent")
+
+	oldCand := defaultShellCandidates
+	t.Cleanup(func() { defaultShellCandidates = oldCand })
+	defaultShellCandidates = []string{"/nonexistent/bash"}
+
+	oldLog := log
+	t.Cleanup(func() { log = oldLog })
+	var buf bytes.Buffer
+	log = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	for _, tc := range []struct {
+		name     string
+		shellEnv string
+		unset    bool
+		wantWarn bool
+		wantWhy  string
+	}{
+		{"unset $SHELL logs nothing", "", true, false, ""},
+		{"empty $SHELL logs nothing", "", false, false, ""},
+		{"missing bare name warns", "nope", false, true, "not found in $PATH"},
+		{"missing path warns", "/nonexistent/xyz", false, true, "not found"},
+		{"multi-word value is not a path, warns", "mysh -l", false, true, "not found in $PATH"},
+		{"not executable warns", noexec, false, true, "not executable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			buf.Reset()
+			if tc.unset {
+				os.Unsetenv("SHELL")
+			} else {
+				t.Setenv("SHELL", tc.shellEnv)
+			}
+			gotPath, gotSource, err := resolveDefaultShell()
+			if err != nil {
+				t.Fatalf("resolveDefaultShell() error: %v", err)
+			}
+			if gotPath != bash || gotSource != "bash in $PATH" {
+				t.Fatalf("resolveDefaultShell() = (%q, %q), want the $PATH bash", gotPath, gotSource)
+			}
+			out := buf.String()
+			if tc.wantWarn {
+				if !strings.Contains(out, "$SHELL is set but not usable") {
+					t.Fatalf("want a $SHELL warning in the log, got: %s", out)
+				}
+				if !strings.Contains(out, tc.shellEnv) {
+					t.Fatalf("warning does not name the value %q: %s", tc.shellEnv, out)
+				}
+				if !strings.Contains(out, tc.wantWhy) {
+					t.Fatalf("warning does not name the reason %q: %s", tc.wantWhy, out)
+				}
+			} else if out != "" {
+				t.Fatalf("want no log output, got: %s", out)
 			}
 		})
 	}

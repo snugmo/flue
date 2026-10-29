@@ -67,7 +67,11 @@ connections. The file header in `main.go` is the authoritative overview.
   in it (a missing, empty, or comment-only `/etc/shells` imposes no
   restriction) — then `/bin/bash`, then `/bin/sh`, then `bash` and `sh`
   found in `$PATH`. Nothing usable is a fatal error naming the order.
-  The choice and its source are logged at info.
+  The choice and its source are logged at info, and a set-but-unusable
+  `$SHELL` is logged at warn with the value and the reason (missing
+  binary, value with inner whitespace, not executable, not listed in
+  `/etc/shells`, …) — the user's choice is being overridden, so the
+  fallback should not be a surprise.
 
 ## Dependencies
 

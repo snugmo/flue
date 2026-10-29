@@ -85,7 +85,9 @@ The default shell is resolved by the broker inside the container — so
 against the container's filesystem and environment, not the host's:
 `$SHELL` when set and usable (and listed in `/etc/shells` when that file
 has entries), else `/bin/bash`, `/bin/sh`, then `bash` or `sh` in
-`$PATH`. Set `$FLUE_ENTER_CMD` to run something else by default (the
+`$PATH`. A set-but-unusable `$SHELL` is logged at warn with the value
+and the reason, so the fallback is never silent. Set `$FLUE_ENTER_CMD`
+to run something else by default (the
 value is split on whitespace and applied on the host; a command given on
 the command line always wins):
 

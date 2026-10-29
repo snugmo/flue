@@ -39,8 +39,9 @@
 //     $PATH, that is an existing regular file the current user may
 //     execute and, when /etc/shells exists with entries, is listed in
 //     it), then /bin/bash, then /bin/sh, then bash and sh in $PATH; a
-//     clear error when none is usable. `flue enter` passes this flag when
-//     no command is given.
+//     set-but-unusable $SHELL is logged at warn with the reason, and a
+//     clear error is returned when none is usable. `flue enter` passes
+//     this flag when no command is given.
 //
 // Usage (see flue on the host side). Wrapper mode — get a shell inside the
 // container with the agent available (the broker sets SSH_AUTH_SOCK for
@@ -528,11 +529,15 @@ var (
 // first usable fixed candidate, then the first path name found in $PATH.
 // It returns the resolved path and a short name of the source that won
 // (for logging), or an error naming the fallback order when nothing in
-// the container is usable.
+// the container is usable. A set-but-unusable $SHELL is logged at warn
+// with the value and the reason: the choice the user made is being
+// overridden, so the fallback below should not be a surprise.
 func resolveDefaultShell() (path, source string, err error) {
 	if s := strings.TrimSpace(os.Getenv("SHELL")); s != "" {
-		if p, _ := validateShell(s); p != "" {
+		if p, reason := validateShell(s); p != "" {
 			return p, "$SHELL", nil
+		} else {
+			log.Warn("flue-broker: $SHELL is set but not usable", "shell", s, "reason", reason)
 		}
 	}
 	for _, c := range defaultShellCandidates {
