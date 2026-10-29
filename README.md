@@ -64,7 +64,9 @@ see [Flags](#flags) — the image must provide `flue-broker`; see
 `flue enter` runs the `podman exec` for you: it preserves the control
 socket as fd 3, hands your command to `flue-broker` in wrapper mode,
 targets the `snugmo` container when you give none, and allocates a tty
-when your stdin is a tty. When you give no command, the broker resolves
+when your stdin and stdout are both terminals (a pty is only useful
+when both ends of the conversation are terminals). When you give no
+command, the broker resolves
 a shell inside the container:
 
 ```sh
