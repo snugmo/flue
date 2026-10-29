@@ -555,7 +555,8 @@ func resolveDefaultShell() (path, source string, err error) {
 // (access(X_OK)), and — when /etc/shells exists with at least one entry —
 // must be listed in it, the conventional mark of a valid login shell. It
 // returns the resolved path, or an empty path with a short reason when s
-// is not usable.
+// is not usable. The value is not trimmed: a caller that reads one from
+// the environment normalizes it first (resolveDefaultShell does).
 func validateShell(s string) (path, reason string) {
 	p := s
 	if !strings.Contains(p, "/") {

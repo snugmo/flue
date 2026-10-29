@@ -183,7 +183,12 @@ func makeExec(t *testing.T, dir, name string) string {
 // resolves in $PATH, a path is used as-is, and a file is rejected when it
 // is missing, not a regular file, not executable, or — with a
 // non-empty /etc/shells — not listed in it; a missing, empty, or
-// comment-only /etc/shells imposes no restriction.
+// comment-only /etc/shells imposes no restriction. It also pins the
+// value-shaping rules: the check does no trimming itself (the
+// environment reader does), so padded values simply do not resolve;
+// inner whitespace is kept (a multi-word value is one program name,
+// never a split command); and NUL or invalid UTF-8 bytes make the
+// value unusable rather than fatal.
 func TestValidateShell(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("PATH", dir)
@@ -221,6 +226,11 @@ func TestValidateShell(t *testing.T) {
 	}{
 		{"bare name resolves in $PATH", "mysh", nil, exec, ""},
 		{"absolute path used as-is", exec, nil, exec, ""},
+		{"trailing newline is not trimmed, so the path does not exist", exec + "\n", nil, "", "not found"},
+		{"surrounding whitespace is not trimmed, so the name does not resolve", "  mysh  ", nil, "", "not found in $PATH"},
+		{"inner newline is kept, so the path does not exist", dir + "/my\nsh", nil, "", "not found"},
+		{"NUL byte makes the value unusable", dir + "/nul" + "\x00" + exec, nil, "", "not found"},
+		{"invalid UTF-8 byte makes the value unusable", dir + "/\xffmysh", nil, "", "not found"},
 		{"missing file", filepath.Join(dir, "nope"), nil, "", "not found"},
 		{"not executable", plain, nil, "", "not executable"},
 		{"directory is not a regular file", dir, nil, "", "not a regular file"},
@@ -243,7 +253,11 @@ func TestValidateShell(t *testing.T) {
 // $SHELL (when usable) first, then the fixed candidates, then the path
 // names in $PATH, and a clear error when nothing is usable. The fixed
 // candidates and $PATH point at separate temporary directories so the
-// host's /bin is never consulted.
+// host's /bin is never consulted. It also pins the $SHELL edge cases:
+// unset, set-but-empty, and whitespace- or newline-padded values are
+// trimmed; a value with inner whitespace or a newline is one program
+// name (not a command to split), so it simply falls through; garbage
+// values never abort the resolution, they only lose the first place.
 func TestResolveDefaultShell(t *testing.T) {
 	oldCand, oldNames, oldShells := defaultShellCandidates, defaultShellPathNames, shellsPath
 	t.Cleanup(func() {
@@ -253,6 +267,7 @@ func TestResolveDefaultShell(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		shellEnv    string
+		shellUnset  bool     // $SHELL is not set at all (else shellEnv is set, possibly empty)
 		shellFile   bool     // whether the $SHELL file exists in the $PATH dir
 		cand        []string // candidate names that exist
 		pathNames   []string // other names that exist in the $PATH dir
@@ -266,6 +281,42 @@ func TestResolveDefaultShell(t *testing.T) {
 			shellFile:  true,
 			pathNames:  []string{"bash"},
 			wantSource: "$SHELL",
+		},
+		{
+			name:       "unset $SHELL falls through to the first candidate",
+			shellUnset: true,
+			cand:       []string{"bash"},
+			wantSource: "cand/bash",
+		},
+		{
+			name:       "empty $SHELL falls through to the first candidate",
+			shellEnv:   "",
+			cand:       []string{"bash"},
+			wantSource: "cand/bash",
+		},
+		{
+			name:       "surrounding whitespace in $SHELL is trimmed",
+			shellEnv:   "  mysh  ",
+			shellFile:  true,
+			wantSource: "$SHELL",
+		},
+		{
+			name:       "trailing newline in $SHELL is trimmed",
+			shellEnv:   "mysh\n",
+			shellFile:  true,
+			wantSource: "$SHELL",
+		},
+		{
+			name:       "$SHELL with an inner space is not split into a command",
+			shellEnv:   "mysh -l",
+			cand:       []string{"bash"},
+			wantSource: "cand/bash",
+		},
+		{
+			name:       "$SHELL with an inner newline is not split into a command",
+			shellEnv:   "mysh\nl",
+			cand:       []string{"bash"},
+			wantSource: "cand/bash",
 		},
 		{
 			name:       "$SHELL missing falls through to the first candidate",
@@ -310,9 +361,11 @@ func TestResolveDefaultShell(t *testing.T) {
 				makeExec(t, pathDir, n)
 			}
 			if tc.shellFile {
-				makeExec(t, pathDir, tc.shellEnv)
+				// The file exists under the trimmed name: the resolution
+				// trims the value before looking it up.
+				makeExec(t, pathDir, strings.TrimSpace(tc.shellEnv))
 			}
-			if tc.shellEnv == "" {
+			if tc.shellUnset {
 				os.Unsetenv("SHELL")
 			} else {
 				t.Setenv("SHELL", tc.shellEnv)
@@ -322,7 +375,7 @@ func TestResolveDefaultShell(t *testing.T) {
 			wantSource := tc.wantSource
 			switch tc.wantSource {
 			case "$SHELL":
-				want = filepath.Join(pathDir, tc.shellEnv)
+				want = filepath.Join(pathDir, strings.TrimSpace(tc.shellEnv))
 			case "cand/bash":
 				want, wantSource = filepath.Join(candDir, "bash"), filepath.Join(candDir, "bash")
 			case "cand/sh":
