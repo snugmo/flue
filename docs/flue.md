@@ -313,3 +313,13 @@ root `PersistentPreRun`). Fatal setup errors (no agent socket, bad log
 level, socketpair/control-fd/child-start failures) are plain text on
 stderr and exit 1, via `fatalf` — not slog records. Flag and argument
 errors are reported by cobra and exit 1 from `main`.
+
+When the log goes to a terminal, the subcommands that proxy the agent
+(enter, exec) write it through a `crlfWriter` (`crlf.go`): their child
+(a podman exec that requests a tty) puts the shared terminal into raw
+mode, disabling `ONLCR`, so a bare `\n` no longer returns the cursor to
+column zero — a record flue writes itself while the child owns the
+terminal would otherwise end with a bare `\n`, and the next record
+would start where it ended (and overwrite it when shorter). `\r\n`
+line endings render in both raw and cooked mode; piped stderr and
+`--log-file` stay plain `\n`.
