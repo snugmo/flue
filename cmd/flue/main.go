@@ -126,7 +126,7 @@
 // No container defaults to snugmo; no command means $FLUE_ENTER_CMD
 // (whitespace-split) when set and non-blank, else a shell the broker
 // resolves in the container (-default-shell); a tty is allocated when
-// stdin is a tty. A `--` separator takes
+// both stdin and stdout are terminals. A `--` separator takes
 // precedence: the tokens after it are the command and the single
 // positional argument before it — if any — names the container, so
 // `flue enter -- bash` runs bash in the default container, not the
@@ -391,7 +391,7 @@ var enterCmd = &cobra.Command{
 	Long: `enter is the primary way to use flue: it runs a podman exec against
 a container (default snugmo) with flue-broker wrapping the given command
 (with no command, a shell resolved in the container — see below),
-allocating a tty when stdin is a tty:
+allocating a tty when stdin and stdout are both terminals:
 
     flue enter                      # a shell in the snugmo container
     flue enter <container>          # a shell in the container
@@ -630,7 +630,8 @@ func main() {
 // runEnter is the `flue enter` subcommand: it runs `podman exec` against
 // a container (default snugmo) with flue-broker wrapping the given
 // command (a shell resolved in the container when none is given, see
-// enterDefaultCmd), allocating a tty when stdin is a tty. The control socketpair is preserved through podman exec as
+// enterDefaultCmd), allocating a tty when both stdin and stdout are
+// terminals. The control socketpair is preserved through podman exec as
 // fd 3 (--preserve-fds 1, or 2 when the broker memfd is also passed) and
 // the agent is proxied exactly as in passthrough mode.
 func runEnter(args []string, sockPath string) int {
@@ -639,7 +640,13 @@ func runEnter(args []string, sockPath string) int {
 		fatalf("flue: %v", err)
 	}
 
-	tty := stdinIsTTY()
+	// A tty is requested only when both stdin and stdout are terminals:
+	// a pty is only useful when both ends of the conversation are
+	// terminals, and requesting one with a redirected stdout would put
+	// the user's terminal (the stdin side) into raw mode for the whole
+	// session while nothing is ever displayed on it, and merge the
+	// container's stderr into the stream going down the pipe.
+	tty := stdinIsTTY() && stdoutIsTTY()
 
 	// The session check's mode: an injected broker with a tty is the
 	// interactive session the check exists to protect, so the check is
@@ -797,7 +804,8 @@ func enterDefaultCmd() []string {
 
 // enterExecArgs builds the argument list for the `podman exec` that runs
 // flue-broker (wrapping cmd) inside the container. A tty is requested
-// only when the caller's stdin is a tty. A nil cmd passes the broker the
+// only when the caller's stdin and stdout are both terminals. A nil cmd
+// passes the broker the
 // -default-shell flag so it resolves a shell inside the container
 // instead of wrapping a command.
 func enterExecArgs(container string, cmd []string, tty, injectBroker bool) []string {
@@ -833,6 +841,13 @@ func enterExecArgs(container string, cmd []string, tty, injectBroker bool) []str
 // (which fails for pipes, regular files, and sockets).
 func stdinIsTTY() bool {
 	_, err := unix.IoctlGetTermios(int(os.Stdin.Fd()), unix.TCGETS)
+	return err == nil
+}
+
+// stdoutIsTTY reports whether stdout is a terminal, using the TCGETS
+// ioctl (which fails for pipes, regular files, and sockets).
+func stdoutIsTTY() bool {
+	_, err := unix.IoctlGetTermios(int(os.Stdout.Fd()), unix.TCGETS)
 	return err == nil
 }
 
