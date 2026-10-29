@@ -8,8 +8,9 @@ import (
 )
 
 // TestEnterTarget verifies how `flue enter` arguments are split into the
-// container name and the in-container command, including the snugmo
-// container and /bin/sh defaults when no arguments are given.
+// container name and the in-container command: the snugmo container
+// default, a nil command (the broker resolves a shell in the container)
+// when no command is given, and an explicit command passed through.
 func TestEnterTarget(t *testing.T) {
 	// Keep the default-command resolution deterministic regardless of the
 	// test environment (enterTarget consults $FLUE_ENTER_CMD).
@@ -22,16 +23,16 @@ func TestEnterTarget(t *testing.T) {
 		wantCmd       []string
 	}{
 		{
-			name:          "no args defaults to snugmo and /bin/sh",
+			name:          "no args defaults to snugmo and a broker-resolved shell",
 			args:          nil,
 			wantContainer: "snugmo",
-			wantCmd:       []string{"/bin/sh"},
+			wantCmd:       nil,
 		},
 		{
-			name:          "container only defaults to /bin/sh",
+			name:          "container only leaves the command to the broker",
 			args:          []string{"c"},
 			wantContainer: "c",
-			wantCmd:       []string{"/bin/sh"},
+			wantCmd:       nil,
 		},
 		{
 			name:          "command is passed through",
@@ -103,14 +104,14 @@ func TestEnterTargetDashDash(t *testing.T) {
 			raw:           []string{"enter", "--"},
 			cobraArgs:     nil,
 			wantContainer: "snugmo",
-			wantCmd:       []string{"/bin/sh"},
+			wantCmd:       nil,
 		},
 		{
 			name:          "a trailing separator after a container is a no-op",
 			raw:           []string{"enter", "c", "--"},
 			cobraArgs:     []string{"c"},
 			wantContainer: "c",
-			wantCmd:       []string{"/bin/sh"},
+			wantCmd:       nil,
 		},
 		{
 			name:      "more than one positional before the separator is a usage error",
@@ -141,9 +142,9 @@ func TestEnterTargetDashDash(t *testing.T) {
 	}
 }
 
-// TestEnterDefaultCmd verifies the default command resolution: /bin/sh
-// when $FLUE_ENTER_CMD is unset, blank, or whitespace-only, and the
-// whitespace-split value of the variable otherwise.
+// TestEnterDefaultCmd verifies the default command resolution: the
+// whitespace-split value of $FLUE_ENTER_CMD when set and non-blank, else
+// nil (the broker resolves a shell in the container, via -default-shell).
 func TestEnterDefaultCmd(t *testing.T) {
 	t.Run("unset", func(t *testing.T) {
 		prev, had := os.LookupEnv("FLUE_ENTER_CMD")
@@ -155,8 +156,8 @@ func TestEnterDefaultCmd(t *testing.T) {
 				os.Unsetenv("FLUE_ENTER_CMD")
 			}
 		}()
-		if got := enterDefaultCmd(); !cmp.Equal(got, []string{"/bin/sh"}) {
-			t.Errorf("enterDefaultCmd() = %v, want [/bin/sh]", got)
+		if got := enterDefaultCmd(); got != nil {
+			t.Errorf("enterDefaultCmd() = %v, want nil (broker resolves the shell)", got)
 		}
 	})
 
@@ -165,8 +166,8 @@ func TestEnterDefaultCmd(t *testing.T) {
 		env  string
 		want []string
 	}{
-		{"blank", "", []string{"/bin/sh"}},
-		{"whitespace only", "   ", []string{"/bin/sh"}},
+		{"blank", "", nil},
+		{"whitespace only", "   ", nil},
 		{"single word", "bash", []string{"bash"}},
 		{"word and args", "bash -l", []string{"bash", "-l"}},
 	} {
@@ -180,9 +181,12 @@ func TestEnterDefaultCmd(t *testing.T) {
 }
 
 // TestEnterExecArgs verifies the podman exec argument list built for
-// enter mode without broker injection: the tty/non-tty variants, and the
-// flue-broker wrapper with the command appended (no -e — the broker sets
-// SSH_AUTH_SOCK itself and generates its per-session socket path).
+// enter mode: the tty/non-tty variants, the flue-broker wrapper with the
+// command appended (no -e — the broker sets SSH_AUTH_SOCK itself and
+// generates its per-session socket path), and the -default-shell flag
+// for a nil command (the broker resolves a shell in the container),
+// including the injected-broker form where the broker is exec'd from
+// /proc/self/fd/4.
 func TestEnterExecArgs(t *testing.T) {
 	t.Run("tty", func(t *testing.T) {
 		got := enterExecArgs("c", []string{"/bin/sh"}, true, false)
@@ -205,6 +209,30 @@ func TestEnterExecArgs(t *testing.T) {
 		}
 		if diff := cmp.Diff(want, got); diff != "" {
 			t.Fatalf("non-tty args (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("nil cmd passes -default-shell", func(t *testing.T) {
+		got := enterExecArgs("c", nil, true, false)
+		want := []string{
+			"exec", "-ti",
+			"--preserve-fds", "1",
+			"c", "flue-broker", "-default-shell",
+		}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Fatalf("default-shell args (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("nil cmd with injection", func(t *testing.T) {
+		got := enterExecArgs("c", nil, true, true)
+		want := []string{
+			"exec", "-ti",
+			"--preserve-fds", "2",
+			"c", "/proc/self/fd/4", "-default-shell",
+		}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Fatalf("default-shell injected args (-want +got):\n%s", diff)
 		}
 	})
 }

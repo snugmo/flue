@@ -27,7 +27,7 @@ README.md           usage, flags, how-it-works, security
 | Test           | `go build -o cmd/flue/flue-broker.bin ./cmd/flue-broker && (test -f cmd/flue/flue-broker.sigstore.json || cp cmd/flue/flue-broker.sigstore.json.placeholder cmd/flue/flue-broker.sigstore.json) && go test ./...` |
 | Build image    | `buildah build --isolation chroot --layers --format docker --build-arg VERSION=<tag> -t <image> -f Containerfile .` (see the Containerfile header; the image is the host's architecture by default, or `--platform linux/<arch>` for another — never `TARGETOS`/`TARGETARCH` build-args: they would override the per-platform builtins for every platform) |
 | Forward agent  | `flue exec -- podman exec --preserve-fds 1 -e SSH_AUTH_SOCK=/tmp/flue.sock <container> flue-broker -sock /tmp/flue.sock` |
-| Enter a shell  | `flue enter [container] [command…]` (defaults: snugmo, `$FLUE_ENTER_CMD` else `/bin/sh`; `-ti` when stdin is a tty; a `--` with no argument before it makes what follows the command in the default container) |
+| Enter a shell  | `flue enter [container] [command…]` (defaults: snugmo; with no command, a shell the broker resolves in the container — `$SHELL`, `/bin/bash`, `/bin/sh`, then `bash`/`sh` in `$PATH` — unless `$FLUE_ENTER_CMD` is set; `-ti` when stdin is a tty; a `--` with no argument before it makes what follows the command in the default container) |
 
 ## Repo-wide rules
 

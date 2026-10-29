@@ -62,13 +62,14 @@ see [Flags](#flags) — the image must provide `flue-broker`; see
 ### Getting in: `flue enter`
 
 `flue enter` runs the `podman exec` for you: it preserves the control
-socket as fd 3, hands your command to `flue-broker` in wrapper mode, runs
-`/bin/sh` when you give no command, targets the `snugmo` container when
-you give none, and allocates a tty when your stdin is a tty:
+socket as fd 3, hands your command to `flue-broker` in wrapper mode,
+targets the `snugmo` container when you give none, and allocates a tty
+when your stdin is a tty. When you give no command, the broker resolves
+a shell inside the container:
 
 ```sh
-flue enter                                  # /bin/sh in snugmo
-flue enter <container>                      # /bin/sh inside the container
+flue enter                                  # a shell in snugmo
+flue enter <container>                      # a shell in the container
 flue enter <container> bash                 # bash
 flue enter <container> git ls-remote git@github.com:you/repo.git
 flue enter <container> -- bash -l           # command with its own flags
@@ -80,9 +81,13 @@ in the default container — `flue enter -- bash` does *not* mean a container
 named `bash`. With a container before it, the `--` only separates the
 target command's own flags.
 
-The default command is `/bin/sh`. Set `$FLUE_ENTER_CMD` to run something
-else by default (the value is split on whitespace; a command given on the
-command line always wins):
+The default shell is resolved by the broker inside the container — so
+against the container's filesystem and environment, not the host's:
+`$SHELL` when set and usable (and listed in `/etc/shells` when that file
+has entries), else `/bin/bash`, `/bin/sh`, then `bash` or `sh` in
+`$PATH`. Set `$FLUE_ENTER_CMD` to run something else by default (the
+value is split on whitespace and applied on the host; a command given on
+the command line always wins):
 
 ```sh
 FLUE_ENTER_CMD=bash flue enter           # bash in snugmo
@@ -130,11 +135,11 @@ subcommand: `flue --allow-key SHA256:… enter <container>`. (The subcommand
 
 **enter** (enter-scoped flag and arguments):
 
-| Flag              | Default                  | Description                                                                                                                                                                                                                                             |
-| ----------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| *(arguments)*     | `snugmo`, `$FLUE_ENTER_CMD` else `/bin/sh` | Positional: the container to exec into (default `snugmo`), then the command to run inside it (default `$FLUE_ENTER_CMD` when set and non-blank — split on whitespace — else `/bin/sh`) |
-| `--inject-broker` | `true`  | Run the broker from an in-memory `memfd` (exec'd via `/proc/self/fd/4`) instead of the image's `flue-broker`; no writable filesystem needed. Disable with `--no-inject-broker`, `--inject-broker=false`, or `FLUE_INJECT_BROKER=0` (a set flag wins over the variable) |
-| `--session-check` | auto                  | Override the session check mode: `required` (abort the session if the check cannot be enabled), `advisory`, or `off`. Default is auto: required for an injected broker with a tty, off without injection, advisory otherwise |
+| Flag              | Default                                     | Description                                                                                                                                                                                                                                                                              |
+| ----------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| *(arguments)*     | `snugmo`, a shell resolved in the container | Positional: the container to exec into (default `snugmo`), then the command to run inside it (default `$FLUE_ENTER_CMD` when set and non-blank — split on whitespace — else a shell the broker resolves in the container: `$SHELL`, `/bin/bash`, `/bin/sh`, then `bash`/`sh` in `$PATH`) |
+| `--inject-broker` | `true`                                      | Run the broker from an in-memory `memfd` (exec'd via `/proc/self/fd/4`) instead of the image's `flue-broker`; no writable filesystem needed. Disable with `--no-inject-broker`, `--inject-broker=false`, or `FLUE_INJECT_BROKER=0` (a set flag wins over the variable)                   |
+| `--session-check` | auto                                        | Override the session check mode: `required` (abort the session if the check cannot be enabled), `advisory`, or `off`. Default is auto: required for an injected broker with a tty, off without injection, advisory otherwise                                                             |
 
 **flue-broker** (container-side):
 

@@ -23,11 +23,14 @@ commands with flags).
   `podman exec [-ti] --preserve-fds <n> <container> <broker>
   [command...]`, where `<broker>` is `/proc/self/fd/4` (injected memfd,
   `--preserve-fds 2`) or the image's `flue-broker` (`--preserve-fds 1`).
-  - The container defaults to `defaultEnterContainer` (`snugmo`), and the
-    command to `defaultEnterCmd` (`/bin/sh`) unless `$FLUE_ENTER_CMD` is
-    set and non-blank, in which case it is that value split on whitespace
-    (resolved by `enterDefaultCmd`); an explicit command always wins. So
-    a bare `flue enter` runs a shell in snugmo.
+  - The container defaults to `defaultEnterContainer` (`snugmo`), and
+    `enterDefaultCmd` resolves the command: an explicit command always
+    wins; `$FLUE_ENTER_CMD` (set and non-blank) is that value split on
+    whitespace, applied on the host; otherwise it is nil and
+    `enterExecArgs` passes the broker `-default-shell`, which resolves a
+    shell inside the container ($SHELL → /bin/bash → /bin/sh → bash/sh
+    in $PATH — see [flue-broker.md](flue-broker.md)). So a bare
+    `flue enter` runs a shell in snugmo.
   - A `--` separator (recovered from the raw process arguments by
     `enterDashDash`, since pflag strips it before Run) takes precedence
     over that split: the tokens after it are the command, and the single

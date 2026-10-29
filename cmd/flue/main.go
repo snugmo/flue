@@ -91,8 +91,10 @@
 // truthy keeps the default on, falsy disables it). An explicitly set flag
 // always wins; the env var only fills in when the flag is absent. The
 // command enter runs by default (no command argument) is likewise
-// overridable: $FLUE_ENTER_CMD (whitespace-split) replaces /bin/sh when
-// set and non-blank; an explicit command always wins.
+// overridable: $FLUE_ENTER_CMD (whitespace-split) takes precedence when
+// set and non-blank, else the broker resolves a shell inside the
+// container (the -default-shell flag: $SHELL, /bin/bash, /bin/sh, then
+// bash or sh in $PATH); an explicit command always wins.
 //
 // exec — the passthrough form: run any command that receives the control
 // socketpair (typically flue-broker, or a wrapper that preserves fd 3):
@@ -112,9 +114,10 @@
 //
 //	flue enter [container] [command [args…]]
 //
-// No container defaults to snugmo; no command defaults to
-// $FLUE_ENTER_CMD (whitespace-split) when set and non-blank, else /bin/sh;
-// a tty is allocated when stdin is a tty. A `--` separator takes
+// No container defaults to snugmo; no command means $FLUE_ENTER_CMD
+// (whitespace-split) when set and non-blank, else a shell the broker
+// resolves in the container (-default-shell); a tty is allocated when
+// stdin is a tty. A `--` separator takes
 // precedence: the tokens after it are the command and the single
 // positional argument before it — if any — names the container, so
 // `flue enter -- bash` runs bash in the default container, not the
@@ -240,11 +243,12 @@ var (
 )
 
 // defaultEnterContainer is the container `flue enter` targets when none is
-// given, and defaultEnterCmd the command run inside it when no explicit
-// command is given; defaultEnterCmdEnv overrides that default command.
+// given; defaultEnterCmdEnv names the command to run in it when no
+// explicit command is given, and takes precedence over the broker's
+// in-container shell resolution (the -default-shell flag) when unset or
+// blank.
 const (
 	defaultEnterContainer = "snugmo"
-	defaultEnterCmd       = "/bin/sh"
 	defaultEnterCmdEnv    = "FLUE_ENTER_CMD"
 )
 
@@ -366,21 +370,22 @@ flue blocks on the command exiting and returns its exit code.`,
 	},
 }
 
-// enterCmd is sugar for the common case: run a command (default /bin/sh)
-// in a container (default snugmo), wrapping it with flue-broker so the
-// broker sets SSH_AUTH_SOCK for the child.
+// enterCmd is sugar for the common case: run a command in a container
+// (default snugmo), wrapping it with flue-broker so the broker sets
+// SSH_AUTH_SOCK for the child; with no command, the broker resolves a
+// shell inside the container.
 var enterCmd = &cobra.Command{
 	Use:         "enter [container] [command [args...]]",
-	Short:       "Run a command (default /bin/sh) in a container (default snugmo) with the agent",
+	Short:       "Run a command in a container (default snugmo) with the agent; with no command, a shell resolved in the container",
 	GroupID:     groupUsage,
 	Annotations: map[string]string{needsAgentAnnotation: "1"},
 	Long: `enter is the primary way to use flue: it runs a podman exec against
 a container (default snugmo) with flue-broker wrapping the given command
-(default $FLUE_ENTER_CMD when set and non-blank, else /bin/sh),
+(with no command, a shell resolved in the container — see below),
 allocating a tty when stdin is a tty:
 
-    flue enter                      # /bin/sh in the snugmo container
-    flue enter <container>          # /bin/sh in the container
+    flue enter                      # a shell in the snugmo container
+    flue enter <container>          # a shell in the container
     flue enter <container> bash     # bash
     flue enter <container> -- bash -l # command with its own flags
     flue enter -- bash -l           # bash -l in the default container
@@ -397,8 +402,10 @@ flue-broker in its image — still gets the agent. Disable injection with
 the image's flue-broker instead. The control socketpair stays on fd 3
 either way, and the broker exports its (unique per-session) socket path to
 the wrapped command as SSH_AUTH_SOCK, so ssh, ssh-add, and git just work.
-The default command is /bin/sh; $FLUE_ENTER_CMD (split on whitespace)
-replaces it when no command is given on the command line:
+With no command, the broker resolves a shell inside the container:
+$SHELL when set and usable, else /bin/bash, /bin/sh, then bash or sh
+in $PATH (see the flue-broker docs). $FLUE_ENTER_CMD (split on
+whitespace) takes precedence over that resolution, applied on the host:
 
     FLUE_ENTER_CMD=bash flue enter       # bash in snugmo
 
@@ -602,9 +609,9 @@ func main() {
 }
 
 // runEnter is the `flue enter` subcommand: it runs `podman exec` against
-// a container (default snugmo) with flue-broker wrapping the given command
-// (the default command, see enterDefaultCmd), allocating a tty when stdin
-// is a tty. The control socketpair is preserved through podman exec as
+// a container (default snugmo) with flue-broker wrapping the given
+// command (a shell resolved in the container when none is given, see
+// enterDefaultCmd), allocating a tty when stdin is a tty. The control socketpair is preserved through podman exec as
 // fd 3 (--preserve-fds 1, or 2 when the broker memfd is also passed) and
 // the agent is proxied exactly as in passthrough mode.
 func runEnter(args []string, sockPath string) int {
@@ -682,8 +689,8 @@ func parseSessionCheckMode(s string) (sessionCheckMode, error) {
 }
 
 // enterTarget splits the `flue enter` arguments into the container name
-// (default snugmo) and the command to run inside it (the default command,
-// see enterDefaultCmd). A `--` separator (recovered from the raw process
+// (default snugmo) and the command to run inside it (nil when none is
+// given: see enterDefaultCmd). A `--` separator (recovered from the raw process
 // arguments, see enterDashDash) takes precedence over that split: the
 // tokens after it are the command, and the single positional argument
 // before it — if any — names the container, so `flue enter -- bash` runs
@@ -758,19 +765,22 @@ func enterDashDash(args []string) (cmd []string, preCount int, present bool) {
 
 // enterDefaultCmd resolves the command `flue enter` runs when no explicit
 // command is given: $FLUE_ENTER_CMD (split on whitespace) when set and
-// non-blank, else /bin/sh.
+// non-blank, else nil — the broker then resolves a shell inside the
+// container (enterExecArgs passes it the -default-shell flag).
 func enterDefaultCmd() []string {
 	if v, ok := os.LookupEnv(defaultEnterCmdEnv); ok {
 		if fields := strings.Fields(v); len(fields) > 0 {
 			return fields
 		}
 	}
-	return []string{defaultEnterCmd}
+	return nil
 }
 
 // enterExecArgs builds the argument list for the `podman exec` that runs
 // flue-broker (wrapping cmd) inside the container. A tty is requested
-// only when the caller's stdin is a tty.
+// only when the caller's stdin is a tty. A nil cmd passes the broker the
+// -default-shell flag so it resolves a shell inside the container
+// instead of wrapping a command.
 func enterExecArgs(container string, cmd []string, tty, injectBroker bool) []string {
 	out := []string{"exec"}
 	if tty {
@@ -793,6 +803,9 @@ func enterExecArgs(container string, cmd []string, tty, injectBroker bool) []str
 			container,
 			"flue-broker",
 		)
+	}
+	if cmd == nil {
+		return append(out, "-default-shell")
 	}
 	return append(out, cmd...)
 }
