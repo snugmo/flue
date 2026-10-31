@@ -14,7 +14,7 @@ proxies each client connection to the real host agent
 ```
 cmd/flue/           host side: socketpair control channel, filtered agent proxy; embeds the built broker binary and its sigstore bundle (go:embed)
 cmd/flue-broker/    container side: thin listener + one-shot listener-fd handoff
-docs/               on-demand details: flue.md, flue-broker.md, build.md, duplication-policy.md
+docs/               on-demand details: flue.md, flue-broker.md, embedded-broker.md, build.md, duplication-policy.md
 Containerfile       multi-stage image build: broker golang stage → flue-broker scratch stage (one per target platform; the go:embed source, and the broker attestation input) → flue golang stage → FROM scratch final stage (just /flue)
 README.md           usage, flags, how-it-works, security
 ```
@@ -88,6 +88,8 @@ README.md           usage, flags, how-it-works, security
   values onto every platform in a multi-arch build.
 - Component details are on-demand: [docs/flue.md](docs/flue.md) (host),
   [docs/flue-broker.md](docs/flue-broker.md) (container),
+  [docs/embedded-broker.md](docs/embedded-broker.md) (embedded broker:
+  injection and the `flue broker` subcommands),
   [docs/build.md](docs/build.md) (image).
 
 ## Commit conventions
