@@ -471,11 +471,11 @@ flue --allow-key-type ssh-ed25519 enter <container> ssh-add -l
 # 7. Two concurrent sessions get distinct sockets and both work
 flue enter <container> -- sh -c 'ssh-add -l' & flue enter <container> -- sh -c 'ssh-add -l'; wait
 
-# 7. (run from a terminal, so the broker is a session leader) a client
+# 8. (run from a terminal, so the broker is a session leader) a client
 #    that starts its own session is refused
 flue enter <container> -- setsid sh -c 'ssh-add -l 2>&1'  # expect an agent error, not a key list
 
-# 8. The session check is on with and without a tty: the log shows
+# 9. The session check is on with and without a tty: the log shows
 #    "session check on" in both cases (the tty run in required mode,
 #    the other in advisory) — verified 2026-10-12 on podman 5.8.7 /
 #    crun 1.28 / Linux 7.2 (the broker's session was private in both).
