@@ -24,12 +24,14 @@
 //
 // The filter implements agent.ExtendedAgent:
 //   - List: forwarded, but only keys allowed by the --allow-key and
-//     --allow-key-type lists are returned (all keys if neither flag is
-//     given).
+//     --allow-key-type lists are returned (all keys only when --allow-all
+//     is set; with neither an allowlist nor --allow-all the session is
+//     refused before it starts).
 //   - Sign / SignWithFlags: forwarded only for keys allowed by both
 //     lists.
 //   - Add, Remove, RemoveAll, Lock, Unlock, Signers: always denied.
-//   - Extension: only session-bind@openssh.com is forwarded.
+//   - Extension: only session-bind@openssh.com is forwarded (unless
+//     --no-session-bind is set, in which case no extension is forwarded).
 //
 // A certificate matches by both its certificate type (e.g.
 // ssh-ed25519-cert-v01@openssh.com) and its underlying key's type, and
@@ -78,9 +80,10 @@
 // (enter), "Low-level commands" (exec and broker — the development and
 // debugging forms), and "Utility commands" (version, together with
 // cobra's auto-generated help and completion commands). The global flags
-// (--sock, --allow-key, --allow-key-type, --log-level, --log-file) are
-// persistent: place them before the subcommand. The subcommand's
-// arguments follow the subcommand name, and a --
+// (--sock, --allow-key, --allow-key-type, --allow-all, --no-session-bind,
+// --log-level, --log-file) are persistent: place them before the
+// subcommand. The subcommand's arguments follow the subcommand name, and a
+// --
 // separates them from the target command so the target's own flags are
 // passed through verbatim (cobra/pflag, unlike stdlib flag, keeps
 // scanning for flags after positional arguments).
@@ -108,9 +111,11 @@
 // exec — the passthrough form: run any command that receives the control
 // socketpair (typically flue-broker, or a wrapper that preserves fd 3):
 //
-//	flue exec -- podman exec --preserve-fds 1 <container> flue-broker bash
+//	flue --allow-all exec -- podman exec --preserve-fds 1 <container> flue-broker bash
 //
-// (wrapper mode: the broker sets SSH_AUTH_SOCK for its child). In
+// (--allow-all because the filter is fail closed by default; an
+// allowlist works too). (wrapper mode: the broker sets SSH_AUTH_SOCK for
+// its child). In
 // standalone mode (no command after flue-broker), the caller must name the
 // socket, so pin -sock to a fixed path and set SSH_AUTH_SOCK to it:
 //
@@ -236,6 +241,16 @@ var (
 	logFile       string
 	allowKeys     = newAllowKeyFlag()
 	allowKeyTypes = newAllowKeyTypeFlag()
+	// allowAll (--allow-all) explicitly permits the open filter: with no
+	// --allow-key / --allow-key-type list it lets every key in the host
+	// agent be listed and signable. Without it, an empty allowlist is a
+	// fail-closed error (the session is refused before the child starts).
+	allowAll bool
+	// noSessionBind (--no-session-bind) stops the filter from forwarding
+	// the session-bind@openssh.com agent extension, disabling OpenSSH
+	// destination-restricted-key support. Provided for host agents
+	// affected by CVE-2026-73281 (OpenSSH 8.9–10.4).
+	noSessionBind bool
 	sockPath      string
 	// enterInjectBroker holds the --inject-broker value for `enter`
 	// (bound in init to both --inject-broker and its negative form
@@ -331,10 +346,11 @@ allowlist. It creates a control socketpair, hands one end to the container
 (as fd 3), receives the broker's listening socket, and proxies each client
 connection to the real $SSH_AUTH_SOCK, forwarding only allowed keys.
 
-The global flags (--sock, --allow-key, --allow-key-type, --log-level, --log-file) go before the
-subcommand. The subcommand's arguments follow the subcommand name; a --
-separates them from the target command, so the target command's own flags
-are passed through verbatim.`,
+The global flags (--sock, the key-allowlist flags --allow-key /
+--allow-key-type / --allow-all, --no-session-bind, --log-level, --log-file)
+go before the subcommand. The subcommand's arguments follow the subcommand
+name; a -- separates them from the target command, so the target command's
+own flags are passed through verbatim.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// No subcommand given: the classic usage-error case.
 		fmt.Fprintln(os.Stderr, `flue: missing subcommand (want "exec", "enter", "broker", or "version")`)
@@ -454,6 +470,10 @@ func init() {
 		"SHA256 fingerprint to allow (repeatable)")
 	rootCmd.PersistentFlags().Var(allowKeyTypes, "allow-key-type",
 		"key type to allow (repeatable); e.g. ssh-ed25519, ecdsa-sha2-nistp256, rsa")
+	rootCmd.PersistentFlags().BoolVar(&allowAll, "allow-all", false,
+		"explicitly allow every key in the host agent (without an --allow-key / --allow-key-type list the session is otherwise refused)")
+	rootCmd.PersistentFlags().BoolVar(&noSessionBind, "no-session-bind", false,
+		"do not forward the session-bind@openssh.com agent extension (disables destination-restricted keys; for host agents with CVE-2026-73281, OpenSSH 8.9–10.4)")
 	enterCmd.Flags().BoolVar(&enterInjectBroker, "inject-broker", true,
 		"run the broker from an in-memory memfd (exec'd via /proc/self/fd/4) instead of the image's flue-broker; no writable filesystem needed (default: on; $FLUE_INJECT_BROKER applies when the flag is unset)")
 	// pflag (unlike stdlib flag) does not auto-generate --no-<flag> forms
@@ -887,6 +907,17 @@ func runPassthrough(args []string, sockPath string) int {
 // started): the handover log then attributes the check's state to the
 // explicit choice, not to the auto rule.
 func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preserved []*os.File, checkMode sessionCheckMode, checkExplicit bool) int {
+	// Fail closed on an open filter, before the child is spawned: the
+	// proxy's whole purpose is that the container can use only the keys
+	// the user allowlisted. With neither --allow-key nor --allow-key-type
+	// set (and no explicit --allow-all) every key in the host agent would
+	// be listed and signable from the container, so refuse to start.
+	allowSet := allowKeys.toSet()
+	typeSet := allowKeyTypes.toSet()
+	if _, err := agentFilterPolicyOK(allowSet, typeSet, allowAll); err != nil {
+		fatalf("flue: %v", err)
+	}
+
 	// The container takes end B (fd 3); the host keeps end A.
 	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
@@ -947,21 +978,23 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preser
 	}
 
 	pol := &policy{
-		allow:                allowKeys.toSet(),
-		allowTypes:           allowKeyTypes.toSet(),
+		allow:                allowSet,
+		allowTypes:           typeSet,
 		sock:                 sockPath,
 		sessionCheckMode:     checkMode,
 		sessionCheckExplicit: checkExplicit,
 		refusals:             &refusalLimiter{},
+		allowAll:             allowAll,
+		noSessionBind:        noSessionBind,
 	}
 
-	// The default filter is open: with neither --allow-key nor
-	// --allow-key-type set, every key in the host agent is listed and
-	// signable from the container. The safe configuration is the one the
-	// user has to remember, so say so at session start (the info line
-	// below records the filter for the session).
-	if len(pol.allow) == 0 && len(pol.allowTypes) == 0 {
-		log.Warn("flue: no --allow-key or --allow-key-type set: every key in the host agent is listed and signable from the container")
+	// With --allow-all the filter is intentionally open: every key in the
+	// host agent is listed and signable from the container. That is the
+	// one remaining open-filter case (the no-flag case is refused at the
+	// top of this function), so call it out at session start; the info
+	// line below records the filter for the session.
+	if pol.allowAll {
+		log.Warn("flue: --allow-all set: every key in the host agent is listed and signable from the container")
 	}
 
 	log.Info("flue: agent", "sock", sockPath, "filter", allowKeys.describe(), "filter-types", allowKeyTypes.describe(), "exec", append([]string{cmdPath}, cmdArgs...))
@@ -1108,7 +1141,11 @@ func (a *allowKeyTypeFlag) describe() string {
 // dials, and the broker's pid and session id (0 = unknown) learned from
 // the handover message's credentials. It is built once in
 // runChildWithAgent and shared across all per-client agentFilter values;
-// the broker fields are set once more, by receiveListener.
+// the broker fields are set once more, by receiveListener. allowAll and
+// noSessionBind mirror the --allow-all and --no-session-bind flags
+// (the allowAll case — both allowlists empty — is the only one that
+// reaches the filter, since an empty allowlist without it is refused
+// before the child starts).
 type policy struct {
 	allow                map[string]struct{} // empty = allow all
 	allowTypes           map[string]struct{} // empty = allow all types
@@ -1120,6 +1157,8 @@ type policy struct {
 	sessionPrivateKnown  bool                // the privacy check ran (false = could not be determined)
 	sessionCheckExplicit bool                // the mode came from --session-check, not the auto rule
 	refusals             *refusalLimiter     // rate-limits the refusal warnings (lograte.go)
+	allowAll             bool                // --allow-all: the open filter was explicit (both allowlists empty)
+	noSessionBind        bool                // --no-session-bind: Extension forwards no extension
 }
 
 // agentFilter wraps one upstream ssh agent client (one per client
@@ -1128,6 +1167,23 @@ type policy struct {
 type agentFilter struct {
 	upstream agent.ExtendedAgent
 	pol      *policy
+}
+
+// agentFilterPolicyOK decides whether a session's agent filter may run.
+// A usable policy has at least one of --allow-key / --allow-key-type set
+// (a key allowlist), or the explicit --allow-all opt-in to the open
+// filter. None of those would leave every key in the host agent listed
+// and signable from the container, so it is refused (fail closed) rather
+// than started. It is called before the child is spawned, so a rejected
+// configuration never launches a container.
+func agentFilterPolicyOK(allow, allowTypes map[string]struct{}, allowAll bool) (bool, error) {
+	if len(allow) > 0 || len(allowTypes) > 0 {
+		return true, nil
+	}
+	if allowAll {
+		return true, nil
+	}
+	return false, errors.New("no --allow-key, --allow-key-type, or --allow-all set: every key in the host agent would be listed and signable from the container. Pass an allowlist, or --allow-all to permit the open filter explicitly")
 }
 
 // isAllowed checks whether a key's fingerprint is in the allowlist.
@@ -1337,10 +1393,11 @@ func (f *agentFilter) Signers() ([]ssh.Signer, error) {
 	return nil, fmt.Errorf("signers request is not allowed through flue")
 }
 
-// Extension forwards only session-bind@openssh.com; everything else is
-// unsupported.
+// Extension forwards only session-bind@openssh.com (unless
+// --no-session-bind is set, in which case no extension is forwarded);
+// everything else is unsupported.
 func (f *agentFilter) Extension(extensionType string, req []byte) (resp []byte, err error) {
-	if extensionType == "session-bind@openssh.com" {
+	if !f.pol.noSessionBind && extensionType == "session-bind@openssh.com" {
 		return f.upstream.Extension(extensionType, req)
 	}
 	return nil, agent.ErrExtensionUnsupported

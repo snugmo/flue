@@ -123,18 +123,24 @@ listener.
 - Each accepted client connection gets a fresh `net.Dial("unix",
   SSH_AUTH_SOCK)` upstream connection, wrapped in an `agentFilter` that
   implements `agent.ExtendedAgent`.
-- The session's policy (allowlists + socket path) is a single `policy`
-  value built once in `runChildWithAgent`; each per-client `agentFilter`
-  shares it read-only.
+- The session's policy (allowlists + socket path + the `--allow-all` /
+  `--no-session-bind` modes) is a single `policy` value built once in
+  `runChildWithAgent`; each per-client `agentFilter` shares it read-only.
+- The filter is fail closed by default: `runChildWithAgent` refuses to
+  start (before spawning the child) unless at least one of `--allow-key` /
+  `--allow-key-type` is set, or the explicit `--allow-all` opt-in is given.
+  An `--allow-all` session logs a warning that every key is exposed.
 - Policy (mirrors the per-operation table in the README):
   - `List`: forwarded, but only keys allowed by `--allow-key`
     (repeatable, SHA256 fingerprint) and `--allow-key-type` (repeatable,
-    wire type name) are returned; all keys when the flags are absent.
+    wire type name) are returned; all keys only when `--allow-all` is set.
   - `Sign` / `SignWithFlags`: forwarded only for keys allowed by both
     lists.
   - `Add`, `Remove`, `RemoveAll`, `Lock`, `Unlock`, `Signers`: always
     denied.
-  - `Extension`: only `session-bind@openssh.com` is forwarded.
+  - `Extension`: only `session-bind@openssh.com` is forwarded (unless
+    `--no-session-bind` is set, in which case no extension is forwarded) —
+    the knob for host agents with CVE-2026-73281 (OpenSSH 8.9–10.4).
   - A certificate matches by both its certificate type and its
     underlying key's type, and its fingerprint is the underlying
     key's, so `--allow-key-type` can admit or deny certificates

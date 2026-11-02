@@ -430,6 +430,71 @@ func TestFilterExtension(t *testing.T) {
 	}
 }
 
+// TestFilterExtensionNoSessionBind verifies that --no-session-bind stops the
+// filter from forwarding session-bind@openssh.com: the request is answered
+// with the canonical ErrExtensionUnsupported (the filter never reaches
+// upstream), rather than the distinct "agent: generic extension failure"
+// that a forwarded request to a keyring would produce. This is the knob that
+// closes the CVE-2026-73281 window on OpenSSH 8.9-10.4 host agents.
+func TestFilterExtensionNoSessionBind(t *testing.T) {
+	addr := startKeyringAgent(t)
+	upstreamConn, err := net.Dial("unix", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { upstreamConn.Close() })
+
+	f := &agentFilter{
+		upstream: agent.NewClient(upstreamConn),
+		pol:      &policy{noSessionBind: true},
+	}
+
+	// With --no-session-bind, session-bind is rejected by the filter
+	// itself, not forwarded.
+	if _, err := f.Extension("session-bind@openssh.com", []byte{}); err != agent.ErrExtensionUnsupported {
+		t.Errorf("with --no-session-bind, session-bind: expected ErrExtensionUnsupported (not forwarded), got %v", err)
+	}
+	// A non-session-bind extension is rejected the same way, with or
+	// without --no-session-bind.
+	if _, err := f.Extension("some-unknown-extension", []byte{}); err != agent.ErrExtensionUnsupported {
+		t.Errorf("with --no-session-bind, unknown extension: expected ErrExtensionUnsupported, got %v", err)
+	}
+}
+
+// TestAgentFilterPolicyOK guards the fail-closed gate: a session needs at
+// least one of an --allow-key / --allow-key-type list or the explicit
+// --allow-all opt-in; none of those is refused.
+func TestAgentFilterPolicyOK(t *testing.T) {
+	one := map[string]struct{}{"a": {}}
+	for _, tc := range []struct {
+		name       string
+		allow      map[string]struct{}
+		allowTypes map[string]struct{}
+		allowAll   bool
+		wantOK     bool
+	}{
+		{"allow-key set", one, nil, false, true},
+		{"allow-key-type set", nil, one, false, true},
+		{"both set", one, one, false, true},
+		{"none, no --allow-all: refused", nil, nil, false, false},
+		{"none, --allow-all: open", nil, nil, true, true},
+		{"--allow-all with an allowlist: ok", one, nil, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ok, err := agentFilterPolicyOK(tc.allow, tc.allowTypes, tc.allowAll)
+			if ok != tc.wantOK {
+				t.Fatalf("agentFilterPolicyOK = %v (err %v), want %v", ok, err, tc.wantOK)
+			}
+			if tc.wantOK && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if !tc.wantOK && err == nil {
+				t.Error("expected an error for the open filter, got nil")
+			}
+		})
+	}
+}
+
 // TestAgentOpLogHasKeyType verifies the debug trace of an op about a
 // specific key carries the key type alongside its fingerprint (allowed
 // and denied alike), while summary records keep the detail field.

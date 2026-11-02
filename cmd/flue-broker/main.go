@@ -47,7 +47,7 @@
 // container with the agent available (the broker sets SSH_AUTH_SOCK for
 // the child, so -e is not required):
 //
-//	flue exec -- podman exec --preserve-fds 1 <container> flue-broker bash
+//	flue --allow-all exec -- podman exec --preserve-fds 1 <container> flue-broker bash
 //
 // …or just `flue enter <container> [command…]`, which runs that wrapper-
 // mode podman exec for you (with no command it passes -default-shell and

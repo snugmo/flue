@@ -200,7 +200,7 @@ func TestCobraBrokerSha256(t *testing.T) {
 // as *persistent* flags on the root, so they are inherited by both subcommands
 // and can be placed before the subcommand (the current flue convention).
 func TestCobraPersistentFlags(t *testing.T) {
-	for _, name := range []string{"sock", "log-level", "allow-key", "allow-key-type"} {
+	for _, name := range []string{"sock", "log-level", "allow-key", "allow-key-type", "allow-all", "no-session-bind"} {
 		if rootCmd.PersistentFlags().Lookup(name) == nil {
 			t.Errorf("persistent flag --%s is not registered on the root", name)
 		}

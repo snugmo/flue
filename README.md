@@ -118,8 +118,8 @@ flue enter --no-inject-broker <container>       # or --inject-broker=false
 FLUE_INJECT_BROKER=0 flue enter <container>     # via the environment
 ```
 
-Global flags (`--sock`, `--allow-key`, `--allow-key-type`, `--log-level`,
-`--log-file`) go
+Global flags (`--sock`, `--allow-key`, `--allow-key-type`, `--allow-all`,
+`--no-session-bind`, `--log-level`, `--log-file`) go
 before the
 subcommand: `flue --allow-key SHA256:… enter <container>`. (The subcommand
 `--` separator above is for your *target command's* flags.)
@@ -131,8 +131,10 @@ subcommand: `flue --allow-key SHA256:… enter <container>`. (The subcommand
 | Flag          | Default                        | Description                                                                                                                                                                                              |
 | ------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `--sock`      | `$SSH_AUTH_SOCK`               | Agent socket path to proxy to                                                                                                                                                                            |
-| `--allow-key` | (none = all keys)              | Repeatable. Only keys with this SHA256 fingerprint are listed and can sign. Fingerprints are compared the way `ssh-add -l` prints them — for a certificate, that is the fingerprint of its underlying key|
-| `--allow-key-type` | (none = all types)          | Repeatable. Only keys of this type (the wire type name, e.g. `ssh-ed25519`, `ecdsa-sha2-nistp256`, `rsa`) are listed and can sign. A certificate matches both its certificate type and its underlying key's type, so a cert-only list denies static (uncertified) keys; secure-enclave keys have their own `sk-` type names |
+| `--allow-key` | (none)                         | Repeatable. Only keys with this SHA256 fingerprint are listed and can sign. Fingerprints are compared the way `ssh-add -l` prints them — for a certificate, that is the fingerprint of its underlying key. With neither this nor `--allow-key-type` set, `--allow-all` is required to start |
+| `--allow-key-type` | (none)                     | Repeatable. Only keys of this type (the wire type name, e.g. `ssh-ed25519`, `ecdsa-sha2-nistp256`, `rsa`) are listed and can sign. A certificate matches both its certificate type and its underlying key's type, so a cert-only list denies static (uncertified) keys; secure-enclave keys have their own `sk-` type names. With neither this nor `--allow-key` set, `--allow-all` is required to start |
+| `--allow-all` | `false`                        | Explicitly allow every key in the host agent (both lists empty). Required to start a session that sets neither `--allow-key` nor `--allow-key-type`; without it such a session is refused (fail closed). Logs a warning at session start |
+| `--no-session-bind` | `false`                  | Do not forward the `session-bind@openssh.com` agent extension, disabling OpenSSH destination-restricted keys. Provided for host agents affected by CVE-2026-73281 (OpenSSH 8.9–10.4) |
 | `--log-level` | `$FLUE_LOG_LEVEL`, else `info` | Log level: `debug`, `info`, `warn`, or `error`. `debug` logs every agent request (operation, key type, fingerprint, allowed/denied — and, when an allowlist denies a key, which list did, as a `reason` field). When the flag is unset, `$FLUE_LOG_LEVEL` is read; a set flag wins            |
 | `--log-file`  | `stderr`                       | Append log output to this file (created if needed, mode `0600`) instead of stderr — keeps session-check refusal warnings off the user's terminal                                                                                              |
 | `--version`   | -                              | Print the build version and exit. The version is stamped at build time (`-ldflags "-X main.version=<v>"`); a plain `go build` reports `dev`. The `flue version` subcommand prints the same line |
@@ -174,7 +176,7 @@ podman, `flue exec` runs any command that receives the control socketpair
 `SSH_AUTH_SOCK` for its child, so no `-e` is needed:
 
 ```sh
-flue exec -- podman exec --preserve-fds 1 <container> flue-broker bash
+flue --allow-all exec -- podman exec --preserve-fds 1 <container> flue-broker bash
 ```
 
 In standalone mode (no command after `flue-broker`) nothing sets
@@ -397,7 +399,7 @@ cosign verify-blob /tmp/flue-broker \
 
 | Operation       | Behavior                                              |
 | --------------- | ----------------------------------------------------- |
-| `List`          | Forwarded; only keys allowed by `--allow-key` and `--allow-key-type` are returned (all keys if neither is set) |
+| `List`          | Forwarded; only keys allowed by `--allow-key` and `--allow-key-type` are returned (all keys only when `--allow-all` is set) |
 | `Sign`          | Forwarded only for keys allowed by both lists             |
 | `SignWithFlags` | Forwarded only for keys allowed by both lists (needed for RSA rsa-sha2-256/512) |
 | `Add`           | Denied                                                |
@@ -406,7 +408,7 @@ cosign verify-blob /tmp/flue-broker \
 | `Lock`          | Denied                                                |
 | `Unlock`        | Denied                                                |
 | `Signers`       | Denied                                                |
-| `Extension`     | Only `session-bind@openssh.com` is forwarded; all others return `ErrExtensionUnsupported` |
+| `Extension`     | Only `session-bind@openssh.com` is forwarded (unless `--no-session-bind` is set, in which case no extension is forwarded); all others return `ErrExtensionUnsupported` |
 
 ## Security
 
@@ -417,6 +419,26 @@ any key outside the `--allow-key` / `--allow-key-type` lists (the filter
 policy table above carries the per-operation detail), and it never sees a
 path or fd to the host agent socket, its directory, or `$XDG_RUNTIME_DIR`.
 The trust boundary is the allowlists, not the container.
+
+The filter is fail closed by default: a session with neither `--allow-key`
+nor `--allow-key-type` set is refused before it starts, unless the user
+explicitly passes `--allow-all` to open it to every key (a warning is
+logged at session start in that case). The safe configuration is the one the
+user has to choose, not one the tool guesses.
+
+The one forwarded agent extension, `session-bind@openssh.com`, is the
+mechanism OpenSSH uses for destination-restricted keys, so it is required
+for that feature to work. The binding is cryptographically enforced (an
+unforgeable hostkey plus KEX signature), so a container cannot claim a
+destination it did not in fact open. That said, OpenSSH 8.9–10.4 carries a
+lock-and-`session-bind` interaction (CVE-2026-73281, fixed in 10.5) in which
+a locked agent can let a remote (container-mediated) session make use of
+destination-restricted keys. `flue` cannot patch that agent-side bug; the
+fix is to run the host agent on OpenSSH ≥ 10.5, or to pass
+`--no-session-bind` to stop forwarding the extension (which disables
+destination-restricted keys). The other half of the CVE — adding PKCS#11
+tokens remotely — is not reachable through `flue`, because its agent proxy
+does not implement the smartcard opcodes.
 
 When the broker's session is private — the broker leads it, or the
 leader that led it at handover has already exited, what an exec that
@@ -447,20 +469,23 @@ output to a file instead of the terminal.
 
 Run these against a real container to verify the full path works. They all
 use `flue enter`, which injects the broker in memory — so any running
-container works, with no writable filesystem or image-side broker needed:
+container works, with no writable filesystem or image-side broker needed.
+Because most of them exercise the full agent rather than a key allowlist,
+they pass `--allow-all`; the allowlist checks (#5, #6) instead name a
+specific key.
 
 ```sh
 # 1. ssh-add -l run twice in a row succeeds both times
-flue enter <container> -- sh -c 'ssh-add -l && ssh-add -l'
+flue --allow-all enter <container> -- sh -c 'ssh-add -l && ssh-add -l'
 
 # 2. A loop of ~20 concurrent ssh-add -l calls all succeed
-flue enter <container> -- sh -c 'for i in $(seq 1 20); do ssh-add -l & done; wait'
+flue --allow-all enter <container> -- sh -c 'for i in $(seq 1 20); do ssh-add -l & done; wait'
 
 # 3. ssh-add -D is refused
-flue enter <container> -- sh -c 'ssh-add -D 2>&1'  # expect an error
+flue --allow-all enter <container> -- sh -c 'ssh-add -D 2>&1'  # expect an error
 
 # 4. git over ssh works
-flue enter <container> git ls-remote git@github.com:your/repo.git
+flue --allow-all enter <container> git ls-remote git@github.com:your/repo.git
 
 # 5. With --allow-key, only that key shows in ssh-add -l
 flue --allow-key SHA256:... enter <container> ssh-add -l
@@ -469,11 +494,11 @@ flue --allow-key SHA256:... enter <container> ssh-add -l
 flue --allow-key-type ssh-ed25519 enter <container> ssh-add -l
 
 # 7. Two concurrent sessions get distinct sockets and both work
-flue enter <container> -- sh -c 'ssh-add -l' & flue enter <container> -- sh -c 'ssh-add -l'; wait
+flue --allow-all enter <container> -- sh -c 'ssh-add -l' & flue --allow-all enter <container> -- sh -c 'ssh-add -l'; wait
 
 # 8. (run from a terminal, so the broker is a session leader) a client
 #    that starts its own session is refused
-flue enter <container> -- setsid sh -c 'ssh-add -l 2>&1'  # expect an agent error, not a key list
+flue --allow-all enter <container> -- setsid sh -c 'ssh-add -l 2>&1'  # expect an agent error, not a key list
 
 # 9. The session check is on with and without a tty: the log shows
 #    "session check on" in both cases (the tty run in required mode,
@@ -482,8 +507,8 @@ flue enter <container> -- setsid sh -c 'ssh-add -l 2>&1'  # expect an agent erro
 #    On a runtime that places execs in the container's init session the
 #    no-tty run logs the reason the check is off instead; on that
 #    runtime `--session-check` is the escape hatch (see Flags).
-flue enter <container> true            # from a terminal
-echo | flue enter <container> true     # no tty
+flue --allow-all enter <container> true            # from a terminal
+echo | flue --allow-all enter <container> true     # no tty
 ```
 
 ---
