@@ -238,12 +238,12 @@ daemon required:
 
 ```bash
 buildah build --isolation chroot --layers --format docker \
-  --build-arg VERSION=0.2.1 \
+  --build-arg VERSION=0.3.0 \
   --build-arg REVISION=$(git rev-parse HEAD) \
   --build-arg CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
-  -t ghcr.io/snugmo/flue:0.2.1 \
+  -t ghcr.io/snugmo/flue:0.3.0 \
   -f Containerfile .
-buildah push ghcr.io/snugmo/flue:0.2.1
+buildah push ghcr.io/snugmo/flue:0.3.0
 ```
 
 No platform build-args are needed: the Containerfile declares the
