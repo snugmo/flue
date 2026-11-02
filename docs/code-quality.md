@@ -413,6 +413,6 @@ three smaller points. Numbering continues from the items above.
     configuration never launches a container) unless at least one
     allowlist is set or the new explicit `--allow-all` flag opts in
     to the open filter (a warning is logged at session start in that
-    case). Both `enter` and the `exec` passthrough route through
+    case). Both `enter` and the `debug` passthrough route through
     `runChildWithAgent`, so the one gate covers both. Regression:
     `TestAgentFilterPolicyOK` (table-driven gate logic).

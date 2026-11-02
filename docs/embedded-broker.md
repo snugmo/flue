@@ -76,7 +76,7 @@ How the broker was started also decides the **session check** mode (see
   **required** for an interactive `flue enter` (tty — if it cannot be
   enabled the session is aborted rather than served without it) and
   **advisory** for an injected broker without a tty.
-- `--no-inject-broker` (or the `flue exec` passthrough) starts the broker
+- `--no-inject-broker` (or the `flue debug` passthrough) starts the broker
   from the image — untrusted code that could hand over a listener from any
   session it controls — so the check is **off** and a warning is logged.
 

@@ -23,7 +23,7 @@ func TestCobraSubcommands(t *testing.T) {
 		byName[c.Name()] = c
 	}
 	for name, wantUse := range map[string]string{
-		"exec":    "exec [command [args...]]",
+		"debug":   "debug [command [args...]]",
 		"enter":   "enter [container] [command [args...]]",
 		"broker":  "broker",
 		"version": "version",
@@ -36,11 +36,11 @@ func TestCobraSubcommands(t *testing.T) {
 			t.Errorf("subcommand %q: Use = %q, want %q", name, c.Use, wantUse)
 		}
 	}
-	// The subcommands' help-output groups: enter leads, exec and
+	// The subcommands' help-output groups: enter leads, debug and
 	// broker are low-level, version is a utility.
 	for name, wantGroup := range map[string]string{
 		"enter":   groupUsage,
-		"exec":    groupLowLevel,
+		"debug":   groupLowLevel,
 		"broker":  groupLowLevel,
 		"version": groupUtility,
 	} {
@@ -81,9 +81,9 @@ func TestCobraSubcommands(t *testing.T) {
 
 // TestCobraHelpGroups guards the root --help output's grouping: the
 // subcommands must appear in the three sections, in order —
-// "Commands" (enter), "Low-level commands" (exec, broker), "Utility
+// "Commands" (enter), "Low-level commands" (debug, broker), "Utility
 // commands" (version, plus cobra's auto-generated help and completion
-// commands) — so the primary user-facing command, enter, leads. A
+// commands) — so the daily driver, enter, leads. A
 // subcommand left out of a group would instead appear in a trailing
 // "Additional Commands" section, which must not be present.
 func TestCobraHelpGroups(t *testing.T) {
@@ -117,7 +117,7 @@ func TestCobraHelpGroups(t *testing.T) {
 		lines   []string
 	}{
 		{"\nCommands\n", "\nLow-level commands\n", []string{"\n  enter "}},
-		{"\nLow-level commands\n", "\nUtility commands\n", []string{"\n  broker ", "\n  exec "}},
+		{"\nLow-level commands\n", "\nUtility commands\n", []string{"\n  broker ", "\n  debug "}},
 		{"\nUtility commands\n", "\nFlags:\n", []string{"\n  completion ", "\n  help ", "\n  version "}},
 	}
 	pos := -1

@@ -4,7 +4,7 @@ import "io"
 
 // crlfWriter terminates bare newlines as \r\n. It wraps the log output
 // when that output goes straight to the user's terminal and the
-// subcommand spawns a child that may take the terminal (enter, exec).
+// subcommand spawns a child that may take the terminal (enter, debug).
 // Such a child (a podman exec that requests a tty) puts the shared
 // terminal into raw mode, which disables OPOST and with it ONLCR: the
 // terminal then no longer translates a bare \n into CR+NL on output.

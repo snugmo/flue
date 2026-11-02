@@ -10,7 +10,7 @@ Two small Go binaries:
 - **`flue`** (host-side) creates a Unix socketpair, passes one end into the
   container, receives the broker's listening fd, and proxies each client
   connection to the real `$SSH_AUTH_SOCK` with a key-allowlist filter. Its
-  **`flue enter`** subcommand is the usual way in: it runs the `podman exec`
+  **`flue enter`** subcommand is the daily driver: it runs the `podman exec`
   for you and hands your command to the broker in wrapper mode. `flue` also
   **embeds** the `flue-broker` built at the same time (`go:embed`) and, by
   default, hands it to the container in memory.
@@ -164,19 +164,21 @@ host goes away.
 
 These are [cobra](https://github.com/spf13/cobra) persistent flags, so they
 accept the `--flag value` or `--flag=value` forms and go before the
-subcommand (`flue --sock /path exec -- …`). A subcommand's arguments follow
+subcommand (`flue --sock /path debug -- …`). A subcommand's arguments follow
 the subcommand name; a `--` separates them from the target command so the
 target's flags pass through verbatim.
 
-### Manual: `flue exec` (passthrough)
+### Manual: `flue debug` (the low-level escape hatch)
 
-If you prefer to assemble the `podman exec` yourself, or the target is not
-podman, `flue exec` runs any command that receives the control socketpair
-(over fd 3). Wrapper mode is the normal shape — the broker sets
-`SSH_AUTH_SOCK` for its child, so no `-e` is needed:
+If `flue enter`'s built-in `podman exec` fails, or you prefer to assemble
+the container command yourself (a non-podman runtime, extra flags),
+`flue debug` runs any command that receives the control socketpair (over
+fd 3) — you write the `podman exec`, flue does the rest. Wrapper mode is
+the normal shape — the broker sets `SSH_AUTH_SOCK` for its child, so no
+`-e` is needed:
 
 ```sh
-flue --allow-all exec -- podman exec --preserve-fds 1 <container> flue-broker bash
+flue --allow-all debug -- podman exec --preserve-fds 1 <container> flue-broker bash
 ```
 
 In standalone mode (no command after `flue-broker`) nothing sets
@@ -184,7 +186,7 @@ In standalone mode (no command after `flue-broker`) nothing sets
 one:
 
 ```sh
-flue exec -- podman exec --preserve-fds 1 \
+flue debug -- podman exec --preserve-fds 1 \
   -e SSH_AUTH_SOCK=/tmp/flue.sock <container> \
   flue-broker -sock /tmp/flue.sock
 ```
@@ -207,7 +209,7 @@ podman cp /tmp/flue-broker <container>:/usr/local/bin/flue-broker
 
 `flue` embeds the `flue-broker` built at the same time (`go:embed`), so
 `broker executable` writes out a byte-identical copy (mode 0755) —
-built for the same architecture as your `flue`. Unlike `exec` and
+built for the same architecture as your `flue`. Unlike `debug` and
 `enter`, the `broker` subcommands need no agent socket and take no
 flags.
 
@@ -384,7 +386,7 @@ cosign verify-blob /tmp/flue-broker \
    refused. For an interactive `flue enter` (injected broker with a
    tty) the check is required: if it cannot be enabled, `flue` aborts
    the session rather than serve it without the check. With
-   `--no-inject-broker` or in the `flue exec` passthrough the broker is
+   `--no-inject-broker` or in the `flue debug` passthrough the broker is
    untrusted code and the check is not used (a warning is logged); in
    the remaining mode (an injected broker without a tty) its state is
    logged at `info` when the session starts.
@@ -452,7 +454,7 @@ other processes (older runtimes), this check does not apply. The check's
 mode depends on how the broker was started: for an interactive `flue
 enter` (injected broker with a tty) it is required — if it cannot be
 enabled, the session is aborted rather than served without the check;
-with `--no-inject-broker` or in the `flue exec` passthrough it is not
+with `--no-inject-broker` or in the `flue debug` passthrough it is not
 used at all, because the broker is then untrusted code that could hand
 over a listener from any session it controls (a warning is logged);
 otherwise (an injected broker without a tty) it is advisory and its

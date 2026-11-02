@@ -6,7 +6,7 @@ agent needs when changing the code.
 
 ## Modes
 
-flue is a cobra CLI with four subcommands: `exec`, `enter`, `broker`
+flue is a cobra CLI with four subcommands: `debug`, `enter`, `broker`
 (itself the group of the three sub-subcommands below), and `version`
 (informational). The global flags (`--sock`, `--allow-key`,
 `--allow-key-type`, `--log-level`, `--log-file`) are persistent on the
@@ -16,9 +16,11 @@ target's own flags pass through verbatim (pflag, unlike stdlib flag, keeps
 scanning for flags after positionals — which is why the `--` is needed for
 commands with flags).
 
-- **exec** — `flue exec [--] <command...>`: run any command that receives
-  the control socketpair (typically `podman exec --preserve-fds 1 ...
-  flue-broker`, or a wrapper that preserves fd 3).
+- **debug** — `flue debug [--] <command...>`: the low-level escape hatch
+  (the passthrough form), for when `enter`'s built-in `podman exec`
+  fails or does not fit: it runs any command that receives the control
+  socketpair (typically `podman exec --preserve-fds 1 ... flue-broker`,
+  or a wrapper that preserves fd 3).
 - **enter** — `flue enter [container] [--] [command...]`: builds and runs
   `podman exec [-ti] --preserve-fds <n> <container> <broker>
   [command...]`, where `<broker>` is `/proc/self/fd/4` (injected memfd,
@@ -77,7 +79,7 @@ The two agent subcommands share the socketpair machinery in
 `$FLUE_LOG_LEVEL`, else `info`) and the log destination (a set
 `--log-file`, else stderr) for every subcommand, but
 resolves the agent socket path only for the ones annotated with
-`needsAgentAnnotation` (`exec`, `enter`) — so the `broker`
+`needsAgentAnnotation` (`debug`, `enter`) — so the `broker`
 sub-subcommands run without `SSH_AUTH_SOCK` being set. A bare `flue`
 (no subcommand) is a usage error.
 
@@ -188,7 +190,7 @@ listener.
     control connection, which makes the broker kill the wrapped
     command — rather than serve a session without the second gate
     (fail closed).
-  - **off** — `--no-inject-broker` or the `flue exec` passthrough: the
+  - **off** — `--no-inject-broker` or the `flue debug` passthrough: the
     broker is untrusted code that could hand over a listener from any
     session it controls, so the session it reports is not a trustworthy
     reference; the check is never used, a warning says why, and the
@@ -325,7 +327,7 @@ stderr and exit 1, via `fatalf` — not slog records. Flag and argument
 errors are reported by cobra and exit 1 from `main`.
 
 When the log goes to a terminal, the subcommands that proxy the agent
-(enter, exec) write it through a `crlfWriter` (`crlf.go`): their child
+(enter, debug) write it through a `crlfWriter` (`crlf.go`): their child
 (a podman exec that requests a tty) puts the shared terminal into raw
 mode, disabling `ONLCR`, so a bare `\n` no longer returns the cursor to
 column zero — a record flue writes itself while the child owns the

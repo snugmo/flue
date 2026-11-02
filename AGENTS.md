@@ -26,7 +26,7 @@ README.md           usage, flags, how-it-works, security
 | Build binaries | `go build -o cmd/flue/flue-broker.bin ./cmd/flue-broker && (test -f cmd/flue/flue-broker.sigstore.json || cp cmd/flue/flue-broker.sigstore.json.placeholder cmd/flue/flue-broker.sigstore.json) && go build -o flue ./cmd/flue && cp cmd/flue/flue-broker.bin flue-broker` (the parenthesized step places the placeholder sigstore-bundle embed source unless a signed one is already there — see the embed bullet below) |
 | Test           | `go build -o cmd/flue/flue-broker.bin ./cmd/flue-broker && (test -f cmd/flue/flue-broker.sigstore.json || cp cmd/flue/flue-broker.sigstore.json.placeholder cmd/flue/flue-broker.sigstore.json) && go test ./...` |
 | Build image    | `buildah build --isolation chroot --layers --format docker --build-arg VERSION=<tag> -t <image> -f Containerfile .` (see the Containerfile header; the image is the host's architecture by default, or `--platform linux/<arch>` for another — never `TARGETOS`/`TARGETARCH` build-args: they would override the per-platform builtins for every platform) |
-| Forward agent  | `flue --allow-all exec -- podman exec --preserve-fds 1 -e SSH_AUTH_SOCK=/tmp/flue.sock <container> flue-broker -sock /tmp/flue.sock` (`--allow-all` because the filter is fail closed by default) |
+| Forward agent  | `flue --allow-all debug -- podman exec --preserve-fds 1 -e SSH_AUTH_SOCK=/tmp/flue.sock <container> flue-broker -sock /tmp/flue.sock` (`--allow-all` because the filter is fail closed by default) |
 | Enter a shell  | `flue enter [container] [command…]` (defaults: snugmo; with no command, a shell the broker resolves in the container — `$SHELL`, `/bin/bash`, `/bin/sh`, then `bash`/`sh` in `$PATH` — unless `$FLUE_ENTER_CMD` is set; `-ti` when stdin and stdout are both terminals; a `--` with no argument before it makes what follows the command in the default container) |
 
 ## Repo-wide rules
@@ -117,7 +117,7 @@ README.md           usage, flags, how-it-works, security
   path (XDG_RUNTIME_DIR → /run/user/\<uid\> → /run → /tmp) and exports it
   as `SSH_AUTH_SOCK`; standalone mode must pin `-sock` to a fixed path.
   The standalone examples in AGENTS.md, the Containerfile header, and the
-  `flue exec` help text must stay in sync with that rule.
+  `flue debug` help text must stay in sync with that rule.
 - **New protocol support** (e.g. GPG agent): extend `agentFilter` or add
   a new command under `cmd/`.
 - **New image variant**: add a stage to the `Containerfile` (one

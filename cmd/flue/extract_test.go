@@ -120,7 +120,7 @@ func TestEmbeddedBrokerIsELF(t *testing.T) {
 // PersistentPreRun resolve the agent socket: exec and enter must,
 // the broker sub-subcommands must not (they work without SSH_AUTH_SOCK).
 func TestNeedsAgentAnnotations(t *testing.T) {
-	for _, c := range []*cobra.Command{execCmd, enterCmd} {
+	for _, c := range []*cobra.Command{debugCmd, enterCmd} {
 		if c.Annotations[needsAgentAnnotation] == "" {
 			t.Errorf("subcommand %q is missing the needs-agent annotation", c.Name())
 		}

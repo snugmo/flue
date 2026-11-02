@@ -52,7 +52,7 @@
 # go straight after the image):
 #   podman run --rm <image> version
 #   podman run --rm <image> \
-#     --allow-all exec -- podman exec \
+#     --allow-all debug -- podman exec \
 #     --preserve-fds 1 \
 #     -e SSH_AUTH_SOCK=/tmp/flue.sock \
 #     <target> flue-broker -sock /tmp/flue.sock

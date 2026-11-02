@@ -65,7 +65,7 @@
 // the handover, the broker's session unreadable, or its session not
 // private), flue aborts the session, failing closed rather than silently
 // serving one without the second gate. Without injection — an enter with
-// --no-inject-broker, or the flue exec passthrough, where the broker runs
+// --no-inject-broker, or the flue debug passthrough, where the broker runs
 // unmodified from the image — the broker is untrusted code that could
 // hand over a listener from any session it controls, so the check is not
 // used (a warning is logged). In the remaining case (an injected broker
@@ -74,11 +74,12 @@
 // enter, --session-check=required|advisory|off overrides the choice (an
 // explicit choice is logged at info; the default at handover).
 //
-// flue is a cobra CLI with four subcommands: enter, exec, broker (which
+// flue is a cobra CLI with four subcommands: enter, debug, broker (which
 // itself has three sub-subcommands), and version. The root --help output
 // lists them in three cobra command groups, in order: "Commands"
-// (enter), "Low-level commands" (exec and broker — the development and
-// debugging forms), and "Utility commands" (version, together with
+// (enter — the daily driver), "Low-level commands" (debug and broker —
+// the development and debugging forms), and "Utility commands" (version,
+// together with
 // cobra's auto-generated help and completion commands). The global flags
 // (--sock, --allow-key, --allow-key-type, --allow-all, --no-session-bind,
 // --log-level, --log-file) are persistent: place them before the
@@ -100,7 +101,7 @@
 // bash or sh in $PATH); an explicit command always wins.
 //
 // Log output that goes to a terminal is written through a crlfWriter in
-// the subcommands that proxy the agent (enter, exec): their child (a
+// the subcommands that proxy the agent (enter, debug): their child (a
 // podman exec that requests a tty) puts the shared terminal into raw
 // mode, which disables ONLCR — a bare \n no longer returns the cursor
 // to column zero, so a record flue writes itself while the child owns
@@ -108,10 +109,12 @@
 // where it ended. \r\n line endings render in both raw and cooked
 // mode; piped stderr and --log-file stay plain \n.
 //
-// exec — the passthrough form: run any command that receives the control
-// socketpair (typically flue-broker, or a wrapper that preserves fd 3):
+// debug — the low-level escape hatch: when enter's built-in podman exec
+// fails or does not fit, run any command that receives the control
+// socketpair yourself (typically flue-broker, or a wrapper that preserves
+// fd 3):
 //
-//	flue --allow-all exec -- podman exec --preserve-fds 1 <container> flue-broker bash
+//	flue --allow-all debug -- podman exec --preserve-fds 1 <container> flue-broker bash
 //
 // (--allow-all because the filter is fail closed by default; an
 // allowlist works too). (wrapper mode: the broker sets SSH_AUTH_SOCK for
@@ -119,11 +122,12 @@
 // standalone mode (no command after flue-broker), the caller must name the
 // socket, so pin -sock to a fixed path and set SSH_AUTH_SOCK to it:
 //
-//	flue exec -- podman exec --preserve-fds 1 \
+//	flue debug -- podman exec --preserve-fds 1 \
 //	  -e SSH_AUTH_SOCK=/tmp/flue.sock <container> \
 //	  flue-broker -sock /tmp/flue.sock
 //
-// enter — the primary flow. It runs the podman exec for you, in wrapper
+// enter — the daily driver, the main flow. It runs the podman exec for
+// you, in wrapper
 // mode (so the broker sets SSH_AUTH_SOCK for the wrapped command):
 //
 //	flue enter [container] [command [args…]]
@@ -147,7 +151,7 @@
 // broker — the group that exposes the embedded flue-broker (see
 // embed.go), with three sub-subcommands, none of which needs an agent
 // socket (the root PersistentPreRun resolves the agent socket only for
-// the subcommands that proxy it, exec and enter):
+// the subcommands that proxy it, debug and enter):
 //
 //	flue broker executable <filename>
 //
@@ -315,10 +319,10 @@ func versionLine() string { return fmt.Sprintf("flue version %s", version) }
 // order the groups appear there. Cobra prints each group's Title
 // followed by the subcommands carrying that group's ID, and the group
 // definitions replace the default "Available Commands" heading — so
-// this puts enter (the primary user-facing command) first and keeps the
-// low-level development and debugging commands (exec, broker) and the
-// utility commands (version, plus cobra's auto-generated help and
-// completion commands) out of the main list.
+// this puts enter (the daily driver) first and keeps the low-level
+// development and debugging commands (debug, broker) and the utility
+// commands (version, plus cobra's auto-generated help and completion
+// commands) out of the main list.
 const (
 	groupUsage    = "usage"
 	groupLowLevel = "low-level"
@@ -346,6 +350,14 @@ allowlist. It creates a control socketpair, hands one end to the container
 (as fd 3), receives the broker's listening socket, and proxies each client
 connection to the real $SSH_AUTH_SOCK, forwarding only allowed keys.
 
+The daily driver is enter: it builds and runs the podman exec into the
+container for you (injected broker, tty handling, wrapper mode), so the
+usual session is just flue enter. The low-level commands are the escape
+hatches: debug hands the control socketpair to a container command you
+assemble yourself (a non-podman runtime, a hand-rolled invocation) — use
+it when enter's built-in podman exec fails or does not fit — and broker
+exposes the embedded flue-broker binary.
+
 The global flags (--sock, the key-allowlist flags --allow-key /
 --allow-key-type / --allow-all, --no-session-bind, --log-level, --log-file)
 go before the subcommand. The subcommand's arguments follow the subcommand
@@ -353,7 +365,7 @@ name; a -- separates them from the target command, so the target command's
 own flags are passed through verbatim.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// No subcommand given: the classic usage-error case.
-		fmt.Fprintln(os.Stderr, `flue: missing subcommand (want "exec", "enter", "broker", or "version")`)
+		fmt.Fprintln(os.Stderr, `flue: missing subcommand (want "debug", "enter", "broker", or "version")`)
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, cmd.Root().UsageString())
 		os.Exit(1)
@@ -366,20 +378,25 @@ own flags are passed through verbatim.`,
 // sub-subcommands) runs without SSH_AUTH_SOCK being set.
 const needsAgentAnnotation = "flue/needs-agent"
 
-// execCmd is the passthrough form: it runs the given command (after --),
-// which is expected to receive the control socketpair as fd 3.
-var execCmd = &cobra.Command{
-	Use:         "exec [command [args...]]",
-	Short:       "Run a command that receives the control socketpair",
+// debugCmd is the low-level escape hatch (the passthrough form): it runs
+// the given command (after --), which is expected to receive the control
+// socketpair as fd 3. It is for when enter's built-in podman exec fails
+// or does not fit — a non-podman runtime, a hand-rolled invocation.
+var debugCmd = &cobra.Command{
+	Use:   "debug [command [args...]]",
+	Short: "Run a command that receives the control socketpair — the escape hatch for when enter's container command fails",
 	GroupID:     groupLowLevel,
 	Annotations: map[string]string{needsAgentAnnotation: "1"},
-	Long: `exec runs any command that receives the control socketpair (fd 3)
-itself — typically flue-broker, or a wrapper that preserves fd 3.
+	Long: `debug is the low-level escape hatch: it runs any command that receives the
+control socketpair (fd 3) itself — typically flue-broker, or a wrapper that
+preserves fd 3. Use it when enter's built-in podman exec fails, or when
+you need to assemble the container command yourself (a non-podman runtime,
+extra flags); enter is the daily driver and handles the common case.
 
 The command and its arguments follow the subcommand name; separate them from
 flue's own flags with -- so the command's own flags are passed through:
 
-    flue exec -- podman exec --preserve-fds 1 \
+    flue --allow-all debug -- podman exec --preserve-fds 1 \
       -e SSH_AUTH_SOCK=/tmp/flue.sock <container> \
       flue-broker -sock /tmp/flue.sock
 
@@ -404,7 +421,7 @@ var enterCmd = &cobra.Command{
 	Short:       "Run a command in a container (default snugmo) with the agent; with no command, a shell resolved in the container",
 	GroupID:     groupUsage,
 	Annotations: map[string]string{needsAgentAnnotation: "1"},
-	Long: `enter is the primary way to use flue: it runs a podman exec against
+	Long: `enter is the daily driver: it runs a podman exec against
 a container (default snugmo) with flue-broker wrapping the given command
 (with no command, a shell resolved in the container — see below),
 allocating a tty when stdin and stdout are both terminals:
@@ -529,7 +546,7 @@ func init() {
 		}
 	}
 	brokerCmd.AddCommand(brokerExecutableCmd, brokerSha256Cmd, brokerBundleCmd)
-	rootCmd.AddCommand(execCmd, enterCmd, brokerCmd, versionCmd)
+	rootCmd.AddCommand(debugCmd, enterCmd, brokerCmd, versionCmd)
 	// The root --help output renders the subcommands in the groups
 	// defined above (cobra prints each group's title, then the commands
 	// of that group, in group-definition order); the auto-generated help
@@ -1822,7 +1839,7 @@ const (
 	// session is aborted (fail closed).
 	sessionCheckRequired
 	// sessionCheckOff: the broker was not injected — an enter with
-	// --no-inject-broker, or the flue exec passthrough — so it is
+	// --no-inject-broker, or the flue debug passthrough — so it is
 	// untrusted code that could hand over a listener from any session it
 	// controls; the session it reports is not a trustworthy reference,
 	// and the check is never used (a warning is logged).
