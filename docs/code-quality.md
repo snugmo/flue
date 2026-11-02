@@ -416,3 +416,26 @@ three smaller points. Numbering continues from the items above.
     case). Both `enter` and the `debug` passthrough route through
     `runChildWithAgent`, so the one gate covers both. Regression:
     `TestAgentFilterPolicyOK` (table-driven gate logic).
+55. **The accepted-by-design residual risks were undocumented (F4,
+    docs)** — **fixed** (the commit documenting them in this section's
+    review). The review verified four limitations are by design, but
+    none was stated in the user-facing docs: (a) the `flue debug`
+    passthrough and `--no-inject-broker` runs have no session check, so
+    any other process in the container — e.g. a second `podman exec`
+    from another session — can use the session's agent socket; (b)
+    `--allow-all` is the widest key exposure: every key in the host
+    agent (fingerprint, comment, expiry, full public key) is listed to
+    the container — the allowlists are the containment mechanism; (c)
+    `Signers` is denied because its response shape is agent-defined and
+    cannot be keyed per key (OpenSSH clients use the filtered `List`
+    for `ssh-add -L`); (d) smartcard-backed keys (PKCS#11 tokens,
+    secure elements) cannot be listed or signed at all, because the
+    agent implementation has no case for the smartcard opcodes (the
+    same gap that keeps the CVE's token-add half unreachable). All
+    four are now in the README's Security section (the Signers row
+    carries its reason) and mirrored in `docs/flue.md`.
+56. **`.idea/` is not in `.gitignore` (F3, low)** — **open** (deferred
+    by the user). The IDE's project files are untracked but not
+    ignored (the old rule was a comment, removed in 955a02c), so they
+    can be committed by accident; re-adding an active `.idea/` rule was
+    deferred.

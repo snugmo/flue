@@ -409,7 +409,7 @@ cosign verify-blob /tmp/flue-broker \
 | `RemoveAll`     | Denied                                                |
 | `Lock`          | Denied                                                |
 | `Unlock`        | Denied                                                |
-| `Signers`       | Denied                                                |
+| `Signers`       | Denied — a second key-enumeration path whose response shape the agent defines, so the filter cannot key it; OpenSSH clients use the filtered `List` for `ssh-add -L` |
 | `Extension`     | Only `session-bind@openssh.com` is forwarded (unless `--no-session-bind` is set, in which case no extension is forwarded); all others return `ErrExtensionUnsupported` |
 
 ## Security
@@ -426,7 +426,11 @@ The filter is fail closed by default: a session with neither `--allow-key`
 nor `--allow-key-type` set is refused before it starts, unless the user
 explicitly passes `--allow-all` to open it to every key (a warning is
 logged at session start in that case). The safe configuration is the one the
-user has to choose, not one the tool guesses.
+user has to choose, not one the tool guesses. `--allow-all` is also the
+widest key exposure: every key in the host agent — fingerprint, comment,
+expiry, and full public key — is listed to the container, so the allowlists
+are the containment mechanism, and a session that only needs one key should
+name it.
 
 The one forwarded agent extension, `session-bind@openssh.com`, is the
 mechanism OpenSSH uses for destination-restricted keys, so it is required
@@ -442,6 +446,13 @@ destination-restricted keys). The other half of the CVE — adding PKCS#11
 tokens remotely — is not reachable through `flue`, because its agent proxy
 does not implement the smartcard opcodes.
 
+Smartcard-backed keys (PKCS#11 tokens, secure elements) do not work
+through `flue`: the agent implementation it is built on does not implement
+the smartcard opcodes (the same gap that makes the CVE's token-add half
+unreachable), so a token's keys never appear in the filtered list and
+cannot be signed in a session — if all of your agent's keys live on a
+token, the session will look empty.
+
 When the broker's session is private — the broker leads it, or the
 leader that led it at handover has already exited, what an exec that
 created its own session looks like, with or without a tty — a second
@@ -456,8 +467,10 @@ enter` (injected broker with a tty) it is required — if it cannot be
 enabled, the session is aborted rather than served without the check;
 with `--no-inject-broker` or in the `flue debug` passthrough it is not
 used at all, because the broker is then untrusted code that could hand
-over a listener from any session it controls (a warning is logged);
-otherwise (an injected broker without a tty) it is advisory and its
+over a listener from any session it controls (a warning is logged; in
+those modes any other process in the container — for example a second
+`podman exec` from another session — can use the session's agent
+socket); otherwise (an injected broker without a tty) it is advisory and its
 state is logged at `info` when the session starts.
 `enter --session-check=required|advisory|off` overrides the choice (an
 explicit choice is logged at `info`) — the escape hatch for runtimes

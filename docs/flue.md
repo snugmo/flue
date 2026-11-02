@@ -139,7 +139,9 @@ listener.
   - `Sign` / `SignWithFlags`: forwarded only for keys allowed by both
     lists.
   - `Add`, `Remove`, `RemoveAll`, `Lock`, `Unlock`, `Signers`: always
-    denied.
+    denied. `Signers` is a second key-enumeration path whose response
+    shape the agent defines (the filter cannot key it), so it is refused
+    outright; OpenSSH clients use the filtered `List` for `ssh-add -L`.
   - `Extension`: only `session-bind@openssh.com` is forwarded (unless
     `--no-session-bind` is set, in which case no extension is forwarded) —
     the knob for host agents with CVE-2026-73281 (OpenSSH 8.9–10.4).
@@ -153,6 +155,12 @@ listener.
     the violated list(s) by flag name (`allow-key`, `allow-key-type`)
     — so the trace says which flag to adjust. The error returned to
     the client is deliberately the same either way.
+  - Smartcard-backed keys (PKCS#11 tokens, secure elements) cannot be
+    listed or signed through the filter: the agent implementation it is
+    built on (`x/crypto/ssh/agent`) has no case for the smartcard
+    opcodes (20/21/26), so a token's keys are invisible to the session
+    (the same gap that makes the PKCS#11-add half of CVE-2026-73281
+    unreachable).
 - Per-request agent trace is emitted at `debug` (`--log-level debug`):
   an op about a specific key carries the key type and its fingerprint
   (for a certificate, the certificate's own type), other ops a summary.
@@ -193,7 +201,10 @@ listener.
   - **off** — `--no-inject-broker` or the `flue debug` passthrough: the
     broker is untrusted code that could hand over a listener from any
     session it controls, so the session it reports is not a trustworthy
-    reference; the check is never used, a warning says why, and the
+    reference; the check is never used, a warning says why (and in
+    these modes any other process in the container — e.g. a second
+    `podman exec` from another session — can use the session's agent
+    socket), and the
     privacy scan is skipped.
   - **advisory** (the default) — an injected broker without a tty:
     the check is on when the broker's session is private, off
