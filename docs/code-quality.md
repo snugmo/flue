@@ -426,9 +426,10 @@ three smaller points. Numbering continues from the items above.
     `--allow-all` is the widest key exposure: every key in the host
     agent (fingerprint, comment, expiry, full public key) is listed to
     the container — the allowlists are the containment mechanism; (c)
-    `Signers` is denied because its response shape is agent-defined and
-    cannot be keyed per key (OpenSSH clients use the filtered `List`
-    for `ssh-add -L`); (d) smartcard-backed keys (PKCS#11 tokens,
+    `Signers` is a Go-only `Agent` interface method with no wire opcode
+    (identities requests are answered from the filtered `List`), so the
+    denial breaks nothing (OpenSSH clients use the filtered `List` for
+    `ssh-add -L`); (d) smartcard-backed keys (PKCS#11 tokens,
     secure elements) cannot be listed or signed at all, because the
     agent implementation has no case for the smartcard opcodes (the
     same gap that keeps the CVE's token-add half unreachable). All

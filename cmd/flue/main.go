@@ -1404,7 +1404,11 @@ func (f *agentFilter) Unlock(passphrase []byte) error {
 	return fmt.Errorf("unlocking the agent is not allowed through flue")
 }
 
-// Signers returns signers for the given key blob.
+// Signers is always denied. It is a Go-only Agent interface method
+// with no wire opcode: agent.ServeAgent never calls it (the
+// identities request, opcode 11/12, is answered from List(), which
+// the filter keys), so the denial breaks nothing — it keeps the
+// filter's surface minimal.
 func (f *agentFilter) Signers() ([]ssh.Signer, error) {
 	f.logf("signers", "", "", false, nil)
 	return nil, fmt.Errorf("signers request is not allowed through flue")

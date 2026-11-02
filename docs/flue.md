@@ -139,9 +139,13 @@ listener.
   - `Sign` / `SignWithFlags`: forwarded only for keys allowed by both
     lists.
   - `Add`, `Remove`, `RemoveAll`, `Lock`, `Unlock`, `Signers`: always
-    denied. `Signers` is a second key-enumeration path whose response
-    shape the agent defines (the filter cannot key it), so it is refused
-    outright; OpenSSH clients use the filtered `List` for `ssh-add -L`.
+    denied. `Signers` is a Go-only `Agent` interface method with no wire
+    opcode: `agent.ServeAgent` never calls it (the identities request,
+    opcode 11/12, is answered from `List()`, which the filter already
+    keys), so the denial breaks nothing — it just keeps the filter's
+    surface minimal. Go clients using `agent.Signers()` get the filtered
+    key list and sign per key through the gated `Sign`; OpenSSH clients
+    use the filtered `List` for `ssh-add -L`.
   - `Extension`: only `session-bind@openssh.com` is forwarded (unless
     `--no-session-bind` is set, in which case no extension is forwarded) —
     the knob for host agents with CVE-2026-73281 (OpenSSH 8.9–10.4).

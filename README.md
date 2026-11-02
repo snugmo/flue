@@ -409,7 +409,7 @@ cosign verify-blob /tmp/flue-broker \
 | `RemoveAll`     | Denied                                                |
 | `Lock`          | Denied                                                |
 | `Unlock`        | Denied                                                |
-| `Signers`       | Denied — a second key-enumeration path whose response shape the agent defines, so the filter cannot key it; OpenSSH clients use the filtered `List` for `ssh-add -L` |
+| `Signers`       | Denied — a Go-only `Agent` interface method with no wire opcode: `ServeAgent` answers the identities request (opcode 11/12) from `List()`, which the filter already keys. Go clients using `agent.Signers()` get the filtered key list and sign per key through the gated `Sign`; OpenSSH clients use the filtered `List` for `ssh-add -L`. Denied to keep the filter's surface minimal |
 | `Extension`     | Only `session-bind@openssh.com` is forwarded (unless `--no-session-bind` is set, in which case no extension is forwarded); all others return `ErrExtensionUnsupported` |
 
 ## Security
