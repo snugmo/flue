@@ -1,8 +1,9 @@
 # Code quality findings
 
-Findings from a review focused on fd handling, resource leaks, and missing
-cleanup. Each item carries a status: **open** or **fixed** (with the commit
-subject that fixed it). Update this file when an item is addressed.
+Findings from reviews of fd handling, resource leaks, missing cleanup, and
+agent-bridge security. Each item carries a status: **open** or **fixed**
+(with the commit subject that fixed it). Update this file when an item is
+addressed.
 
 ## High
 
@@ -376,3 +377,42 @@ three smaller points. Numbering continues from the items above.
     purpose (flue's child, the broker's wrapped command), the
     audited `unsafe.Pointer` prctl name handoff, and a
     `CreateTemp`/`Remove` pair the taint analysis cannot see through.
+
+## Security review 2026-11-02 (sandbox-escape and egress review)
+
+53. **`session-bind@openssh.com` was forwarded with no way to stop it
+    (F1, CVE-2026-73281)** — **fixed** (`🔒 feat: fail-closed default
+    filter; --allow-all and --no-session-bind`, 530a3b3). The filter
+    forwarded the extension so OpenSSH destination-restricted keys
+    work. The binding itself is not an egress path: the first hop is
+    a normal local bind (`is_forwarding=false`), cryptographically
+    enforced by an unforgeable hostkey plus KEX signature, so a
+    container cannot claim a destination it did not in fact open.
+    But OpenSSH 8.9–10.4 carries a lock-and-`session-bind`
+    interaction (CVE-2026-73281, fixed in 10.5) in which a locked
+    agent can let a remote (container-mediated) session make use of
+    destination-restricted keys, and `flue` cannot patch the agent.
+    The new `--no-session-bind` persistent flag stops the forwarding
+    (which disables destination-restricted keys); running the host
+    agent on OpenSSH ≥ 10.5 fixes it instead. The other half of the
+    CVE — adding PKCS#11 tokens remotely — is not reachable through
+    `flue`: `x/crypto/ssh/agent`'s `ServeAgent` does not implement
+    the smartcard opcodes (20/21/26), and neither does the filter.
+    Regression: `TestFilterExtensionNoSessionBind` (with the flag set
+    the filter answers `ErrExtensionUnsupported` itself rather than
+    forwarding — a forwarded request to a keyring would yield the
+    distinct generic-extension failure, so the test proves
+    non-forwarding).
+54. **The key filter was open by default (F2)** — **fixed** (same
+    commit, 530a3b3). With neither `--allow-key` nor
+    `--allow-key-type` set, every key in the host agent was listed
+    and signable from the container; the only protection was the
+    session-start warning (item 44, 3d8de33). `runChildWithAgent`
+    now fails closed: the new `agentFilterPolicyOK` gate refuses to
+    start the session (before the child is spawned, so a rejected
+    configuration never launches a container) unless at least one
+    allowlist is set or the new explicit `--allow-all` flag opts in
+    to the open filter (a warning is logged at session start in that
+    case). Both `enter` and the `exec` passthrough route through
+    `runChildWithAgent`, so the one gate covers both. Regression:
+    `TestAgentFilterPolicyOK` (table-driven gate logic).
