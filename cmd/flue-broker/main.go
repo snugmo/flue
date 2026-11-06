@@ -285,7 +285,12 @@ func run() int {
 	if err != nil {
 		return failf("flue-broker: control fd: %v", err)
 	}
-	ctrl := c.(*net.UnixConn)
+	ctrl, ok := c.(*net.UnixConn)
+	if !ok {
+		// A -fd pointing at a socket of another family (a misuse of the
+		// flag): a clean error at startup, not a panic on first use.
+		return failf("flue-broker: control fd %d is not a Unix socket", fdNum)
+	}
 	defer closeQuiet(ctrl)
 
 	// Hand the listening fd to the host. The host accepts on it from here
