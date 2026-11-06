@@ -394,8 +394,8 @@ const needsAgentAnnotation = "flue/needs-agent"
 // socketpair as fd 3. It is for when enter's built-in podman exec fails
 // or does not fit — a non-podman runtime, a hand-rolled invocation.
 var debugCmd = &cobra.Command{
-	Use:   "debug [command [args...]]",
-	Short: "Run a command that receives the control socketpair — the escape hatch for when enter's container command fails",
+	Use:         "debug [command [args...]]",
+	Short:       "Run a command that receives the control socketpair — the escape hatch for when enter's container command fails",
 	GroupID:     groupLowLevel,
 	Annotations: map[string]string{needsAgentAnnotation: "1"},
 	Long: `debug is the low-level escape hatch: it runs any command that receives the

@@ -947,5 +947,5 @@ func runSessionBrokerWrapped() {
 		os.Exit(94)
 	}
 	lf.Close() // close only the dup; l keeps the listener
-	select {} // block until the test tears us down
+	select {}  // block until the test tears us down
 }

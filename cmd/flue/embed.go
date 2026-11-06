@@ -50,12 +50,14 @@ var flueBrokerBin []byte
 //     placed in the build context at the embed path before the build
 //     stage runs; the build stage's context copy wins over the
 //     placeholder (see the Containerfile).
+//
 //   - A locally signed build: the user signs the built broker —
 //
-//	cosign sign-blob --key <key> \
-//	  --bundle cmd/flue/flue-broker.sigstore.json cmd/flue/flue-broker.bin
+//     cosign sign-blob --key <key> \
+//     --bundle cmd/flue/flue-broker.sigstore.json cmd/flue/flue-broker.bin
 //
-//	(or keyless — omit the key in a CI context) — before compiling flue.
+//     (or keyless — omit the key in a CI context) — before compiling flue.
+//
 //   - A placeholder: when no signed bundle is present, the committed
 //     template cmd/flue/flue-broker.sigstore.json.placeholder (its "kind"
 //     field is flueLocalPlaceholderKind, see bundle.go) is copied to

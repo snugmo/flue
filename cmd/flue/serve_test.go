@@ -290,7 +290,7 @@ func TestHandleClientShutdownUnblocksStalledAgent(t *testing.T) {
 	requestSeen := make(chan struct{})
 	hold := make(chan struct{})
 	t.Cleanup(func() {
-		close(hold) // release the per-connection goroutines (goleak)
+		close(hold)    // release the per-connection goroutines (goleak)
 		agentL.Close() // end the accept loop
 	})
 	go func() {
