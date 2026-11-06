@@ -131,13 +131,18 @@ listener.
 - The filter is fail closed by default: `runChildWithAgent` refuses to
   start (before spawning the child) unless at least one of `--allow-key` /
   `--allow-key-type` is set, or the explicit `--allow-all` opt-in is given.
-  An `--allow-all` session logs a warning that every key is exposed.
+  `--allow-all` is the opt-in to the open filter, not an override: with a
+  non-empty allowlist it is inert (the allowlist still applies); in both
+  cases it only adds the session-start warning that every key is exposed.
 - Policy (mirrors the per-operation table in the README):
-  - `List`: forwarded, but only keys allowed by `--allow-key`
-    (repeatable, SHA256 fingerprint) and `--allow-key-type` (repeatable,
-    wire type name) are returned; all keys only when `--allow-all` is set.
-  - `Sign` / `SignWithFlags`: forwarded only for keys allowed by both
-    lists.
+  - `List`: forwarded, but only keys that pass every list that is set are
+    returned: the `--allow-key` set (repeatable, SHA256 fingerprint) and
+    the `--allow-key-type` set (repeatable, wire type name). An unset list
+    imposes no restriction, so one flag alone is the sole restriction;
+    with both set a key must match both (a conjunction). All keys are
+    returned only in the `--allow-all` open filter (both lists empty).
+  - `Sign` / `SignWithFlags`: forwarded only for keys passing the same
+    conjunction.
   - `Add`, `Remove`, `RemoveAll`, `Lock`, `Unlock`, `Signers`: always
     denied. `Signers` is a Go-only `Agent` interface method with no wire
     opcode: `agent.ServeAgent` never calls it (the identities request,

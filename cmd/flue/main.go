@@ -23,11 +23,15 @@
 // alone does not unblock) — and waits for the handlers before returning.
 //
 // The filter implements agent.ExtendedAgent:
-//   - List: forwarded, but only keys allowed by the --allow-key and
-//     --allow-key-type lists are returned (all keys only when --allow-all
-//     is set; with neither an allowlist nor --allow-all the session is
-//     refused before it starts).
-//   - Sign / SignWithFlags: forwarded only for keys allowed by both
+//   - List: forwarded, but only keys that pass every list that is set
+//     are returned: a key passes the --allow-key list if its fingerprint
+//     is in it and the --allow-key-type list if its type is in it — a
+//     list left unset imposes no restriction, so with both set a key
+//     must match both (the lists intersect, not union). All keys are
+//     returned only in the --allow-all open filter (both lists empty;
+//     with neither an allowlist nor --allow-all the session is refused
+//     before it starts).
+//   - Sign / SignWithFlags: forwarded only for keys that pass the same
 //     lists.
 //   - Add, Remove, RemoveAll, Lock, Unlock, Signers: always denied.
 //   - Extension: only session-bind@openssh.com is forwarded (unless
@@ -484,11 +488,11 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&logFile, "log-file", "",
 		"append log output to this file instead of stderr (e.g. to keep refusal warnings off the user's terminal)")
 	rootCmd.PersistentFlags().Var(allowKeys, "allow-key",
-		"SHA256 fingerprint to allow (repeatable)")
+		"SHA256 fingerprint to allow (repeatable). With --allow-key-type set, a key must match both (the lists intersect, not union)")
 	rootCmd.PersistentFlags().Var(allowKeyTypes, "allow-key-type",
-		"key type to allow (repeatable); e.g. ssh-ed25519, ecdsa-sha2-nistp256, rsa")
+		"key type to allow (repeatable); e.g. ssh-ed25519, ecdsa-sha2-nistp256, rsa. With --allow-key set, a key must match both (the lists intersect, not union)")
 	rootCmd.PersistentFlags().BoolVar(&allowAll, "allow-all", false,
-		"explicitly allow every key in the host agent (without an --allow-key / --allow-key-type list the session is otherwise refused)")
+		"explicitly allow every key in the host agent. Required to start a session with no allowlist (otherwise it is refused); inert with a non-empty allowlist, which still applies — it only adds the session-start warning")
 	rootCmd.PersistentFlags().BoolVar(&noSessionBind, "no-session-bind", false,
 		"do not forward the session-bind@openssh.com agent extension (disables destination-restricted keys; for host agents with CVE-2026-73281, OpenSSH 8.9–10.4)")
 	enterCmd.Flags().BoolVar(&enterInjectBroker, "inject-broker", true,
@@ -1159,10 +1163,12 @@ func (a *allowKeyTypeFlag) describe() string {
 // the handover message's credentials. It is built once in
 // runChildWithAgent and shared across all per-client agentFilter values;
 // the broker fields are set once more, by receiveListener. allowAll and
-// noSessionBind mirror the --allow-all and --no-session-bind flags
-// (the allowAll case — both allowlists empty — is the only one that
-// reaches the filter, since an empty allowlist without it is refused
-// before the child starts).
+// noSessionBind mirror the --allow-all and --no-session-bind flags.
+// allowAll is the opt-in to the open filter, not an override: it is the
+// only way to start a session with both allowlists empty (every key
+// listed and signable), and with a non-empty allowlist it is inert —
+// the allowlist still applies — adding only the session-start warning
+// in both cases.
 type policy struct {
 	allow                map[string]struct{} // empty = allow all
 	allowTypes           map[string]struct{} // empty = allow all types
@@ -1174,7 +1180,7 @@ type policy struct {
 	sessionPrivateKnown  bool                // the privacy check ran (false = could not be determined)
 	sessionCheckExplicit bool                // the mode came from --session-check, not the auto rule
 	refusals             *refusalLimiter     // rate-limits the refusal warnings (lograte.go)
-	allowAll             bool                // --allow-all: the open filter was explicit (both allowlists empty)
+	allowAll             bool                // --allow-all: the open filter was opted in explicitly (inert with a non-empty allowlist; see the type comment)
 	noSessionBind        bool                // --no-session-bind: Extension forwards no extension
 }
 
