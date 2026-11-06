@@ -85,9 +85,9 @@
 // the development and debugging forms), and "Utility commands" (version,
 // together with
 // cobra's auto-generated help and completion commands). The global flags
-// (--sock, --allow-key, --allow-key-type, --allow-all, --no-session-bind,
-// --log-level, --log-file) are persistent: place them before the
-// subcommand. The subcommand's arguments follow the subcommand name, and a
+// (--sock, --allow-key, --allow-key-file, --allow-key-type, --allow-all,
+// --no-session-bind, --log-level, --log-file) are persistent: place them
+// before the subcommand. The subcommand's arguments follow the subcommand name, and a
 // --
 // separates them from the target command so the target's own flags are
 // passed through verbatim (cobra/pflag, unlike stdlib flag, keeps
@@ -244,10 +244,17 @@ import (
 // empty), set by the root PersistentPreRun and shared by both the run*
 // subcommands and the per-client dialAgent.
 var (
-	sockArg       string
-	logLevel      string
-	logFile       string
-	allowKeys     = newAllowKeyFlag()
+	sockArg   string
+	logLevel  string
+	logFile   string
+	allowKeys = newAllowKeyFlag()
+	// allowKeyFile (--allow-key-file) is a path to an
+	// authorized_keys-format file whose keys' fingerprints join the
+	// --allow-key set (union — the file's keys and repeated --allow-key
+	// values form one list, which still intersects --allow-key-type).
+	// Parsed fail-closed: an unreadable file, an unparseable line, or a
+	// file with zero keys is fatal before the child is spawned.
+	allowKeyFile  string
 	allowKeyTypes = newAllowKeyTypeFlag()
 	// allowAll (--allow-all) explicitly permits the open filter: with no
 	// --allow-key / --allow-key-type list it lets every key in the host
@@ -363,10 +370,10 @@ it when enter's built-in podman exec fails or does not fit — and broker
 exposes the embedded flue-broker binary.
 
 The global flags (--sock, the key-allowlist flags --allow-key /
---allow-key-type / --allow-all, --no-session-bind, --log-level, --log-file)
-go before the subcommand. The subcommand's arguments follow the subcommand
-name; a -- separates them from the target command, so the target command's
-own flags are passed through verbatim.`,
+--allow-key-file / --allow-key-type / --allow-all, --no-session-bind,
+--log-level, --log-file) go before the subcommand. The subcommand's
+arguments follow the subcommand name; a -- separates them from the target
+command, so the target command's own flags are passed through verbatim.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// No subcommand given: the classic usage-error case.
 		fmt.Fprintln(os.Stderr, `flue: missing subcommand (want "debug", "enter", "broker", or "version")`)
@@ -489,6 +496,8 @@ func init() {
 		"append log output to this file instead of stderr (e.g. to keep refusal warnings off the user's terminal)")
 	rootCmd.PersistentFlags().Var(allowKeys, "allow-key",
 		"SHA256 fingerprint to allow (repeatable). With --allow-key-type set, a key must match both (the lists intersect, not union)")
+	rootCmd.PersistentFlags().StringVar(&allowKeyFile, "allow-key-file", "",
+		"authorized_keys-format file whose keys join the --allow-key list (union; still intersects --allow-key-type). Parsed fail-closed: an unreadable file, a bad line, or zero keys is refused")
 	rootCmd.PersistentFlags().Var(allowKeyTypes, "allow-key-type",
 		"key type to allow (repeatable); e.g. ssh-ed25519, ecdsa-sha2-nistp256, rsa. With --allow-key set, a key must match both (the lists intersect, not union)")
 	rootCmd.PersistentFlags().BoolVar(&allowAll, "allow-all", false,
@@ -930,11 +939,21 @@ func runPassthrough(args []string, sockPath string) int {
 func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preserved []*os.File, checkMode sessionCheckMode, checkExplicit bool) int {
 	// Fail closed on an open filter, before the child is spawned: the
 	// proxy's whole purpose is that the container can use only the keys
-	// the user allowlisted. With neither --allow-key nor --allow-key-type
-	// set (and no explicit --allow-all) every key in the host agent would
-	// be listed and signable from the container, so refuse to start.
+	// the user allowlisted. With no --allow-key, --allow-key-file, or
+	// --allow-key-type list set (and no explicit --allow-all) every key in
+	// the host agent would be listed and signable from the container, so
+	// refuse to start.
 	allowSet := allowKeys.toSet()
 	typeSet := allowKeyTypes.toSet()
+	if allowKeyFile != "" {
+		fileSet, err := loadAllowKeyFile(allowKeyFile)
+		if err != nil {
+			fatalf("flue: %v", err)
+		}
+		for fp := range fileSet {
+			allowSet[fp] = struct{}{}
+		}
+	}
 	if _, err := agentFilterPolicyOK(allowSet, typeSet, allowAll); err != nil {
 		fatalf("flue: %v", err)
 	}
@@ -1018,7 +1037,11 @@ func runChildWithAgent(cmdPath string, cmdArgs []string, sockPath string, preser
 		log.Warn("flue: --allow-all set: every key in the host agent is listed and signable from the container")
 	}
 
-	log.Info("flue: agent", "sock", sockPath, "filter", allowKeys.describe(), "filter-types", allowKeyTypes.describe(), "exec", append([]string{cmdPath}, cmdArgs...))
+	logArgs := []any{"sock", sockPath, "filter", allowKeys.describe(), "filter-types", allowKeyTypes.describe()}
+	if allowKeyFile != "" {
+		logArgs = append(logArgs, "filter-file", allowKeyFile)
+	}
+	log.Info("flue: agent", append(logArgs, "exec", append([]string{cmdPath}, cmdArgs...))...)
 
 	clients := clientSet{max: maxClients}
 	listener, acceptDone, checkErr := receiveListener(ctrl, pol, &clients)
@@ -1156,9 +1179,9 @@ func (a *allowKeyTypeFlag) describe() string {
 
 // --- agent filter ---
 
-// policy is the session-wide agent policy: the --allow-key set (empty
-// means allow all), the --allow-key-type set (empty means allow all
-// types), the path of the host agent socket that each client
+// policy is the session-wide agent policy: the --allow-key set (unioned
+// with the --allow-key-file keys if that flag is set; empty means allow
+// all), the --allow-key-type set (empty means allow all types), the path of the host agent socket that each client
 // dials, and the broker's pid and session id (0 = unknown) learned from
 // the handover message's credentials. It is built once in
 // runChildWithAgent and shared across all per-client agentFilter values;
@@ -1193,12 +1216,14 @@ type agentFilter struct {
 }
 
 // agentFilterPolicyOK decides whether a session's agent filter may run.
-// A usable policy has at least one of --allow-key / --allow-key-type set
-// (a key allowlist), or the explicit --allow-all opt-in to the open
-// filter. None of those would leave every key in the host agent listed
-// and signable from the container, so it is refused (fail closed) rather
-// than started. It is called before the child is spawned, so a rejected
-// configuration never launches a container.
+// A usable policy has at least one of --allow-key / --allow-key-file /
+// --allow-key-type set (a key allowlist — the file's keys are unioned
+// into the --allow-key set before this is called), or the explicit
+// --allow-all opt-in to the open filter. None of those would leave every
+// key in the host agent listed and signable from the container, so it is
+// refused (fail closed) rather than started. It is called before the
+// child is spawned, so a rejected configuration never launches a
+// container.
 func agentFilterPolicyOK(allow, allowTypes map[string]struct{}, allowAll bool) (bool, error) {
 	if len(allow) > 0 || len(allowTypes) > 0 {
 		return true, nil
@@ -1206,7 +1231,7 @@ func agentFilterPolicyOK(allow, allowTypes map[string]struct{}, allowAll bool) (
 	if allowAll {
 		return true, nil
 	}
-	return false, errors.New("no --allow-key, --allow-key-type, or --allow-all set: every key in the host agent would be listed and signable from the container. Pass an allowlist, or --allow-all to permit the open filter explicitly")
+	return false, errors.New("no --allow-key, --allow-key-file, --allow-key-type, or --allow-all set: every key in the host agent would be listed and signable from the container. Pass an allowlist, or --allow-all to permit the open filter explicitly")
 }
 
 // isAllowed checks whether a key's fingerprint is in the allowlist.

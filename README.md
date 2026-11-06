@@ -118,7 +118,8 @@ flue enter --no-inject-broker <container>       # or --inject-broker=false
 FLUE_INJECT_BROKER=0 flue enter <container>     # via the environment
 ```
 
-Global flags (`--sock`, `--allow-key`, `--allow-key-type`, `--allow-all`,
+Global flags (`--sock`, `--allow-key`, `--allow-key-file`,
+`--allow-key-type`, `--allow-all`,
 `--no-session-bind`, `--log-level`, `--log-file`) go
 before the
 subcommand: `flue --allow-key SHA256:… enter <container>`. (The subcommand
@@ -131,8 +132,9 @@ subcommand: `flue --allow-key SHA256:… enter <container>`. (The subcommand
 | Flag          | Default                        | Description                                                                                                                                                                                              |
 | ------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `--sock`      | `$SSH_AUTH_SOCK`               | Agent socket path to proxy to                                                                                                                                                                            |
-| `--allow-key` | (none)                         | Repeatable. Only keys with this SHA256 fingerprint are listed and can sign. Fingerprints are compared the way `ssh-add -l` prints them — for a certificate, that is the fingerprint of its underlying key. Not mutually exclusive with `--allow-key-type`: a key must pass every list that is set (an unset list is unrestricted), so with both set it is a conjunction — `--allow-key K --allow-key-type ssh-ed25519` admits K only if it is an ed25519 key. With neither list set, `--allow-all` is required to start |
-| `--allow-key-type` | (none)                     | Repeatable. Only keys of this type (the wire type name, e.g. `ssh-ed25519`, `ecdsa-sha2-nistp256`, `rsa`) are listed and can sign. A certificate matches both its certificate type and its underlying key's type, so a cert-only list denies static (uncertified) keys; secure-enclave keys have their own `sk-` type names. Intersects with `--allow-key` the same way: with both set, a key must match both. With neither list set, `--allow-all` is required to start |
+| `--allow-key` | (none)                         | Repeatable. Only keys with this SHA256 fingerprint are listed and can sign. Fingerprints are compared the way `ssh-add -l` prints them — for a certificate, that is the fingerprint of its underlying key. Not mutually exclusive with `--allow-key-type`: a key must pass every list that is set (an unset list is unrestricted), so with both set it is a conjunction — `--allow-key K --allow-key-type ssh-ed25519` admits K only if it is an ed25519 key. With no key or type list set, `--allow-all` is required to start |
+| `--allow-key-file` | (none)                     | Path to an `authorized_keys`-format file (one public key per line; blank lines and `#` comments skipped; an OpenSSH option prefix on a line is allowed; CRLF fine). Its keys' fingerprints join the `--allow-key` list — a union, so the file and repeated `--allow-key` values form one key list, which still intersects `--allow-key-type`; a certificate matches its underlying key's fingerprint, as with `--allow-key`. It satisfies the fail-closed gate on its own. Parsed fail closed: an unreadable file, a line that does not parse as a key, or a file with no keys is refused before the session starts |
+| `--allow-key-type` | (none)                     | Repeatable. Only keys of this type (the wire type name, e.g. `ssh-ed25519`, `ecdsa-sha2-nistp256`, `rsa`) are listed and can sign. A certificate matches both its certificate type and its underlying key's type, so a cert-only list denies static (uncertified) keys; secure-enclave keys have their own `sk-` type names. Intersects with the key list (`--allow-key` and `--allow-key-file` together) the same way: with both set, a key must match both. With no key or type list set, `--allow-all` is required to start |
 | `--allow-all` | `false`                        | Explicitly allow every key in the host agent. Required to start a session that sets neither `--allow-key` nor `--allow-key-type`; without it such a session is refused (fail closed). It is the opt-in to the open filter, not an override: with a non-empty allowlist it is inert — the allowlist still applies — and it logs a session-start warning in both cases |
 | `--no-session-bind` | `false`                  | Do not forward the `session-bind@openssh.com` agent extension, disabling OpenSSH destination-restricted keys. Provided for host agents affected by CVE-2026-73281 (OpenSSH 8.9–10.4) |
 | `--log-level` | `$FLUE_LOG_LEVEL`, else `info` | Log level: `debug`, `info`, `warn`, or `error`. `debug` logs every agent request (operation, key type, fingerprint, allowed/denied — and, when an allowlist denies a key, which list did, as a `reason` field). When the flag is unset, `$FLUE_LOG_LEVEL` is read; a set flag wins            |
@@ -401,7 +403,7 @@ cosign verify-blob /tmp/flue-broker \
 
 | Operation       | Behavior                                              |
 | --------------- | ----------------------------------------------------- |
-| `List`          | Forwarded; a key is returned iff it passes every list that is set — its fingerprint in `--allow-key` and its type in `--allow-key-type` (an unset list is unrestricted; with both set that is a conjunction, so `--allow-key K --allow-key-type ssh-ed25519` admits K only if it is an ed25519 key). All keys are returned only in the `--allow-all` open filter (both lists empty) |
+| `List`          | Forwarded; a key is returned iff it passes every list that is set — its fingerprint in the key list (`--allow-key` plus the keys of a `--allow-key-file`) and its type in `--allow-key-type` (an unset list is unrestricted; with both set that is a conjunction, so `--allow-key K --allow-key-type ssh-ed25519` admits K only if it is an ed25519 key). All keys are returned only in the `--allow-all` open filter (both lists empty) |
 | `Sign`          | Forwarded only for keys passing the same conjunction            |
 | `SignWithFlags` | Forwarded only for keys passing the same conjunction (needed for RSA rsa-sha2-256/512) |
 | `Add`           | Denied                                                |
@@ -417,13 +419,15 @@ cosign verify-blob /tmp/flue-broker \
 While a session is open, a process in the container can (a) list the
 allowlisted keys — fingerprint and comment are visible — and (b) get
 signatures from them. It cannot add, remove, lock, or unlock keys, nor use
-any key outside the `--allow-key` / `--allow-key-type` lists (the filter
+any key outside the `--allow-key` / `--allow-key-file` /
+`--allow-key-type` lists (the filter
 policy table above carries the per-operation detail), and it never sees a
 path or fd to the host agent socket, its directory, or `$XDG_RUNTIME_DIR`.
 The trust boundary is the allowlists, not the container.
 
-The filter is fail closed by default: a session with neither `--allow-key`
-nor `--allow-key-type` set is refused before it starts, unless the user
+The filter is fail closed by default: a session with no key or type list
+set (`--allow-key`, `--allow-key-file`, `--allow-key-type`) is refused
+before it starts, unless the user
 explicitly passes `--allow-all` to open it to every key (a warning is
 logged at session start in that case). The safe configuration is the one the
 user has to choose, not one the tool guesses. `--allow-all` is also the
@@ -439,7 +443,12 @@ other: each one that is set restricts, and a key must pass every set list
 `--allow-key K --allow-key-type ssh-ed25519` admits K only if K is an
 ed25519 key. `--allow-all` is the opt-in to the open filter, not an
 override: it cannot widen a set allowlist, so `--allow-all` alongside
-`--allow-key K` still exposes exactly K.
+`--allow-key K` still exposes exactly K. `--allow-key-file` is the same
+dimension as `--allow-key` — its keys union into one key list (the file
+just keeps a long allowlist out of your shell history and command line)
+and it intersects `--allow-key-type` identically; it is parsed fail
+closed, so a mistyped allowlist is refused before the session starts
+rather than silently narrowing to fewer keys.
 
 The one forwarded agent extension, `session-bind@openssh.com`, is the
 mechanism OpenSSH uses for destination-restricted keys, so it is required
@@ -495,7 +504,7 @@ Run these against a real container to verify the full path works. They all
 use `flue enter`, which injects the broker in memory — so any running
 container works, with no writable filesystem or image-side broker needed.
 Because most of them exercise the full agent rather than a key allowlist,
-they pass `--allow-all`; the allowlist checks (#5, #6) instead name a
+they pass `--allow-all`; the allowlist checks (#5, #6, #7) instead name a
 specific key.
 
 ```sh
@@ -517,10 +526,13 @@ flue --allow-key SHA256:... enter <container> ssh-add -l
 # 6. With --allow-key-type, only keys of those types show
 flue --allow-key-type ssh-ed25519 enter <container> ssh-add -l
 
-# 7. Two concurrent sessions get distinct sockets and both work
+# 7. With --allow-key-file, only the file's keys show (authorized_keys format)
+flue --allow-key-file /path/to/authorized_keys enter <container> ssh-add -l
+
+# 8. Two concurrent sessions get distinct sockets and both work
 flue --allow-all enter <container> -- sh -c 'ssh-add -l' & flue --allow-all enter <container> -- sh -c 'ssh-add -l'; wait
 
-# 8. (run from a terminal, so the broker is a session leader) a client
+# 9. (run from a terminal, so the broker is a session leader) a client
 #    that starts its own session is refused
 flue --allow-all enter <container> -- setsid sh -c 'ssh-add -l 2>&1'  # expect an agent error, not a key list
 

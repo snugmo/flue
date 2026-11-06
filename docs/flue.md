@@ -9,7 +9,8 @@ agent needs when changing the code.
 flue is a cobra CLI with four subcommands: `debug`, `enter`, `broker`
 (itself the group of the three sub-subcommands below), and `version`
 (informational). The global flags (`--sock`, `--allow-key`,
-`--allow-key-type`, `--log-level`, `--log-file`) are persistent on the
+`--allow-key-file`, `--allow-key-type`, `--log-level`,
+`--log-file`) are persistent on the
 root and go before the subcommand; a subcommand's arguments follow the
 subcommand name, and a `--` separates them from the target command so the
 target's own flags pass through verbatim (pflag, unlike stdlib flag, keeps
@@ -130,17 +131,32 @@ listener.
   `runChildWithAgent`; each per-client `agentFilter` shares it read-only.
 - The filter is fail closed by default: `runChildWithAgent` refuses to
   start (before spawning the child) unless at least one of `--allow-key` /
-  `--allow-key-type` is set, or the explicit `--allow-all` opt-in is given.
+  `--allow-key-file` / `--allow-key-type` is set, or the explicit
+  `--allow-all` opt-in is given.
   `--allow-all` is the opt-in to the open filter, not an override: with a
   non-empty allowlist it is inert (the allowlist still applies); in both
   cases it only adds the session-start warning that every key is exposed.
+- `--allow-key-file` is read by `loadAllowKeyFile` in `keyfile.go` before
+  that gate: an `authorized_keys` file, one public key per line (blank
+  lines and `#` comments skipped, an OpenSSH option prefix allowed, CRLF
+  tolerated). It is parsed with `ssh.ParseAuthorizedKey` per line on
+  purpose — on a multi-line input that function skips lines it cannot
+  parse, which would drop a mistyped key without a trace — and fails
+  closed: an unreadable file, a non-blank line that does not parse as a
+  key (the error names the line), or a file with no keys at all is a
+  fatal error before the child is spawned. The returned fingerprints
+  (`keyFingerprint`: a certificate's underlying key, as with
+  `--allow-key`) union into the `--allow-key` set, so the file and the
+  flag form one key list that still intersects `--allow-key-type`.
 - Policy (mirrors the per-operation table in the README):
   - `List`: forwarded, but only keys that pass every list that is set are
-    returned: the `--allow-key` set (repeatable, SHA256 fingerprint) and
-    the `--allow-key-type` set (repeatable, wire type name). An unset list
-    imposes no restriction, so one flag alone is the sole restriction;
-    with both set a key must match both (a conjunction). All keys are
-    returned only in the `--allow-all` open filter (both lists empty).
+    returned: the key list — the `--allow-key` set (repeatable, SHA256
+    fingerprint) unioned with the `--allow-key-file` keys' fingerprints —
+    and the `--allow-key-type` set (repeatable, wire type name). An unset
+    list imposes no restriction, so one list alone is the sole
+    restriction; with both set a key must match both (a conjunction). All
+    keys are returned only in the `--allow-all` open filter (both lists
+    empty).
   - `Sign` / `SignWithFlags`: forwarded only for keys passing the same
     conjunction.
   - `Add`, `Remove`, `RemoveAll`, `Lock`, `Unlock`, `Signers`: always
