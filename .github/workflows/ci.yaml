@@ -1,10 +1,13 @@
-# CI — run the test suite when anything is pushed to the main branch.
+# CI — run the tests and the linters when anything is pushed to the
+# main branch.
 #
 # The Release workflow (release.yaml) only runs when a tag is pushed, so
-# this is the standing test gate for main: every push to main compiles
-# the broker (the go:embed source) and runs the Go test suite — the same
-# prerequisite steps and command the Release workflow's test job uses,
-# so a commit that passes here passes there.
+# this is the standing gate for main: every push to main runs two jobs —
+# test (compiles the broker, the go:embed source, and runs the Go test
+# suite) and lint (golangci-lint with the repo's .golangci.yml). Both
+# mirror the Release workflow's test and lint jobs — same prerequisite
+# steps, command, linter version and config — so a commit that passes
+# here passes there.
 #
 # Runs on ubuntu-24.04, pinned (not ubuntu-latest): ubuntu-latest
 # migrates to Ubuntu 26.04 in stages from 2026-10-19, which would turn
@@ -56,3 +59,27 @@ jobs:
         run: test -f cmd/flue/flue-broker.sigstore.json || cp cmd/flue/flue-broker.sigstore.json.placeholder cmd/flue/flue-broker.sigstore.json
       - name: Test
         run: go test ./...
+
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+      # Same prerequisite as the test job: the linter loads the flue
+      # package, whose go:embed needs the built broker and the bundle
+      # to exist before any file is analyzed.
+      - name: Build broker (embed source)
+        env:
+          CGO_ENABLED: 0
+        run: go build -ldflags="-s -w" -o cmd/flue/flue-broker.bin ./cmd/flue-broker
+      - name: Place the placeholder broker bundle (embed source)
+        run: test -f cmd/flue/flue-broker.sigstore.json || cp cmd/flue/flue-broker.sigstore.json.placeholder cmd/flue/flue-broker.sigstore.json
+      # The same pinned golangci-lint version and the same
+      # .golangci.yml the Release workflow runs on tag pushes.
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.15.0
