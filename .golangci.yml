@@ -1,7 +1,27 @@
 version: "2"
+formatters:
+  # gofmt: formatting (keeps the tree gofmt-clean in CI, e.g. the
+  # comment-block alignment drift); runs on all files including tests.
+  enable: [gofmt]
 linters:
-  enable: [errcheck, gosec]
+  # errcheck: unchecked errors (the classic Go footgun); gosec: security
+  # findings; govet: all vet analyzers (printf, lostcancel, unreachable, …);
+  # staticcheck: SA/S/ST correctness and style rules plus unused-code
+  # detection; ineffassign: assigned-but-unused values; nilerr: err != nil
+  # but a nil error returned; predeclared: shadowed builtins (index, error,
+  # len, min, max, …); misspell: typos in comments and strings (the
+  # codebase is comment-heavy). Deliberately not enabled: dupl (the
+  # flue/flue-broker duplication is deliberate, see
+  # docs/duplication-policy.md), gochecknoglobals (flag and test-harness
+  # package vars are the norm here), revive/gocritic (opinionated style
+  # beyond this repo's conventions), bodyclose/noctx/contextcheck (no
+  # net/http).
+  enable: [errcheck, gosec, govet, ineffassign, misspell, nilerr, predeclared, staticcheck]
   exclusions:
     rules:
+      # errcheck and gosec are deliberately off in tests: test helpers
+      # close connections and open temp files without checking every
+      # error (cleanup runs in t.Cleanup), and their fixture files
+      # (temp-dir scripts, key blobs) are local and trusted.
       - path: _test\.go
         linters: [errcheck, gosec]
