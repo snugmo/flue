@@ -1,0 +1,58 @@
+# CI — run the test suite when anything is pushed to the main branch.
+#
+# The Release workflow (release.yaml) only runs when a tag is pushed, so
+# this is the standing test gate for main: every push to main compiles
+# the broker (the go:embed source) and runs the Go test suite — the same
+# prerequisite steps and command the Release workflow's test job uses,
+# so a commit that passes here passes there.
+#
+# Runs on ubuntu-24.04, pinned (not ubuntu-latest): ubuntu-latest
+# migrates to Ubuntu 26.04 in stages from 2026-10-19, which would turn
+# the runner image into a moving target (24.04 or 26.04 depending on
+# the day a push lands) and change the OS/kernel/toolchain the tests
+# run under day to day. Pinning keeps the gate stable; adopt
+# ubuntu-26.04 deliberately in a later change once tested.
+# (github.com/actions/runner-images#14748)
+#
+# Actions are pinned to commit SHAs (the tag the SHA came from is kept
+# in a trailing comment): a mutable tag on a third-party repo is a
+# supply-chain hole, and the SHAs make each run auditable down to the
+# exact action code that ran. Re-pinning is a deliberate, reviewed
+# change.
+#
+# The checkout uses persist-credentials: false: nothing in this
+# workflow pushes to the git remote, so the GITHUB_TOKEN never sits in
+# .git/config inside a workspace.
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      # flue go:embeds the built broker (cmd/flue/embed.go) and its
+      # sigstore bundle: the broker must be built to its embed path, and
+      # the bundle must exist (the committed placeholder template when no
+      # signed bundle is present) before any package load succeeds.
+      - name: Build broker (embed source)
+        env:
+          CGO_ENABLED: 0
+        run: go build -ldflags="-s -w" -o cmd/flue/flue-broker.bin ./cmd/flue-broker
+      - name: Place the placeholder broker bundle (embed source)
+        run: test -f cmd/flue/flue-broker.sigstore.json || cp cmd/flue/flue-broker.sigstore.json.placeholder cmd/flue/flue-broker.sigstore.json
+      - name: Test
+        run: go test ./...
