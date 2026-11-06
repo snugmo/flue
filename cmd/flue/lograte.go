@@ -27,9 +27,13 @@ type refusalLimiter struct {
 
 // reject logs one refusal: in full for the first of a burst, counted
 // otherwise. A nil limiter (a policy built without one) logs every
-// refusal in full — the pre-rate-limit behavior.
+// refusal in full — the pre-rate-limit behavior. Its two log.Log calls
+// are nolint'd (sloglint static-msg): msg is a parameter here, but
+// every caller passes a constant string, so the check's intent (no
+// format-string thinking) holds at the call sites.
 func (r *refusalLimiter) reject(level slog.Level, msg string, kv ...any) {
 	if r == nil {
+		//nolint:sloglint
 		log.Log(context.Background(), level, msg, kv...)
 		return
 	}
@@ -37,6 +41,7 @@ func (r *refusalLimiter) reject(level slog.Level, msg string, kv ...any) {
 	if r.timer == nil && r.suppressed == 0 {
 		r.timer = time.AfterFunc(refusalWindow, r.onWindow)
 		r.mu.Unlock()
+		//nolint:sloglint
 		log.Log(context.Background(), level, msg, kv...)
 		return
 	}

@@ -1508,6 +1508,10 @@ func receiveListener(ctrl net.Conn, pol *policy, clients *clientSet) (net.Listen
 	buf := make([]byte, 4096)
 	oob := make([]byte, 4096)
 
+	// ctrl is the host end of the control socketpair flue created itself
+	// (runChildWithAgent): always a Unix socket, so the assertion cannot
+	// fail.
+	//nolint:forcetypeassert
 	uc := ctrl.(*net.UnixConn)
 	// Bound the wait: a broker that starts but never hands over a listener
 	// would otherwise leave flue blocked here silently. (A broker that
