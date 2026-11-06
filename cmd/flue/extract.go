@@ -95,8 +95,7 @@ func writeEmbeddedBroker(path string) error {
 // final mode is set on the temp file before it becomes the target
 // (for the broker that is the executable bit, set before the rename).
 // It refuses a target that is a directory and fails if the target
-// directory does not exist. Shared by the broker executable (0755) and
-// broker sigstore-bundle (0644) writes.
+// directory does not exist.
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path) // "." for a bare filename, never ""
 	st, err := os.Stat(dir)

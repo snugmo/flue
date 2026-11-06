@@ -14,14 +14,11 @@ var refusalWindow = 30 * time.Second
 // refusalLimiter rate-limits the per-client refusal warnings (the
 // session check and the live-connection cap). flue's stderr is the
 // user's tty, and any process in the container can connect in a loop
-// to fill it with "refusing" lines; so the first refusal of a burst is
-// logged in full, the rest
-// are counted and summarized once per refusalWindow ("N more in the
-// last 30 s"), and whatever is left over is flushed when the session
-// ends. Each window therefore starts with one in-full refusal and
-// ends with a summary of the rest; a quiet gap longer than
-// refusalWindow just ends the window (no summary is emitted) and the
-// next refusal starts a fresh one.
+// to fill it with "refusing" lines: a burst logs its first refusal in
+// full and summarizes the rest once per refusalWindow ("N more in the
+// last 30 s"), whatever is left over being flushed when the session
+// ends; a quiet gap longer than refusalWindow ends a window with no
+// summary.
 type refusalLimiter struct {
 	mu         sync.Mutex
 	timer      *time.Timer // nil when no burst is in progress

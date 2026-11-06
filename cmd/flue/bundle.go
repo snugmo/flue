@@ -109,8 +109,7 @@ func warnPlaceholderBundle() {
 // atomically (a temp file in the target directory, then rename) with
 // mode 0644. It refuses to overwrite a directory. The stdout form (no
 // filename, or "-") is handled by the command writing to
-// cmd.OutOrStdout() directly, with warnPlaceholderBundle doing the
-// same warning first.
+// cmd.OutOrStdout() directly.
 func writeEmbeddedBundle(path string) error {
 	warnPlaceholderBundle()
 	return writeFileAtomic(path, flueBrokerBundle, 0o644)
