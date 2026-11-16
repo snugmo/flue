@@ -129,13 +129,21 @@ subcommand: `flue --allow-key SHA256:… enter <container>`. (The subcommand
 
 **flue** (host-side; persistent flags, placed before the subcommand):
 
+How the allowlist flags combine: a key must pass **every** list that is set
+(an unset list is unrestricted) — `--allow-key K --allow-key-type ssh-ed25519`
+admits K only if K is an ed25519 key. `--allow-key-file` keys union into the
+`--allow-key` list (one key list, which still intersects `--allow-key-type`).
+A certificate matches by its underlying key's fingerprint and by both its
+certificate and underlying key types. With no key or type list set,
+`--allow-all` is required to start (the filter is fail closed).
+
 | Flag          | Default                        | Description                                                                                                                                                                                              |
 | ------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `--sock`      | `$SSH_AUTH_SOCK`               | Agent socket path to proxy to                                                                                                                                                                            |
-| `--allow-key` | (none)                         | Repeatable. Only keys with this SHA256 fingerprint are listed and can sign. Fingerprints are compared the way `ssh-add -l` prints them — for a certificate, that is the fingerprint of its underlying key. Not mutually exclusive with `--allow-key-type`: a key must pass every list that is set (an unset list is unrestricted), so with both set it is a conjunction — `--allow-key K --allow-key-type ssh-ed25519` admits K only if it is an ed25519 key. With no key or type list set, `--allow-all` is required to start |
-| `--allow-key-file` | (none)                     | Path to an `authorized_keys`-format file (one public key per line; blank lines and `#` comments skipped; an OpenSSH option prefix on a line is allowed; CRLF fine). Its keys' fingerprints join the `--allow-key` list — a union, so the file and repeated `--allow-key` values form one key list, which still intersects `--allow-key-type`; a certificate matches its underlying key's fingerprint, as with `--allow-key`. It satisfies the fail-closed gate on its own. Parsed fail closed: an unreadable file, a line that does not parse as a key, or a file with no keys is refused before the session starts |
-| `--allow-key-type` | (none)                     | Repeatable. Only keys of this type (the wire type name, e.g. `ssh-ed25519`, `ecdsa-sha2-nistp256`, `rsa`) are listed and can sign. A certificate matches both its certificate type and its underlying key's type, so a cert-only list denies static (uncertified) keys; secure-enclave keys have their own `sk-` type names. Intersects with the key list (`--allow-key` and `--allow-key-file` together) the same way: with both set, a key must match both. With no key or type list set, `--allow-all` is required to start |
-| `--allow-all` | `false`                        | Explicitly allow every key in the host agent. Required to start a session that sets neither `--allow-key` nor `--allow-key-type`; without it such a session is refused (fail closed). It is the opt-in to the open filter, not an override: with a non-empty allowlist it is inert — the allowlist still applies — and it logs a session-start warning in both cases |
+| `--allow-key` | (none)                         | Repeatable. Only keys with this SHA256 fingerprint are listed and can sign. Fingerprints are compared the way `ssh-add -l` prints them — for a certificate, that is the fingerprint of its underlying key |
+| `--allow-key-file` | (none)                     | Path to an `authorized_keys`-format file (one public key per line; blank lines and `#` comments skipped; an OpenSSH option prefix on a line is allowed; CRLF fine). Parsed fail closed: an unreadable file, a line that does not parse as a key, or a file with no keys is refused before the session starts |
+| `--allow-key-type` | (none)                     | Repeatable. Only keys of this type (the wire type name, e.g. `ssh-ed25519`, `ecdsa-sha2-nistp256`, `rsa`) are listed and can sign; secure-enclave keys have their own `sk-` type names |
+| `--allow-all` | `false`                        | Explicitly allow every key in the host agent. Required to start a session with no key or type list set. It is the opt-in to the open filter, not an override: with a non-empty allowlist it is inert — the allowlist still applies — and it logs a session-start warning in both cases |
 | `--no-session-bind` | `false`                  | Do not forward the `session-bind@openssh.com` agent extension, disabling OpenSSH destination-restricted keys. Provided for host agents affected by CVE-2026-73281 (OpenSSH 8.9–10.4) |
 | `--log-level` | `$FLUE_LOG_LEVEL`, else `info` | Log level: `debug`, `info`, `warn`, or `error`. `debug` logs every agent request (operation, key type, fingerprint, allowed/denied — and, when an allowlist denies a key, which list did, as a `reason` field). When the flag is unset, `$FLUE_LOG_LEVEL` is read; a set flag wins            |
 | `--log-file`  | `stderr`                       | Append log output to this file (created if needed, mode `0600`) instead of stderr — keeps session-check refusal warnings off the user's terminal                                                                                              |
@@ -248,85 +256,45 @@ buildah build --isolation chroot --layers --format docker \
 buildah push ghcr.io/snugmo/flue:0.3.0
 ```
 
-No platform build-args are needed: the Containerfile declares the
-platform builtins (`TARGETPLATFORM`, `BUILDPLATFORM`, `TARGETOS`,
-`TARGETARCH`) at global scope with no default, so the per-platform
-values are inherited (a default would override them and ship the
-amd64 binary in the arm64 image). A plain build produces the
-host's architecture; to build for a different one, pass
-`--platform linux/<arch>` (e.g. `--platform linux/arm64`) — it
-sets the whole target platform (architecture and OS) at once,
-whereas `--build-arg TARGETARCH=<arch>` (or `TARGETOS=`) would pin
-that one value onto every platform.
-
-Build order: `flue-broker` is built in its own stage for the target
-platform (one static binary) and staged in a single `flue-broker`
-scratch stage; then `flue` for the same platform is built in a
-second golang stage, which places that platform's broker file on the
-`go:embed` path `cmd/flue/flue-broker.bin`, and the broker's sigstore
-bundle on `cmd/flue/flue-broker.sigstore.json`, before compiling. The
-broker's embed source comes from the stage (a flue without its broker
-is a deliberate hard failure); the bundle's is a build-context input
-— a signed `cmd/flue/flue-broker.sigstore.json` wins when present (the
-release workflow places each platform's there; a local user may sign
-their own broker first) — else the stage copies the committed
-placeholder template over, so a bare local build succeeds, labeled
-as unverifiable rather than mistaken for a signed one. Both golang
-stages are pinned to the build platform (`$BUILDPLATFORM`) and
-cross-compile (natively), so a multi-arch build never needs QEMU —
-buildx evaluates the whole chain once per target platform, and the
-compiler runs natively on whichever host builds the image. The
-stages use the `golang:${GOVERSION}` toolchain (`ARG GOVERSION`,
-default `1.27`): floating for local builds, pinned by the release
-workflow to the `go.mod` `go` directive, so the broker the image
-compiles is byte-identical to the one the release exports and signs.
+The Containerfile's platform builtins (`TARGETPLATFORM`, `BUILDPLATFORM`,
+`TARGETOS`, `TARGETARCH`) are declared with no default, so the
+builder's per-platform values are inherited: a plain build produces
+the host's architecture; for another, pass `--platform linux/<arch>`
+— never `--build-arg TARGETOS/TARGETARCH` overrides, which would pin
+one value onto every platform. The stages build for one platform each
+and cross-compile natively (no QEMU). Details: the
+[Containerfile header](Containerfile) and [docs/build.md](docs/build.md).
 
 ### Release image
 
 Pushing a `v*` tag publishes `ghcr.io/snugmo/flue:<tag>` (and `:latest`)
-to GHCR, built from the same `Containerfile` as the local build above:
-one buildx build per architecture, each from its own copy of the
-build context carrying that architecture's signed broker bundle, then
-the two per-architecture images assembled into the manifest list with
-`docker buildx imagetools create` (a single multi-arch buildx
-invocation shares one build context, so per-platform bundles cannot
-ride one build). The build stage compiles the binary from the tagged
-source (no QEMU — it is pinned to the build
-platform, `$BUILDPLATFORM`, and each platform's stage compiles its
-own target platform), and the final stage is a `FROM scratch` with
-exactly one file, the static `flue` binary at `/flue` (the
-entrypoint), with `flue-broker` — and its cosign-signed sigstore
-bundle — embedded in it. The image is attested with SLSA build
-provenance and signed (Sigstore keyless), and the release assets are
-the image's own bytes: each architecture's `flue` is extracted from
-the pushed, signed image, so a downloaded binary is byte-identical to
-the one the signed and attested image ships. The two `flue-broker`
-binaries are likewise attested and signed: the workflow builds the
-Containerfile's `flue-broker` stage once per architecture —
-the exact files the `flue` build stage consumed as its `go:embed`
-sources, so the attested and signed broker is the one injected at
-build time — and signs each one (Sigstore keyless); each platform's
-bundle is embedded in its `flue`, and the job cross-checks both pairs
-byte-for-byte from the built image. A broker recovered from any
-`flue`, any architecture, can therefore be verified with
-`gh attestation verify`, or offline with `cosign verify-blob
---bundle` using the bundle the same `flue` ships. Each release binary
-is additionally signed (Sigstore keyless) and ships its signature as a
-self-contained `.sigstore.json` bundle next to it, so a binary can be
-verified offline — no registry or network lookup.
+to GHCR, built by the
+[release workflow](.github/workflows/release.yaml) from the same
+`Containerfile`: one buildx build per architecture, each from its own
+build-context copy carrying that architecture's cosign-signed broker
+bundle (a single multi-arch build shares one context, so per-platform
+bundles cannot ride one build), the per-architecture images then
+assembled into the manifest list with `docker buildx imagetools
+create`. What is signed and attested:
 
-Every release image carries two signed claims, keyed to the image's
-manifest-list digest, so they cover all of its tags:
-
-- a **Sigstore keyless signature** (cosign), and
-- a **SLSA build provenance attestation** (in GitHub's attestation
-  store, with a copy pushed into the registry).
-
-The certificate behind the signature has no subject of its own: its
-identity is the SAN URI of the release workflow file at the pushed
-ref — *not* the account that pushed the tag. (That is how fulcio
-identifies a GitHub Actions run; the identity differs per release tag
-because it embeds the ref.)
+- the **manifest list** — a Sigstore keyless cosign signature and a
+  SLSA build-provenance attestation (one per architecture), both keyed
+  to the list digest, so they cover all of its tags. The signature's
+  certificate identity is the SAN URI of the release workflow file at
+  the pushed ref — *not* the account that pushed the tag (that is how
+  fulcio identifies a GitHub Actions run; the identity embeds the ref,
+  so it differs per tag).
+- **each architecture's `flue` binary** (a release asset), signed and
+  shipping its self-contained `.sigstore.json` bundle next to it. The
+  binaries are extracted from the pushed, signed, attested image, so
+  they are byte-identical to the image's.
+- **the two `flue-broker` binaries**, exported from the Containerfile's
+  `flue-broker` stage — the exact files the `flue` build stage
+  embedded — attested and signed; each platform's bundle is embedded
+  in its `flue`. A broker recovered from any release `flue`
+  (`flue broker executable` + `flue broker sigstore-bundle`) verifies
+  offline with `cosign verify-blob --bundle`, or against the GHCR
+  attestations with `gh attestation verify`.
 
 Verify from any machine:
 
@@ -363,140 +331,93 @@ cosign verify-blob /tmp/flue-broker \
 
 ## How it works
 
-1. `flue` creates a `SOCK_SEQPACKET` Unix socketpair.
-2. It passes one end into the container as fd 3 via `podman exec
-   --preserve-fds` (2 when the broker memfd is also passed as fd 4), closes
-   its copy, and keeps the other end as the control channel.
-3. Inside the container, `flue-broker` listens on a socket — a unique
-   per-session path unless `-sock` pins one — and sends that listening
-   socket's fd to the host over the control socket (SCM_RIGHTS) exactly
-   once. It then either (standalone) blocks watching for the host to go
-   away, or (wrapper mode) launches the wrapped command as a child with
-   `SSH_AUTH_SOCK` pointed at its socket and waits for it. Because the
-   host end of the control socket has `SO_PASSCRED` enabled, the same
-   message also carries the broker's credentials.
-4. On the host, `flue` receives the listener fd and `accept()`s client
-   connections directly; for each one it dials a fresh connection to
-   `$SSH_AUTH_SOCK` and runs `agent.ServeAgent(filter, clientConn)` —
-   the filter wraps the upstream agent client and enforces the key
-   allowlist. From the handover message's `SCM_CREDENTIALS` it learns
-   the broker's session id. When that session is private — the broker
-   leads it, or the leader that led it has already exited (what an exec
-   that created its own session looks like, with or without a tty) —
-   each accepted client must share it (`SO_PEERCRED` → `/proc`); clients
-   from another session are
-   refused. For an interactive `flue enter` (injected broker with a
-   tty) the check is required: if it cannot be enabled, `flue` aborts
-   the session rather than serve it without the check. With
-   `--no-inject-broker` or in the `flue debug` passthrough the broker is
-   untrusted code and the check is not used (a warning is logged); in
-   the remaining mode (an injected broker without a tty) its state is
-   logged at `info` when the session starts.
-5. Lifetime is driven by the process tree, not the control channel (which
-   carries a single listener-fd message). In wrapper mode, when the wrapped
-   command exits, `flue-broker` exits, the `podman exec` returns, and
-   `flue` — which is blocked on that child — tears down the listener and
-   exits with the command's exit status. In standalone mode `flue` runs
-   until it is signalled.
+1. `flue` creates a `SOCK_SEQPACKET` Unix socketpair and passes one end
+   into the container as fd 3 via `podman exec --preserve-fds` (2 when the
+   broker memfd is also passed as fd 4); it keeps the other end as the
+   control channel.
+2. `flue-broker` listens on a socket — a unique per-session path unless
+   `-sock` pins one — and sends that listening socket's fd to the host
+   over the control socket (SCM_RIGHTS) exactly once. Because the host
+   end has `SO_PASSCRED` enabled, the same message carries the broker's
+   credentials (pid, and with it its session id). The broker then either
+   (standalone) blocks watching for the host to go away, or (wrapper
+   mode) launches the wrapped command with `SSH_AUTH_SOCK` pointed at
+   its socket and waits for it.
+3. `flue` receives the listener fd and `accept()`s client connections
+   directly; for each one it dials a fresh connection to `$SSH_AUTH_SOCK`
+   and runs `agent.ServeAgent(filter, clientConn)` — the filter enforces
+   the key allowlist (table below) on the upstream agent client.
+4. The **session check** (a second gate) refuses clients that do not
+   share the broker's session, when that session is *private* — the
+   broker leads it, or the leader that led it has already exited (what
+   an exec that created its own session looks like, with or without a
+   tty). Its mode: **required** for an interactive `flue enter`
+   (injected broker with a tty — if it cannot be enabled the session is
+   aborted, not served), **off** with `--no-inject-broker` or in the
+   `flue debug` passthrough (the broker is then untrusted code; a
+   warning is logged), **advisory** otherwise (state logged at `info`).
+   `enter --session-check=required|advisory|off` overrides the choice —
+   the escape hatch for runtimes whose execs share a session. Mechanics
+   (`SO_PEERCRED`, `/proc`, the `SO_PEERPIDFD` liveness check, rate
+   limiting): [docs/flue.md](docs/flue.md#session-check).
+5. Lifetime is driven by the process tree, not the control channel. In
+   wrapper mode the broker exits when the wrapped command does, the
+   `podman exec` returns, and `flue` — blocked on that child — tears
+   down the listener and exits with the command's exit status. In
+   standalone mode `flue` runs until it is signalled.
 
 ### Filter policy
 
 | Operation       | Behavior                                              |
 | --------------- | ----------------------------------------------------- |
-| `List`          | Forwarded; a key is returned iff it passes every list that is set — its fingerprint in the key list (`--allow-key` plus the keys of a `--allow-key-file`) and its type in `--allow-key-type` (an unset list is unrestricted; with both set that is a conjunction, so `--allow-key K --allow-key-type ssh-ed25519` admits K only if it is an ed25519 key). All keys are returned only in the `--allow-all` open filter (both lists empty) |
-| `Sign`          | Forwarded only for keys passing the same conjunction            |
-| `SignWithFlags` | Forwarded only for keys passing the same conjunction (needed for RSA rsa-sha2-256/512) |
-| `Add`           | Denied                                                |
-| `Remove`        | Denied                                                |
-| `RemoveAll`     | Denied                                                |
-| `Lock`          | Denied                                                |
-| `Unlock`        | Denied                                                |
-| `Signers`       | Denied — a Go-only `Agent` interface method with no wire opcode: `ServeAgent` answers the identities request (opcode 11/12) from `List()`, which the filter already keys. Go clients using `agent.Signers()` get the filtered key list and sign per key through the gated `Sign`; OpenSSH clients use the filtered `List` for `ssh-add -L`. Denied to keep the filter's surface minimal |
+| `List`          | Forwarded; only keys passing the allowlists (see [Flags](#flags)) are returned. All keys only in the `--allow-all` open filter |
+| `Sign`          | Forwarded only for keys passing the same lists        |
+| `SignWithFlags` | Forwarded only for keys passing the same lists (needed for RSA rsa-sha2-256/512) |
+| `Add`, `Remove`, `RemoveAll`, `Lock`, `Unlock` | Denied |
+| `Signers`       | Denied — a Go-only `Agent` interface method with no wire opcode: `ServeAgent` answers the identities request (opcode 11/12) from `List()`, which the filter already keys, so the denial breaks nothing (it keeps the filter's surface minimal). Go clients using `agent.Signers()` get the filtered key list; OpenSSH clients use the filtered `List` for `ssh-add -L` |
 | `Extension`     | Only `session-bind@openssh.com` is forwarded (unless `--no-session-bind` is set, in which case no extension is forwarded); all others return `ErrExtensionUnsupported` |
 
 ## Security
 
 While a session is open, a process in the container can (a) list the
 allowlisted keys — fingerprint and comment are visible — and (b) get
-signatures from them. It cannot add, remove, lock, or unlock keys, nor use
-any key outside the `--allow-key` / `--allow-key-file` /
-`--allow-key-type` lists (the filter
-policy table above carries the per-operation detail), and it never sees a
-path or fd to the host agent socket, its directory, or `$XDG_RUNTIME_DIR`.
-The trust boundary is the allowlists, not the container.
+signatures from them. It cannot add, remove, lock, or unlock keys, nor
+use any key outside the allowlists, and it never sees a path or fd to
+the host agent socket, its directory, or `$XDG_RUNTIME_DIR`. **The trust
+boundary is the allowlists, not the container.** The filter is fail
+closed by default (a session with no allowlist is refused before it
+starts; the safe configuration is one the user has to choose, not one
+the tool guesses), and `--allow-all` — the widest exposure, every key
+in the host agent listed to the container — is the containment
+mechanism's opt-in, so a session that only needs one key should name it.
 
-The filter is fail closed by default: a session with no key or type list
-set (`--allow-key`, `--allow-key-file`, `--allow-key-type`) is refused
-before it starts, unless the user
-explicitly passes `--allow-all` to open it to every key (a warning is
-logged at session start in that case). The safe configuration is the one the
-user has to choose, not one the tool guesses. `--allow-all` is also the
-widest key exposure: every key in the host agent — fingerprint, comment,
-expiry, and full public key — is listed to the container, so the allowlists
-are the containment mechanism, and a session that only needs one key should
-name it.
+`session-bind@openssh.com` (the one forwarded extension) is the
+mechanism for OpenSSH destination-restricted keys; the binding is
+cryptographically enforced (an unforgeable hostkey plus KEX signature),
+so a container cannot claim a destination it did not in fact open.
+Caveat: OpenSSH 8.9–10.4 carries a lock-and-`session-bind` interaction
+(CVE-2026-73281, fixed in 10.5) in which a locked agent can let a
+remote (container-mediated) session use destination-restricted keys.
+`flue` cannot patch that agent-side bug: run the host agent on OpenSSH
+≥ 10.5, or pass `--no-session-bind` (which disables
+destination-restricted keys). The CVE's other half — adding PKCS#11
+tokens remotely — is unreachable through `flue`, because its agent proxy
+does not implement the smartcard opcodes. For the same reason,
+smartcard-backed keys (PKCS#11 tokens, secure elements) do not work
+through `flue` at all: a token's keys never appear in the filtered list
+— if all of your agent's keys live on a token, the session will look
+empty.
 
-The allowlist flags combine rather than conflict. `--allow-key` and
-`--allow-key-type` are independent dimensions, not alternatives to each
-other: each one that is set restricts, and a key must pass every set list
-(an unset list is unrestricted), so setting both narrows —
-`--allow-key K --allow-key-type ssh-ed25519` admits K only if K is an
-ed25519 key. `--allow-all` is the opt-in to the open filter, not an
-override: it cannot widen a set allowlist, so `--allow-all` alongside
-`--allow-key K` still exposes exactly K. `--allow-key-file` is the same
-dimension as `--allow-key` — its keys union into one key list (the file
-just keeps a long allowlist out of your shell history and command line)
-and it intersects `--allow-key-type` identically; it is parsed fail
-closed, so a mistyped allowlist is refused before the session starts
-rather than silently narrowing to fewer keys.
-
-The one forwarded agent extension, `session-bind@openssh.com`, is the
-mechanism OpenSSH uses for destination-restricted keys, so it is required
-for that feature to work. The binding is cryptographically enforced (an
-unforgeable hostkey plus KEX signature), so a container cannot claim a
-destination it did not in fact open. That said, OpenSSH 8.9–10.4 carries a
-lock-and-`session-bind` interaction (CVE-2026-73281, fixed in 10.5) in which
-a locked agent can let a remote (container-mediated) session make use of
-destination-restricted keys. `flue` cannot patch that agent-side bug; the
-fix is to run the host agent on OpenSSH ≥ 10.5, or to pass
-`--no-session-bind` to stop forwarding the extension (which disables
-destination-restricted keys). The other half of the CVE — adding PKCS#11
-tokens remotely — is not reachable through `flue`, because its agent proxy
-does not implement the smartcard opcodes.
-
-Smartcard-backed keys (PKCS#11 tokens, secure elements) do not work
-through `flue`: the agent implementation it is built on does not implement
-the smartcard opcodes (the same gap that makes the CVE's token-add half
-unreachable), so a token's keys never appear in the filtered list and
-cannot be signed in a session — if all of your agent's keys live on a
-token, the session will look empty.
-
-When the broker's session is private — the broker leads it, or the
-leader that led it at handover has already exited, what an exec that
-created its own session looks like, with or without a tty — a second
-gate applies: every client must share
-the broker's session, so a rogue process that starts its own session
-(for example via `setsid`) or comes from another `podman exec` cannot
-even reach the agent, and a client whose session cannot be verified is
-refused. When the exec's process shares a session with the container's
-other processes (older runtimes), this check does not apply. The check's
-mode depends on how the broker was started: for an interactive `flue
-enter` (injected broker with a tty) it is required — if it cannot be
-enabled, the session is aborted rather than served without the check;
-with `--no-inject-broker` or in the `flue debug` passthrough it is not
-used at all, because the broker is then untrusted code that could hand
-over a listener from any session it controls (a warning is logged; in
-those modes any other process in the container — for example a second
-`podman exec` from another session — can use the session's agent
-socket); otherwise (an injected broker without a tty) it is advisory and its
-state is logged at `info` when the session starts.
-`enter --session-check=required|advisory|off` overrides the choice (an
-explicit choice is logged at `info`) — the escape hatch for runtimes
-whose execs share a session, where an interactive session's required
-check would otherwise always abort. Refusal warnings (session-check refusals and the live-connection
-cap) are rate-limited (the first of a burst in full, a summary every
-30 s, the rest flushed at session end), and `--log-file` sends log
-output to a file instead of the terminal.
+The session check (step 4 above) adds the second gate: when the broker's
+session is private, a rogue process that starts its own session (e.g. via
+`setsid`) or comes from another `podman exec` cannot even reach the
+agent, and a client whose session cannot be verified is refused. With
+`--no-inject-broker` or in the `flue debug` passthrough the check is off
+(a warning is logged; in those modes any other process in the container
+can use the session's agent socket). Refusal warnings (session-check
+refusals and the live-connection cap) are rate-limited — the first of a
+burst in full, a summary every 30 s, the rest flushed at session end —
+and `--log-file` sends log output to a file instead of the terminal.
 
 ## Integration check (manual)
 
