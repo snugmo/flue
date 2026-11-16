@@ -24,7 +24,7 @@ Two small Go binaries:
 The usual flow, in one line:
 
 ```sh
-flue enter <container>     # or just flue enter — snugmo is the default
+flue enter <container>     # or just flue enter — cote is the default
 ```
 
 …and you are in a shell where `ssh-add -l`, `git push`, and friends use the
@@ -63,14 +63,14 @@ see [Flags](#flags) — the image must provide `flue-broker`; see
 
 `flue enter` runs the `podman exec` for you: it preserves the control
 socket as fd 3, hands your command to `flue-broker` in wrapper mode,
-targets the `snugmo` container when you give none, and allocates a tty
+targets the `cote` container when you give none, and allocates a tty
 when your stdin and stdout are both terminals (a pty is only useful
 when both ends of the conversation are terminals). When you give no
 command, the broker resolves
 a shell inside the container:
 
 ```sh
-flue enter                                  # a shell in snugmo
+flue enter                                  # a shell in cote
 flue enter <container>                      # a shell in the container
 flue enter <container> bash                 # bash
 flue enter <container> git ls-remote git@github.com:you/repo.git
@@ -94,7 +94,7 @@ value is split on whitespace and applied on the host; a command given on
 the command line always wins):
 
 ```sh
-FLUE_ENTER_CMD=bash flue enter           # bash in snugmo
+FLUE_ENTER_CMD=bash flue enter           # bash in cote
 FLUE_ENTER_CMD="bash -l" flue enter dev  # a login bash in dev
 ```
 
@@ -145,7 +145,7 @@ subcommand: `flue --allow-key SHA256:… enter <container>`. (The subcommand
 
 | Flag              | Default                                     | Description                                                                                                                                                                                                                                                                              |
 | ----------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| *(arguments)*     | `snugmo`, a shell resolved in the container | Positional: the container to exec into (default `snugmo`), then the command to run inside it (default `$FLUE_ENTER_CMD` when set and non-blank — split on whitespace — else a shell the broker resolves in the container: `$SHELL`, `/bin/bash`, `/bin/sh`, then `bash`/`sh` in `$PATH`) |
+| *(arguments)*     | `cote`, a shell resolved in the container | Positional: the container to exec into (default `cote`), then the command to run inside it (default `$FLUE_ENTER_CMD` when set and non-blank — split on whitespace — else a shell the broker resolves in the container: `$SHELL`, `/bin/bash`, `/bin/sh`, then `bash`/`sh` in `$PATH`) |
 | `--inject-broker` | `true`                                      | Run the broker from an in-memory `memfd` (exec'd via `/proc/self/fd/4`) instead of the image's `flue-broker`; no writable filesystem needed. Disable with `--no-inject-broker`, `--inject-broker=false`, or `FLUE_INJECT_BROKER=0` (a set flag wins over the variable)                   |
 | `--session-check` | auto                                        | Override the session check mode: `required` (abort the session if the check cannot be enabled), `advisory`, or `off`. Default is auto: required for an injected broker with a tty, off without injection, advisory otherwise                                                             |
 

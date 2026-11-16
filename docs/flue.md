@@ -26,19 +26,19 @@ commands with flags).
   `podman exec [-ti] --preserve-fds <n> <container> <broker>
   [command...]`, where `<broker>` is `/proc/self/fd/4` (injected memfd,
   `--preserve-fds 2`) or the image's `flue-broker` (`--preserve-fds 1`).
-  - The container defaults to `defaultEnterContainer` (`snugmo`), and
+  - The container defaults to `defaultEnterContainer` (`cote`), and
     `enterDefaultCmd` resolves the command: an explicit command always
     wins; `$FLUE_ENTER_CMD` (set and non-blank) is that value split on
     whitespace, applied on the host; otherwise it is nil and
     `enterExecArgs` passes the broker `-default-shell`, which resolves a
     shell inside the container ($SHELL → /bin/bash → /bin/sh → bash/sh
     in $PATH — see [flue-broker.md](flue-broker.md)). So a bare
-    `flue enter` runs a shell in snugmo.
+    `flue enter` runs a shell in cote.
   - A `--` separator (recovered from the raw process arguments by
     `enterDashDash`, since pflag strips it before Run) takes precedence
     over that split: the tokens after it are the command, and the single
     positional argument before it — if any — names the container, so
-    `flue enter -- bash` runs bash in snugmo, not the default command in
+    `flue enter -- bash` runs bash in cote, not the default command in
     a container named bash. A trailing separator (nothing after it) is a
     no-op; more than one positional before it is a usage error.
   - A tty is allocated only when both stdin and stdout are terminals
