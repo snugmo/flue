@@ -217,6 +217,8 @@ func newCertKey(t *testing.T, comment string) (agent.AddedKey, []byte, string) {
 		ValidAfter:   uint64(time.Now().Add(-time.Hour).Unix()),
 		ValidBefore:  uint64(time.Now().Add(time.Hour).Unix()),
 		SignatureKey: caPub,
+		// SignCert (x/crypto >= v0.59.0) rejects an empty ValidPrincipals.
+		ValidPrincipals: []string{"flue"},
 	}
 	if err := cert.SignCert(rand.Reader, caSigner); err != nil {
 		t.Fatalf("sign cert: %v", err)
