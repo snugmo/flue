@@ -248,22 +248,20 @@ daemon required:
 
 ```bash
 buildah build --isolation chroot --layers --format docker \
-  --build-arg VERSION=0.3.0 \
+  --build-arg VERSION=0.4.0 \
   --build-arg REVISION=$(git rev-parse HEAD) \
   --build-arg CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
-  -t ghcr.io/snugmo/flue:0.3.0 \
+  -t ghcr.io/snugmo/flue:0.4.0 \
   -f Containerfile .
-buildah push ghcr.io/snugmo/flue:0.3.0
+buildah push ghcr.io/snugmo/flue:0.4.0
 ```
 
-The Containerfile's platform builtins (`TARGETPLATFORM`, `BUILDPLATFORM`,
-`TARGETOS`, `TARGETARCH`) are declared with no default, so the
-builder's per-platform values are inherited: a plain build produces
-the host's architecture; for another, pass `--platform linux/<arch>`
-— never `--build-arg TARGETOS/TARGETARCH` overrides, which would pin
-one value onto every platform. The stages build for one platform each
-and cross-compile natively (no QEMU). Details: the
-[Containerfile header](Containerfile) and [docs/build.md](docs/build.md).
+A plain build produces the host's architecture; for another, pass
+`--platform linux/<arch>` (never `--build-arg TARGET*` overrides —
+the Containerfile's platform builtins are deliberately default-less
+so each stage inherits its own platform; the stages cross-compile
+natively, no QEMU). Details: the [Containerfile
+header](Containerfile) and [docs/build.md](docs/build.md).
 
 ### Release image
 

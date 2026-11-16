@@ -65,20 +65,16 @@ files. `memfdCreateWithFallback` distinguishes the failure directions:
 ### Disabling injection, and the session check
 
 Injection is disabled with `--no-inject-broker`,
-`--inject-broker=false`, or `FLUE_INJECT_BROKER=0` (a set flag wins over
-the variable). Then `flue enter` runs the image's `flue-broker` instead
+`--inject-broker=false`, or `FLUE_INJECT_BROKER=0` (a set flag wins
+over the variable). Then `flue enter` runs the image's `flue-broker`
 (`--preserve-fds 1`, no memfd), so the container must have one.
 
-How the broker was started also decides the **session check** mode (see
-[flue.md](flue.md#session-check) for the check itself):
-
-- An *injected* broker is trusted host-side code, so the check stays on:
-  **required** for an interactive `flue enter` (tty — if it cannot be
-  enabled the session is aborted rather than served without it) and
-  **advisory** for an injected broker without a tty.
-- `--no-inject-broker` (or the `flue debug` passthrough) starts the broker
-  from the image — untrusted code that could hand over a listener from any
-  session it controls — so the check is **off** and a warning is logged.
+How the broker was started also decides the session check mode (see
+[flue.md](flue.md#session-check) for the check itself): an injected
+broker is trusted host-side code, so the check is on (required with a
+tty, advisory without); an untrusted image broker — or the `flue
+debug` passthrough — could hand over a listener from any session it
+controls, so the check is off and a warning is logged.
 
 ## Getting the broker out: the `flue broker` subcommands
 
