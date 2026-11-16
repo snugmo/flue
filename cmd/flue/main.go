@@ -233,6 +233,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/sys/unix"
+	"golang.org/x/term"
 )
 
 // sockArg and logLevel hold the raw values of the persistent --sock and
@@ -887,25 +888,25 @@ func enterExecArgs(container string, cmd []string, tty, injectBroker bool) []str
 	return append(out, cmd...)
 }
 
-// stdinIsTTY reports whether stdin is a terminal, using the TCGETS ioctl
-// (which fails for pipes, regular files, and sockets).
+// stdinIsTTY reports whether stdin is a terminal, using x/term.IsTerminal
+// (on Unix the TCGETS ioctl, which fails for pipes, regular files, and
+// sockets).
 func stdinIsTTY() bool {
-	_, err := unix.IoctlGetTermios(int(os.Stdin.Fd()), unix.TCGETS)
-	return err == nil
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
-// stdoutIsTTY reports whether stdout is a terminal, using the TCGETS
-// ioctl (which fails for pipes, regular files, and sockets).
+// stdoutIsTTY reports whether stdout is a terminal, using x/term.IsTerminal
+// (on Unix the TCGETS ioctl, which fails for pipes, regular files, and
+// sockets).
 func stdoutIsTTY() bool {
-	_, err := unix.IoctlGetTermios(int(os.Stdout.Fd()), unix.TCGETS)
-	return err == nil
+	return term.IsTerminal(int(os.Stdout.Fd()))
 }
 
-// stderrIsTTY reports whether stderr is a terminal, using the TCGETS
-// ioctl (which fails for pipes, regular files, and sockets).
+// stderrIsTTY reports whether stderr is a terminal, using x/term.IsTerminal
+// (on Unix the TCGETS ioctl, which fails for pipes, regular files, and
+// sockets).
 func stderrIsTTY() bool {
-	_, err := unix.IoctlGetTermios(int(os.Stderr.Fd()), unix.TCGETS)
-	return err == nil
+	return term.IsTerminal(int(os.Stderr.Fd()))
 }
 
 // runPassthrough is the classic mode: the caller passes a command (after
