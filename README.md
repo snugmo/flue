@@ -536,7 +536,7 @@ flue --allow-all enter <container> -- sh -c 'ssh-add -l' & flue --allow-all ente
 #    that starts its own session is refused
 flue --allow-all enter <container> -- setsid sh -c 'ssh-add -l 2>&1'  # expect an agent error, not a key list
 
-# 9. The session check is on with and without a tty: the log shows
+# 10. The session check is on with and without a tty: the log shows
 #    "session check on" in both cases (the tty run in required mode,
 #    the other in advisory) — verified 2026-10-12 on podman 5.8.7 /
 #    crun 1.28 / Linux 7.2 (the broker's session was private in both).
