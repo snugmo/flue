@@ -148,44 +148,33 @@ listener.
   (`keyFingerprint`: a certificate's underlying key, as with
   `--allow-key`) union into the `--allow-key` set, so the file and the
   flag form one key list that still intersects `--allow-key-type`.
-- Policy (mirrors the per-operation table in the README):
-  - `List`: forwarded, but only keys that pass every list that is set are
-    returned: the key list — the `--allow-key` set (repeatable, SHA256
-    fingerprint) unioned with the `--allow-key-file` keys' fingerprints —
-    and the `--allow-key-type` set (repeatable, wire type name). An unset
-    list imposes no restriction, so one list alone is the sole
-    restriction; with both set a key must match both (a conjunction). All
-    keys are returned only in the `--allow-all` open filter (both lists
-    empty).
-  - `Sign` / `SignWithFlags`: forwarded only for keys passing the same
-    conjunction.
-  - `Add`, `Remove`, `RemoveAll`, `Lock`, `Unlock`, `Signers`: always
-    denied. `Signers` is a Go-only `Agent` interface method with no wire
+- Policy — the per-operation detail is in the README's
+  **Filter policy** table and the file header; the code-level notes an
+  agent changing the filter needs:
+  - The matching key list is the `--allow-key` fingerprints (SHA256,
+    repeatable) unioned with the `--allow-key-file` keys' fingerprints;
+    `--allow-key-type` (repeatable, wire type name) intersects it.
+    `keyFingerprint` fingerprints a certificate's underlying key, so
+    `--allow-key` values copied from `ssh-add -l` match.
+  - `Signers` is a Go-only `Agent` interface method with no wire
     opcode: `agent.ServeAgent` never calls it (the identities request,
     opcode 11/12, is answered from `List()`, which the filter already
-    keys), so the denial breaks nothing — it just keeps the filter's
-    surface minimal. Go clients using `agent.Signers()` get the filtered
-    key list and sign per key through the gated `Sign`; OpenSSH clients
-    use the filtered `List` for `ssh-add -L`.
-  - `Extension`: only `session-bind@openssh.com` is forwarded (unless
-    `--no-session-bind` is set, in which case no extension is forwarded) —
-    the knob for host agents with CVE-2026-73281 (OpenSSH 8.9–10.4).
+    keys), so denying it breaks nothing — it keeps the filter's surface
+    minimal. Go clients using `agent.Signers()` get the filtered key
+    list; OpenSSH clients use the filtered `List` for `ssh-add -L`.
   - A certificate matches by both its certificate type and its
-    underlying key's type, and its fingerprint is the underlying
-    key's, so `--allow-key-type` can admit or deny certificates
-    independently of static keys; a key of an unknown or unparsable
-    type matches no type list and is denied when `--allow-key-type`
-    is set (fail closed).
+    underlying key's type, so `--allow-key-type` can admit or deny
+    certificates independently of static keys; a key of an unknown or
+    unparsable type matches no type list and is denied when
+    `--allow-key-type` is set (fail closed).
   - A key an allowlist denies is logged with a `reason` field naming
     the violated list(s) by flag name (`allow-key`, `allow-key-type`)
     — so the trace says which flag to adjust. The error returned to
     the client is deliberately the same either way.
   - Smartcard-backed keys (PKCS#11 tokens, secure elements) cannot be
-    listed or signed through the filter: the agent implementation it is
-    built on (`x/crypto/ssh/agent`) has no case for the smartcard
-    opcodes (20/21/26), so a token's keys are invisible to the session
-    (the same gap that makes the PKCS#11-add half of CVE-2026-73281
-    unreachable).
+    listed or signed: `x/crypto/ssh/agent` has no case for the
+    smartcard opcodes (20/21/26) (the same gap that makes the
+    PKCS#11-add half of CVE-2026-73281 unreachable).
 - Per-request agent trace is emitted at `debug` (`--log-level debug`):
   an op about a specific key carries the key type and its fingerprint
   (for a certificate, the certificate's own type), other ops a summary.
@@ -197,23 +186,16 @@ listener.
   namespace) and session id (`/proc/<pid>/stat` field 6 — the session
   leader's pid in the namespace of `/proc` — via `sessionIDOfPID`).
 - The check is active when the broker's session is **private** — a
-  closed set that can hold only this exec's processes. `sessionIsPrivate`
-  decides from the session's **leader**, reading a single
-  `/proc/<pid>/stat` entry. Session membership is inherited by fork
-  only — a process can never join an existing session — so a session is
-  a closed set exactly when its leader is the broker (every member then
-  forks from the broker) or when the leader has exited: a per-exec
-  helper that led the session and then died leaves the broker as the
-  sole surviving lineage. Either way the session can later contain only
-  the broker and its descendants, the "legitimate client" set. A
-  private session is one this exec created: the broker is its leader
-  (older runtimes, with `-t`: the pty setup does the `setsid` in the
-  exec'd process), or it was led by a short-lived per-exec helper that
-  has already exited (recent runtimes, with or without a tty). A session
-  led by a live foreign process is **not** private — the container's
-  init session, where older runtimes place an exec, where the exec and
-  every other container process share one session — and the check is off
-  for it.
+  closed set that can hold only this exec's processes.
+  `sessionIsPrivate` decides from the session's **leader** (a single
+  `/proc/<pid>/stat` read); its comment covers why (membership is
+  inherited by fork only, so a session is closed when the broker leads
+  it or the leader has exited — runtimes differ in how that comes to
+  be — and why the earlier live-member /proc walk is gone: it raced
+  with the broker's own fork of the wrapped command).
+  A session led by a live foreign process is **not** private — the
+  container's init session, where older runtimes place an exec — and
+  the check is off for it.
 - The check's **mode** depends on how the broker was started
   (`sessionCheckMode`):
   - **required** — `flue enter` from a terminal (injected broker +
@@ -229,8 +211,7 @@ listener.
     reference; the check is never used, a warning says why (and in
     these modes any other process in the container — e.g. a second
     `podman exec` from another session — can use the session's agent
-    socket), and the
-    privacy scan is skipped.
+    socket), and the privacy check is skipped.
   - **advisory** (the default) — an injected broker without a tty:
     the check is on when the broker's session is private, off
     otherwise.
@@ -247,102 +228,77 @@ listener.
 - Each accepted connection is checked before it is proxied — in the
   per-connection handler, not on the accept path, so a process that
   connects in a loop cannot hold up `Accept()` (the live-connection cap
-  bounds how many checks run in parallel):
-  `getsockopt(SO_PEERCRED)` on the accepted connection yields the
-  client's pid in flue's pid namespace — the kernel records it at
-  connect time and translates it to the reader's namespace, so a client
-  in a container pid namespace still yields a usable pid — and its
-  session id is read the same way as the broker's. A client
-  whose session is unknown (no peer credentials, or the pid already
-  gone) or different from the broker's is refused: a warn is logged
-  with both session ids and the connection is closed. Every failure
-  direction closes. Refusal warnings — session-check refusals and the
-  live-connection cap ("too many clients") — are rate-limited
-  (`refusalLimiter`, `lograte.go`): the first of a burst is logged in
-  full, the rest are summarized once every 30 s
-  (`flue: client refusals`, `more=N`) and whatever is left is flushed
-  when the session ends — a process that connects in a loop can count
-  but not flood the user's terminal (and `--log-file` keeps all of it
-  out of the terminal anyway).
+  bounds how many checks run in parallel). `getsockopt(SO_PEERCRED)`
+  on the accepted connection yields the client's pid in flue's pid
+  namespace (the kernel records it at connect time and translates it to
+  the reader's namespace, so a client in a container pid namespace still
+  yields a usable pid); its session id is read the same way as the
+  broker's. A client whose session is unknown (no peer credentials, or
+  the pid already gone) or different from the broker's is refused — a
+  warn is logged with both session ids and the connection closed; every
+  failure direction closes.
 - Against the pid-reuse race (the peer exits and its pid is reused
   before the `/proc` read), `SO_PEERPIDFD` (Linux 6.5+) hands out a
   pidfd for the peer **as recorded at connect time**: the kernel keeps
   a reference to the original task, not a pid number, so a reused pid
   cannot be confused with it. After reading `/proc`, `peerSessionID`
-  checks the pidfd is still alive (`pidfd_send_signal(pidfd, 0)` —
-  `0` or `EPERM` means alive, `ESRCH` means gone); the read-then-check
-  order is what makes it sound: if the pidfd is alive at check time,
-  the original peer was alive across the whole read window, so the
-  session read is the client's; a gone peer is refused. On kernels
-  without the option the getsockopt fails with `ENOPROTOOPT` and the
-  check is skipped (the `/proc` read stands best-effort: the window is
-  tiny, and an attacker cannot easily arrange for a reused pid to land
-  in the user's session); any other getsockopt failure (the peer's
-  task is already gone, or none was recorded) refuses the connection.
+  checks the pidfd is still alive (`pidfd_send_signal(pidfd, 0)` — `0`
+  or `EPERM` alive, `ESRCH` gone); the read-then-check order is what
+  makes it sound: a pidfd alive at check time means the original peer
+  was alive across the whole read window, so the session read is the
+  client's; a gone peer is refused. The pidfd is created by the kernel
+  with `O_CLOEXEC` and closed immediately anyway. On kernels without
+  the option the getsockopt fails with `ENOPROTOOPT` and the check is
+  skipped (the `/proc` read stands best-effort); any other getsockopt
+  failure refuses the connection.
+- Refusal warnings — session-check refusals and the live-connection cap
+  ("too many clients") — are rate-limited (`refusalLimiter`,
+  `lograte.go`): the first of a burst is logged in full, the rest
+  summarized once every 30 s (`flue: client refusals`, `more=N`), and
+  the remainder flushed when the session ends — a process that
+  connects in a loop can count but not flood the terminal (and
+  `--log-file` keeps all of it out of the terminal anyway).
 
 ## Embedded broker
 
-- `cmd/flue/embed.go` declares `//go:embed flue-broker.bin`: the complete
-  `flue-broker` binary built when flue was built. go:embed stores the
-  file's bytes verbatim, so the embedded copy is 100% identical to the
-  build source, and `flue broker executable` is how that file comes
-  back out as a file; `flue enter` uses the same bytes, by default, to
-  run the broker entirely in memory (see the memfd injection bullet
-  below and [embedded-broker.md](embedded-broker.md)).
-- `cmd/flue/embed.go` also declares `//go:embed flue-broker.sigstore.json`:
-  the broker's sigstore bundle, stored verbatim like the binary. For a
-  release `flue` it is the bundle the release workflow's
-  `cosign sign-blob --bundle` wrote over this very broker file
-  (self-contained — signature, certificate, chain — so
-  `cosign verify-blob <broker> --bundle <bundle>` needs no registry
-  or network); for a locally signed build it is whatever bundle the
-  user signed with (`cosign sign-blob --key <key> --bundle
-  cmd/flue/flue-broker.sigstore.json cmd/flue/flue-broker.bin`); for a
-  bare local build it is a copy of the committed placeholder
-  template, and `broker sigstore-bundle` says so when it writes it out.
-- **Memfd injection** (`cmd/flue/inject.go`): `flue enter` runs the
-  broker entirely in memory by default (`--no-inject-broker` falls back
-  to the image's `flue-broker`). `injectBrokerMemfd` creates a sealed
-  memfd (named `flue-broker`, `MFD_EXEC | MFD_CLOEXEC |
-  MFD_ALLOW_SEALING`, written with the embedded bytes and sealed
-  read-only/fixed-size so a container process cannot rewrite the running
-  broker), passes it to the container as fd 4, and the container execs
-  `/proc/self/fd/4` — the full mechanics, including the `EINVAL`
-  fallback for pre-6.3 kernels (no `MFD_EXEC`) and the hard error on a
-  system-level refusal such as `vm.memfd_noexec=2`, are in
-  [embedded-broker.md](embedded-broker.md). The same doc covers how the
-  injection interacts with the session check (injected = trusted = the
-  check stays on; `--no-inject-broker` = off).
-- **Build order**: both embed sources must exist before flue is
-  compiled — build `flue-broker` first, to `cmd/flue/flue-broker.bin`
-  (the AGENTS.md Build/Test commands and the Containerfile all do
-  this), and have a bundle at `cmd/flue/flue-broker.sigstore.json` —
-  signed by the release workflow or a local user, else a copy of the
-  committed placeholder template. If either file is missing,
-  compiling `cmd/flue` fails with "no matching files found": a
-  deliberate hard failure, so a flue without its broker (or its
-  bundle) is never built silently.
-- **`broker executable`** (`cmd/flue/extract.go`): checks the embedded
-  blob's ELF magic first (a non-broker embed source fails at extraction
-  time, not in a container later), then writes atomically — a temp file
-  in the target directory, `chmod 0755`, rename — so the target is
-  never left half-written. It refuses a directory as target.
-- **`broker sigstore-bundle`** (`cmd/flue/bundle.go`): with a
-  filename, writes the embedded bundle with the same atomic write as
-  `executable` (shared `writeFileAtomic`), mode 0644; with no filename
-  (the default) or `-`, writes it to `cmd.OutOrStdout()` instead. Both
-  forms call `warnPlaceholderBundle` first: it detects the local
-  placeholder by its JSON `kind` field (`FlueLocalPlaceholder`) and
-  logs a warning that the bundle will not verify the extracted broker
-  with cosign — the output still happens, so the command stays
-  scriptable, and the warning goes to stderr (or `--log-file`), never
-  into the bundle's destination, so the stdout form stays pipe-clean.
+`cmd/flue/embed.go` declares the two `//go:embed` sources —
+`flue-broker.bin` (the broker built when flue was built) and
+`flue-broker.sigstore.json` (its sigstore bundle) — both stored
+verbatim, so what comes out is 100% identical to what went in. Both
+must exist before flue compiles (build `flue-broker` first, to the
+embed path, and place a bundle — release-signed, locally signed, or a
+copy of the committed placeholder template — or the compile fails with
+"no matching files found"; a deliberate hard failure).
+
+- **Memfd injection** (`cmd/flue/inject.go`): `injectBrokerMemfd`
+  checks the blob's ELF magic, creates a named sealed memfd
+  (`MFD_EXEC | MFD_CLOEXEC | MFD_ALLOW_SEALING` + the four
+  `F_SEAL_*`s, so a container process cannot rewrite the running
+  broker), passes it as fd 4, and the container execs
+  `/proc/self/fd/4`. The fallbacks (the `EINVAL` retry without
+  `MFD_EXEC` on pre-6.3 kernels; the hard error on a system-level
+  refusal such as `vm.memfd_noexec=2`) and the interaction with the
+  session check (injected = trusted = the check stays on;
+  `--no-inject-broker` = off) are in
+  [embedded-broker.md](embedded-broker.md).
+- **`broker executable`** (`cmd/flue/extract.go`): checks the ELF magic
+  first (a misbuilt embed source fails at extraction time, not in a
+  container later), then writes atomically (temp file in the target
+  directory, `chmod 0755`, rename — never left half-written); a
+  directory as target is refused.
+- **`broker sigstore-bundle`** (`cmd/flue/bundle.go`): writes the
+  bundle to `<filename>` (mode 0644, the same shared
+  `writeFileAtomic`) or to stdout (no filename, or `-`, so it stays
+  pipe-clean). Both forms call `warnPlaceholderBundle` first: it
+  detects the local placeholder by its JSON `kind` field
+  (`FlueLocalPlaceholder`) and logs a warning that the bundle cannot
+  verify the extracted broker with cosign — the output still happens,
+  so the command stays scriptable.
 - **Architecture**: the embedded broker is built for the same
-  architecture as this flue binary (one source tree, one build). The
-  Containerfile's build stage builds the broker to the embed path before
-  each architecture's flue, so a flue from the image embeds a broker
-  built for the image's architecture — the image ships no separate
-  broker, `flue broker executable` recovers the embedded one.
+  architecture as this flue binary (one source tree, one build — the
+  Containerfile builds the broker to the embed path before each
+  architecture's flue). The image ships no separate broker;
+  `flue broker executable` recovers the embedded one.
 
 ## Dependencies
 
