@@ -98,11 +98,11 @@
 // and enter --inject-broker reads $FLUE_INJECT_BROKER (a recognized value:
 // truthy keeps the default on, falsy disables it). An explicitly set flag
 // always wins; the env var only fills in when the flag is absent. The
-// command enter runs by default (no command argument) is likewise
-// overridable: $FLUE_ENTER_CMD (whitespace-split) takes precedence when
-// set and non-blank, else the broker resolves a shell inside the
-// container (the -default-shell flag: $SHELL, /bin/bash, /bin/sh, then
-// bash or sh in $PATH); an explicit command always wins.
+// command that enter runs by default (with no command argument) is
+// likewise overridable: $FLUE_ENTER_CMD (whitespace-split) takes
+// precedence when set and non-blank, else the broker resolves a shell
+// inside the container (the -default-shell flag: $SHELL, /bin/bash,
+// /bin/sh, then bash or sh in $PATH); an explicit command always wins.
 //
 // Log output that goes to a terminal is written through a crlfWriter in
 // the subcommands that proxy the agent (enter, debug): their child (a
@@ -1438,9 +1438,9 @@ func (f *agentFilter) Unlock(passphrase []byte) error {
 
 // Signers is always denied. It is a Go-only Agent interface method
 // with no wire opcode: agent.ServeAgent never calls it (the
-// identities request, opcode 11/12, is answered from List(), which
-// the filter keys), so the denial breaks nothing — it keeps the
-// filter's surface minimal.
+// identities request, opcode 11/12, is answered from the filter's own
+// List()), so the denial breaks nothing — it keeps the filter's
+// surface minimal.
 func (f *agentFilter) Signers() ([]ssh.Signer, error) {
 	f.logf("signers", "", "", false, nil)
 	return nil, fmt.Errorf("signers request is not allowed through flue")
