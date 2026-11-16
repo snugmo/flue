@@ -14,7 +14,7 @@ proxies each client connection to the real host agent
 ```
 cmd/flue/           host side: socketpair control channel, filtered agent proxy; embeds the built broker binary and its sigstore bundle (go:embed)
 cmd/flue-broker/    container side: thin listener + one-shot listener-fd handoff
-docs/               on-demand details: flue.md, flue-broker.md, embedded-broker.md, build.md, duplication-policy.md
+docs/               on-demand details: flue.md, flue-broker.md, embedded-broker.md, build.md, duplication-policy.md, code-quality.md (review log)
 Containerfile       multi-stage image build: broker golang stage → flue-broker scratch stage (one per target platform; the go:embed source, and the broker attestation input) → flue golang stage → FROM scratch final stage (just /flue)
 README.md           usage, flags, how-it-works, security
 ```
@@ -46,48 +46,43 @@ README.md           usage, flags, how-it-works, security
 - **`cmd/flue` embeds the built broker and its sigstore bundle** (`cmd/flue/flue-broker.bin`
   and `cmd/flue/flue-broker.sigstore.json`, go:embed — see `cmd/flue/embed.go`):
   the broker must be built first (the Build/Test commands above do this),
-  and the bundle must exist — a release-signed bundle (placed in the
-  build context by the release workflow), a locally signed bundle (sign
-  `cmd/flue/flue-broker.bin` with `cosign sign-blob --bundle
-  cmd/flue/flue-broker.sigstore.json` before compiling), or a copy of the
-  committed placeholder template `cmd/flue/flue-broker.sigstore.json.placeholder`
-  (the Build/Test commands do this when no bundle is present). If either
-  file is missing, compiling `cmd/flue` fails with "no matching files
-  found" — a deliberate hard failure. The embedded bytes are stored
-  verbatim, so `flue broker executable` / `flue broker sigstore-bundle`
-  produce a broker and its bundle 100% identical to the build sources,
-  and an extracted broker is verifiable offline with
+  and the bundle must exist — a release-signed bundle (the release
+  workflow places it in the build context), a locally signed bundle
+  (`cosign sign-blob --bundle cmd/flue/flue-broker.sigstore.json
+  cmd/flue/flue-broker.bin` before compiling), or a copy of the
+  committed placeholder template (the Build/Test commands do this when
+  no bundle is present). If either file is missing, compiling `cmd/flue`
+  fails with "no matching files found" — a deliberate hard failure. The
+  bytes are stored verbatim, so `flue broker executable` /
+  `flue broker sigstore-bundle` produce a broker and its bundle 100%
+  identical to the build sources, verifiable offline with
   `cosign verify-blob --bundle` (the release bundle's identity is the
-  release workflow — see the README's verify section). The `.sigstore.json`
-  file is gitignored (a build artifact) but *not* containerignored: it
-  is a build-context input the Containerfile's build stage consumes.
-- **buildah populates the platform builtins**: like BuildKit,
-  `buildah` populates `TARGETARCH`, `TARGETPLATFORM`, and
-  `BUILDPLATFORM` from the build's platform — the host's platform by
-  default, or the `--platform` value when given — and a global-scope
-  `ARG` without a default inherits the value (long-standing buildah
-  behavior, not BuildKit-only — `TARGETOS` too, which is what the
-  golang stages build with). The Containerfile's bare
-  `ARG TARGETPLATFORM`/`ARG BUILDPLATFORM`/`ARG TARGETOS`/`ARG
-  TARGETARCH` are deliberately default-less: a default in the file
-  would override the per-platform value (which is inherited only by
-  ARGs without a default) and ship the amd64 binary in the arm64
-  image. Don't add defaults, don't remove the bare declarations,
-  and don't assume buildah lacks these variables.
-- **The Containerfile's stages build for one platform each**: every
-  stage compiles for its own `$TARGETOS`/`$TARGETARCH` (a single
-  `FROM scratch` `flue-broker` stage, one per platform — never
-  resurrect the per-arch stage names or multi-arch loops in a
-  stage): buildx evaluates the whole chain once per target platform,
-  and buildah compiles for the build's platform. Pass `--platform`
-  for a different architecture — never `--build-arg
+  release workflow — see the README's verify section). The
+  `.sigstore.json` file is gitignored (a build artifact) but *not*
+  containerignored: it is a build-context input the Containerfile's
+  build stage consumes.
+- **The Containerfile's platform builtins are deliberately
+  default-less**: buildah populates `TARGETPLATFORM`/`BUILDPLATFORM`/
+  `TARGETOS`/`TARGETARCH` from the build's platform (the host by
+  default, or the `--platform` value when given) — like BuildKit — and
+  a global-scope `ARG` without a default inherits the value
+  (`TARGETOS` too, which is what the golang stages build with). A
+  default in the file would override the per-platform value and ship
+  the amd64 binary in the arm64 image: don't add defaults, don't
+  remove the bare declarations, and don't assume buildah lacks these
+  variables. Every stage builds for one platform each (its own
+  `$TARGETOS`/`$TARGETARCH` — a single `FROM scratch` `flue-broker`
+  stage, one per platform); for a different architecture pass
+  `--platform linux/<arch>` — never `--build-arg
   TARGETOS/TARGETARCH` overrides: they would pin one platform's
   values onto every platform in a multi-arch build.
 - Component details are on-demand: [docs/flue.md](docs/flue.md) (host),
   [docs/flue-broker.md](docs/flue-broker.md) (container),
   [docs/embedded-broker.md](docs/embedded-broker.md) (embedded broker:
   injection and the `flue broker` subcommands),
-  [docs/build.md](docs/build.md) (image).
+  [docs/build.md](docs/build.md) (image),
+  [docs/code-quality.md](docs/code-quality.md) (review log — item 56,
+  `.idea/` in `.gitignore`, is open by deferral).
 
 ## Commit conventions
 
