@@ -42,8 +42,8 @@ commands with flags).
     a container named bash. A trailing separator (nothing after it) is a
     no-op; more than one positional before it is a usage error.
   - A tty is allocated only when both stdin and stdout are terminals
-    (`stdinIsTTY` and `stdoutIsTTY`, via the TCGETS ioctl — x/sys
-    v0.49.0 has no `unix.IsTerminal`). A redirected stdout (e.g.
+    (`stdinIsTTY` and `stdoutIsTTY`, via `x/term.IsTerminal` — the
+    canonical isatty; on Unix the TCGETS ioctl). A redirected stdout (e.g.
     `flue enter … | tee`) therefore gets no pty: the user's terminal
     is left out of raw mode, and the container's stderr keeps its own
     stream instead of merging into the pty's.

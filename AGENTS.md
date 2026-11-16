@@ -38,9 +38,10 @@ README.md           usage, flags, how-it-works, security
   pairs, so `log.Error("msg: %v", err)` logs a `!BADKEY` pair. Use the
   `fatalf` helper for fatal errors (plain text to stderr + exit 1, it
   Sprintfs first) and format the string explicitly for slog messages.
-- **`golang.org/x/sys` is pinned at v0.50.0**: it has no
-  `unix.IsTerminal`; for a tty check use
-  `unix.IoctlGetTermios(fd, unix.TCGETS)` (two-arg form).
+- **`golang.org/x/sys` is pinned at v0.50.0** (it has no
+  `unix.IsTerminal`); for a tty check use
+  `golang.org/x/term.IsTerminal(fd)` — the canonical isatty, which on
+  Unix is the TCGETS ioctl.
 - **The file headers in `cmd/*/main.go` are the authoritative
   documentation** of each binary — read them before changing that
   binary.
