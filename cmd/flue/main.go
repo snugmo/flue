@@ -136,7 +136,7 @@
 //
 //	flue enter [container] [command [args…]]
 //
-// No container defaults to snugmo; no command means $FLUE_ENTER_CMD
+// No container defaults to cote; no command means $FLUE_ENTER_CMD
 // (whitespace-split) when set and non-blank, else a shell the broker
 // resolves in the container (-default-shell); a tty is allocated when
 // both stdin and stdout are terminals. A `--` separator takes
@@ -287,7 +287,7 @@ var (
 // in-container shell resolution (the -default-shell flag) when unset or
 // blank.
 const (
-	defaultEnterContainer = "snugmo"
+	defaultEnterContainer = "cote"
 	defaultEnterCmdEnv    = "FLUE_ENTER_CMD"
 )
 
@@ -424,20 +424,20 @@ flue blocks on the command exiting and returns its exit code.`,
 }
 
 // enterCmd is sugar for the common case: run a command in a container
-// (default snugmo), wrapping it with flue-broker so the broker sets
+// (default cote), wrapping it with flue-broker so the broker sets
 // SSH_AUTH_SOCK for the child; with no command, the broker resolves a
 // shell inside the container.
 var enterCmd = &cobra.Command{
 	Use:         "enter [container] [command [args...]]",
-	Short:       "Run a command in a container (default snugmo) with the agent; with no command, a shell resolved in the container",
+	Short:       "Run a command in a container (default cote) with the agent; with no command, a shell resolved in the container",
 	GroupID:     groupUsage,
 	Annotations: map[string]string{needsAgentAnnotation: "1"},
 	Long: `enter is the daily driver: it runs a podman exec against
-a container (default snugmo) with flue-broker wrapping the given command
+a container (default cote) with flue-broker wrapping the given command
 (with no command, a shell resolved in the container — see below),
 allocating a tty when stdin and stdout are both terminals:
 
-    flue enter                      # a shell in the snugmo container
+    flue enter                      # a shell in the cote container
     flue enter <container>          # a shell in the container
     flue enter <container> bash     # bash
     flue enter <container> -- bash -l # command with its own flags
@@ -460,7 +460,7 @@ $SHELL when set and usable, else /bin/bash, /bin/sh, then bash or sh
 in $PATH (see the flue-broker docs). $FLUE_ENTER_CMD (split on
 whitespace) takes precedence over that resolution, applied on the host:
 
-    FLUE_ENTER_CMD=bash flue enter       # bash in snugmo
+    FLUE_ENTER_CMD=bash flue enter       # bash in cote
 
 When the command exits, enter returns its exit code.`,
 	Args: cobra.ArbitraryArgs,
@@ -678,7 +678,7 @@ func main() {
 }
 
 // runEnter is the `flue enter` subcommand: it runs `podman exec` against
-// a container (default snugmo) with flue-broker wrapping the given
+// a container (default cote) with flue-broker wrapping the given
 // command (a shell resolved in the container when none is given, see
 // enterDefaultCmd), allocating a tty when both stdin and stdout are
 // terminals. The control socketpair is preserved through podman exec as
@@ -765,7 +765,7 @@ func parseSessionCheckMode(s string) (sessionCheckMode, error) {
 }
 
 // enterTarget splits the `flue enter` arguments into the container name
-// (default snugmo) and the command to run inside it (nil when none is
+// (default cote) and the command to run inside it (nil when none is
 // given: see enterDefaultCmd). A `--` separator (recovered from the raw process
 // arguments, see enterDashDash) takes precedence over that split: the
 // tokens after it are the command, and the single positional argument

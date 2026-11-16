@@ -8,7 +8,7 @@ import (
 )
 
 // TestEnterTarget verifies how `flue enter` arguments are split into the
-// container name and the in-container command: the snugmo container
+// container name and the in-container command: the cote container
 // default, a nil command (the broker resolves a shell in the container)
 // when no command is given, and an explicit command passed through.
 func TestEnterTarget(t *testing.T) {
@@ -23,9 +23,9 @@ func TestEnterTarget(t *testing.T) {
 		wantCmd       []string
 	}{
 		{
-			name:          "no args defaults to snugmo and a broker-resolved shell",
+			name:          "no args defaults to cote and a broker-resolved shell",
 			args:          nil,
-			wantContainer: "snugmo",
+			wantContainer: "cote",
 			wantCmd:       nil,
 		},
 		{
@@ -82,14 +82,14 @@ func TestEnterTargetDashDash(t *testing.T) {
 			name:          "separator before any positional runs the command in the default container",
 			raw:           []string{"enter", "--", "bash", "-l"},
 			cobraArgs:     []string{"bash", "-l"},
-			wantContainer: "snugmo",
+			wantContainer: "cote",
 			wantCmd:       []string{"bash", "-l"},
 		},
 		{
 			name:          "a flag with a value before the separator is not a container",
 			raw:           []string{"enter", "--log-level", "debug", "--", "bash"},
 			cobraArgs:     []string{"bash"},
-			wantContainer: "snugmo",
+			wantContainer: "cote",
 			wantCmd:       []string{"bash"},
 		},
 		{
@@ -103,7 +103,7 @@ func TestEnterTargetDashDash(t *testing.T) {
 			name:          "a trailing separator is a no-op",
 			raw:           []string{"enter", "--"},
 			cobraArgs:     nil,
-			wantContainer: "snugmo",
+			wantContainer: "cote",
 			wantCmd:       nil,
 		},
 		{
