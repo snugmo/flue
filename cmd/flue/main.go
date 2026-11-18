@@ -541,7 +541,7 @@ func init() {
 					fatalf("flue: open log file %s: %v", logFile, ferr)
 				}
 				out = f
-			case stderrIsTTY() && cmd.Annotations[needsAgentAnnotation] != "":
+			case isTerminal(os.Stderr) && cmd.Annotations[needsAgentAnnotation] != "":
 				// The child (a podman exec that requests a tty) puts the
 				// shared terminal into raw mode, which disables ONLCR: a
 				// bare \n would then drop the cursor a row without
@@ -702,7 +702,7 @@ func runEnter(args []string, sockPath string) int {
 	// the user's terminal (the stdin side) into raw mode for the whole
 	// session while nothing is ever displayed on it, and merge the
 	// container's stderr into the stream going down the pipe.
-	tty := stdinIsTTY() && stdoutIsTTY()
+	tty := isTerminal(os.Stdin) && isTerminal(os.Stdout)
 
 	// The session check's mode: an injected broker with a tty is the
 	// interactive session the check exists to protect, so the check is
@@ -893,25 +893,11 @@ func enterExecArgs(container string, cmd []string, tty, injectBroker bool) []str
 	return append(out, cmd...)
 }
 
-// stdinIsTTY reports whether stdin is a terminal, using x/term.IsTerminal
+// isTerminal reports whether f is a terminal, using x/term.IsTerminal
 // (on Unix the TCGETS ioctl, which fails for pipes, regular files, and
 // sockets).
-func stdinIsTTY() bool {
-	return term.IsTerminal(int(os.Stdin.Fd()))
-}
-
-// stdoutIsTTY reports whether stdout is a terminal, using x/term.IsTerminal
-// (on Unix the TCGETS ioctl, which fails for pipes, regular files, and
-// sockets).
-func stdoutIsTTY() bool {
-	return term.IsTerminal(int(os.Stdout.Fd()))
-}
-
-// stderrIsTTY reports whether stderr is a terminal, using x/term.IsTerminal
-// (on Unix the TCGETS ioctl, which fails for pipes, regular files, and
-// sockets).
-func stderrIsTTY() bool {
-	return term.IsTerminal(int(os.Stderr.Fd()))
+func isTerminal(f *os.File) bool {
+	return term.IsTerminal(int(f.Fd()))
 }
 
 // runPassthrough is the classic mode: the caller passes a command (after

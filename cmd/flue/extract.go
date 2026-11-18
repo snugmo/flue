@@ -62,12 +62,11 @@ var brokerSha256Cmd = &cobra.Command{
 }
 
 // embeddedBrokerSha256 returns the hex SHA256 of the embedded flue-broker
-// bytes, or the same error writeEmbeddedBroker returns when the embedded
-// blob is not a Linux ELF binary (the symptom of building flue without
-// building flue-broker first, see embed.go).
+// bytes, or the error validateEmbeddedBroker returns when the embedded
+// blob is not a Linux ELF binary.
 func embeddedBrokerSha256() (string, error) {
-	if !looksLikeELF(flueBrokerBin) {
-		return "", errors.New("embedded flue-broker is not a Linux ELF binary: build flue-broker (to cmd/flue/flue-broker.bin) before building flue, then rebuild")
+	if err := validateEmbeddedBroker(); err != nil {
+		return "", err
 	}
 	sum := sha256.Sum256(flueBrokerBin)
 	return hex.EncodeToString(sum[:]), nil
@@ -76,11 +75,10 @@ func embeddedBrokerSha256() (string, error) {
 // writeEmbeddedBroker writes the embedded flue-broker binary to path,
 // atomically (a temp file in the target directory, then rename) with mode
 // 0755. It refuses to overwrite a directory, and it fails if the embedded
-// blob is not a Linux ELF binary — the symptom of building flue without
-// building flue-broker first (see embed.go).
+// blob is not a Linux ELF binary (validateEmbeddedBroker).
 func writeEmbeddedBroker(path string) error {
-	if !looksLikeELF(flueBrokerBin) {
-		return errors.New("embedded flue-broker is not a Linux ELF binary: build flue-broker (to cmd/flue/flue-broker.bin) before building flue, then rebuild")
+	if err := validateEmbeddedBroker(); err != nil {
+		return err
 	}
 	if err := writeFileAtomic(path, flueBrokerBin, 0o755); err != nil {
 		return err
@@ -145,4 +143,15 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 // at container runtime.
 func looksLikeELF(b []byte) bool {
 	return len(b) >= 4 && b[0] == 0x7f && b[1] == 'E' && b[2] == 'L' && b[3] == 'F'
+}
+
+// validateEmbeddedBroker returns nil when the embedded flue-broker blob
+// is a Linux ELF binary, or the shared error explaining how to rebuild
+// it otherwise (the symptom of building flue without building
+// flue-broker first — see embed.go).
+func validateEmbeddedBroker() error {
+	if !looksLikeELF(flueBrokerBin) {
+		return errors.New("embedded flue-broker is not a Linux ELF binary: build flue-broker (to cmd/flue/flue-broker.bin) before building flue, then rebuild")
+	}
+	return nil
 }

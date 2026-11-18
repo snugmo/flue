@@ -55,8 +55,8 @@ func memfdCreateWithFallback(create func(flags int) (int, error)) (int, error) {
 // and the hard failure on vm.memfd_noexec=2 are in
 // memfdCreateWithFallback.
 func injectBrokerMemfd() (*os.File, error) {
-	if !looksLikeELF(flueBrokerBin) {
-		return nil, fmt.Errorf("embedded flue-broker is not a Linux ELF binary: build flue-broker (to cmd/flue/flue-broker.bin) before building flue, then rebuild")
+	if err := validateEmbeddedBroker(); err != nil {
+		return nil, err
 	}
 
 	fd, err := memfdCreateWithFallback(func(flags int) (int, error) {
