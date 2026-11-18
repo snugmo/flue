@@ -245,18 +245,23 @@ import (
 // empty), set by the root PersistentPreRun and shared by both the run*
 // subcommands and the per-client dialAgent.
 var (
-	sockArg   string
-	logLevel  string
-	logFile   string
-	allowKeys = newAllowKeyFlag()
+	sockArg  string
+	logLevel string
+	logFile  string
+	// allowKeys (--allow-key) collects the allowed key fingerprints,
+	// repeatable; empty means allow all keys.
+	allowKeys = newRepeatableStringFlag("all keys")
 	// allowKeyFile (--allow-key-file) is a path to an
 	// authorized_keys-format file whose keys' fingerprints join the
 	// --allow-key set (union — the file's keys and repeated --allow-key
 	// values form one list, which still intersects --allow-key-type).
 	// Parsed fail-closed: an unreadable file, an unparseable line, or a
 	// file with zero keys is fatal before the child is spawned.
-	allowKeyFile  string
-	allowKeyTypes = newAllowKeyTypeFlag()
+	allowKeyFile string
+	// allowKeyTypes (--allow-key-type) collects the allowed SSH key
+	// type wire names (e.g. ssh-ed25519, ecdsa-sha2-nistp256, rsa),
+	// repeatable; empty means allow all types.
+	allowKeyTypes = newRepeatableStringFlag("all types")
 	// allowAll (--allow-all) explicitly permits the open filter: with no
 	// --allow-key / --allow-key-type list it lets every key in the host
 	// agent be listed and signable. Without it, an empty allowlist is a
@@ -1102,27 +1107,35 @@ func exitStatus(ee *exec.ExitError) int {
 	return ee.ExitCode()
 }
 
-// --- allow-key repeatable flag ---
+// --- repeatable string flags ---
 
-type allowKeyFlag struct {
-	vals []string
+// repeatableStringFlag accumulates the values of a repeatable pflag flag
+// as strings. It implements pflag.Value (which extends stdlib flag.Value
+// with a type name), so cobra registers each bound flag as repeatable.
+// emptyDescription is what describe reports when no value was given: the
+// flag's "default" semantics (e.g. "all keys" for --allow-key).
+type repeatableStringFlag struct {
+	vals             []string
+	emptyDescription string
 }
 
-func newAllowKeyFlag() *allowKeyFlag { return &allowKeyFlag{} }
+func newRepeatableStringFlag(emptyDescription string) *repeatableStringFlag {
+	return &repeatableStringFlag{emptyDescription: emptyDescription}
+}
 
-func (a *allowKeyFlag) String() string { return strings.Join(a.vals, ",") }
+func (a *repeatableStringFlag) String() string { return strings.Join(a.vals, ",") }
 
 // Type satisfies pflag.Value, which extends stdlib flag.Value with a type
-// name. cobra registers --allow-key as a pflag flag, so this is required.
-func (a *allowKeyFlag) Type() string { return "string" }
+// name. cobra registers the flag as a pflag flag, so this is required.
+func (a *repeatableStringFlag) Type() string { return "string" }
 
-func (a *allowKeyFlag) Set(s string) error {
+func (a *repeatableStringFlag) Set(s string) error {
 	a.vals = append(a.vals, s)
 	return nil
 }
 
-// toSet returns a map of fingerprint → struct{} for O(1) lookups.
-func (a *allowKeyFlag) toSet() map[string]struct{} {
+// toSet returns a map of value → struct{} for O(1) lookups.
+func (a *repeatableStringFlag) toSet() map[string]struct{} {
 	m := make(map[string]struct{}, len(a.vals))
 	for _, v := range a.vals {
 		m[v] = struct{}{}
@@ -1131,49 +1144,9 @@ func (a *allowKeyFlag) toSet() map[string]struct{} {
 }
 
 // describe returns a human-readable summary for logging.
-func (a *allowKeyFlag) describe() string {
+func (a *repeatableStringFlag) describe() string {
 	if len(a.vals) == 0 {
-		return "all keys"
-	}
-	return strings.Join(a.vals, ", ")
-}
-
-// --- allow-key-type repeatable flag ---
-
-// allowKeyTypeFlag collects the --allow-key-type values (SSH key type wire
-// names, e.g. ssh-ed25519, ecdsa-sha2-nistp256, rsa). Like allowKeyFlag it
-// implements pflag.Value so the flag is repeatable.
-type allowKeyTypeFlag struct {
-	vals []string
-}
-
-func newAllowKeyTypeFlag() *allowKeyTypeFlag { return &allowKeyTypeFlag{} }
-
-func (a *allowKeyTypeFlag) String() string { return strings.Join(a.vals, ",") }
-
-// Type satisfies pflag.Value, which extends stdlib flag.Value with a type
-// name. cobra registers --allow-key-type as a pflag flag, so this is
-// required.
-func (a *allowKeyTypeFlag) Type() string { return "string" }
-
-func (a *allowKeyTypeFlag) Set(s string) error {
-	a.vals = append(a.vals, s)
-	return nil
-}
-
-// toSet returns a map of key type → struct{} for O(1) lookups.
-func (a *allowKeyTypeFlag) toSet() map[string]struct{} {
-	m := make(map[string]struct{}, len(a.vals))
-	for _, v := range a.vals {
-		m[v] = struct{}{}
-	}
-	return m
-}
-
-// describe returns a human-readable summary for logging.
-func (a *allowKeyTypeFlag) describe() string {
-	if len(a.vals) == 0 {
-		return "all types"
+		return a.emptyDescription
 	}
 	return strings.Join(a.vals, ", ")
 }
