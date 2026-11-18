@@ -38,35 +38,10 @@ func TestReceiveListenerBrokerCredentials(t *testing.T) {
 	host, broker := makeControlPair(t)
 
 	// Enable SO_PASSCRED on the host end, exactly as runChildWithAgent
+	// does, then hand over a real Unix listener, exactly as the broker
 	// does.
-	rc, err := host.(*net.UnixConn).SyscallConn()
-	if err != nil {
-		t.Fatalf("syscall conn: %v", err)
-	}
-	var hfd int
-	_ = rc.Control(func(fd uintptr) { hfd = int(fd) })
-	if err := unix.SetsockoptInt(hfd, unix.SOL_SOCKET, unix.SO_PASSCRED, 1); err != nil {
-		t.Fatalf("setsockopt SO_PASSCRED: %v", err)
-	}
-
-	// Hand over a real Unix listener, exactly as the broker does.
-	l, err := net.Listen("unix", "")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { l.Close() })
-
-	lf, err := l.(*net.UnixListener).File()
-	if err != nil {
-		t.Fatalf("listener file: %v", err)
-	}
-	oob := unix.UnixRights(int(lf.Fd()))
-	if _, _, err := broker.(*net.UnixConn).WriteMsgUnix([]byte{0}, oob, nil); err != nil {
-		lf.Close()
-		t.Fatalf("write msg: %v", err)
-	}
-	lf.Close() // close only the dup; l keeps the path
-	broker.Close()
+	enablePassCred(t, host)
+	_ = handOverListener(t, broker)
 
 	var pol policy
 	var cs clientSet
@@ -324,35 +299,11 @@ func TestReceiveListenerCheckModes(t *testing.T) {
 				// Enable SO_PASSCRED on the host end, exactly as
 				// runChildWithAgent does, so the message carries the
 				// sender's credentials.
-				rc, err := host.(*net.UnixConn).SyscallConn()
-				if err != nil {
-					t.Fatalf("syscall conn: %v", err)
-				}
-				var hfd int
-				_ = rc.Control(func(fd uintptr) { hfd = int(fd) })
-				if err := unix.SetsockoptInt(hfd, unix.SOL_SOCKET, unix.SO_PASSCRED, 1); err != nil {
-					t.Fatalf("setsockopt SO_PASSCRED: %v", err)
-				}
+				enablePassCred(t, host)
 			}
 
 			// Hand over a real Unix listener, exactly as the broker does.
-			l, err := net.Listen("unix", "")
-			if err != nil {
-				t.Fatalf("listen: %v", err)
-			}
-			t.Cleanup(func() { l.Close() })
-
-			lf, err := l.(*net.UnixListener).File()
-			if err != nil {
-				t.Fatalf("listener file: %v", err)
-			}
-			oob := unix.UnixRights(int(lf.Fd()))
-			if _, _, err := broker.(*net.UnixConn).WriteMsgUnix([]byte{0}, oob, nil); err != nil {
-				lf.Close()
-				t.Fatalf("write msg: %v", err)
-			}
-			lf.Close() // close only the dup; l keeps the path
-			broker.Close()
+			_ = handOverListener(t, broker)
 
 			var pol policy
 			pol.sessionCheckMode = tc.mode
@@ -623,6 +574,60 @@ func (emptyAgent) Signers() ([]ssh.Signer, error) { return nil, nil }
 // session (the parent's own dial) is refused before any agent traffic,
 // and (b) a client from the broker's own session (the child's dial) is
 // accepted and proxied through a stub upstream agent.
+// startSessionBrokerChild starts a child copy of this test binary to
+// play the broker (envSessionRole=role) and releases its listener
+// handover: the child dials a fresh control listener, the accepted
+// connection gets SO_PASSCRED (accepted sockets do not inherit socket
+// options from the listener), and the child then receives the "ready"
+// byte that lets it hand the listener over — SCM_RIGHTS plus the
+// sender's SCM_CREDENTIALS, exactly as flue-broker does after the host
+// is ready: the same arrangement as the host end of the socketpair in
+// runChildWithAgent. It returns the accepted control connection (the
+// caller owns it — close it when the test is done with the handover),
+// the child process, and the path of the child's agent listener.
+func startSessionBrokerChild(t *testing.T, role string) (ctrl net.Conn, broker *exec.Cmd, brokerSock string) {
+	t.Helper()
+	tmp := t.TempDir()
+	brokerSock = filepath.Join(tmp, "broker.sock")
+
+	ctrlL, err := net.Listen("unix", filepath.Join(tmp, "ctrl"))
+	if err != nil {
+		t.Fatalf("listen ctrl: %v", err)
+	}
+	t.Cleanup(func() { ctrlL.Close() })
+
+	broker = exec.Command(os.Args[0], "-test.run="+t.Name())
+	broker.Env = append(os.Environ(),
+		envSessionRole+"="+role,
+		envSessionCtrl+"="+ctrlL.Addr().String(),
+		envSessionSock+"="+brokerSock)
+	if err := broker.Start(); err != nil {
+		t.Fatalf("start broker child: %v", err)
+	}
+	t.Cleanup(func() { _ = broker.Process.Kill() })
+
+	// The child connects to the control channel.
+	ctrlC := make(chan net.Conn, 1)
+	go func() {
+		c, err := ctrlL.Accept()
+		if err != nil {
+			return
+		}
+		ctrlC <- c
+	}()
+	select {
+	case ctrl = <-ctrlC:
+	case <-time.After(15 * time.Second):
+		_ = broker.Process.Kill()
+		t.Fatalf("broker child did not connect within 15s")
+	}
+	enablePassCred(t, ctrl)
+	if _, err := ctrl.Write([]byte{'r'}); err != nil { // "ready": go ahead and hand over
+		t.Fatalf("signal child: %v", err)
+	}
+	return ctrl, broker, brokerSock
+}
+
 func TestReceiveListenerSessionCheck(t *testing.T) {
 	if os.Getenv(envSessionRole) == "broker" {
 		runSessionBroker() // does not return
@@ -631,25 +636,9 @@ func TestReceiveListenerSessionCheck(t *testing.T) {
 		t.Skip("session ids come from /proc")
 	}
 
-	tmp := t.TempDir()
-	brokerSock := filepath.Join(tmp, "broker.sock")
-
-	// Control channel: the broker child dials this. The accepted
-	// connection gets SO_PASSCRED (accepted sockets do not inherit
-	// socket options from the listener): the kernel attaches the
-	// sender's credentials to the handover message when either end has
-	// the option, and delivers them only to a socket that has it — the
-	// same arrangement as the host end of the socketpair in
-	// runChildWithAgent.
-	ctrlL, err := net.Listen("unix", filepath.Join(tmp, "ctrl"))
-	if err != nil {
-		t.Fatalf("listen ctrl: %v", err)
-	}
-	t.Cleanup(func() { ctrlL.Close() })
-
 	// Stub upstream agent: answers the child's list request with an
 	// empty identity list.
-	agentL, err := net.Listen("unix", filepath.Join(tmp, "agent"))
+	agentL, err := net.Listen("unix", filepath.Join(t.TempDir(), "agent"))
 	if err != nil {
 		t.Fatalf("listen agent: %v", err)
 	}
@@ -667,50 +656,8 @@ func TestReceiveListenerSessionCheck(t *testing.T) {
 		}
 	}()
 
-	broker := exec.Command(os.Args[0], "-test.run="+t.Name())
-	broker.Env = append(os.Environ(),
-		envSessionRole+"=broker",
-		envSessionCtrl+"="+ctrlL.Addr().String(),
-		envSessionSock+"="+brokerSock)
-	if err := broker.Start(); err != nil {
-		t.Fatalf("start broker child: %v", err)
-	}
-	t.Cleanup(func() { _ = broker.Process.Kill() })
-
-	// The child connects to the control channel. Enable SO_PASSCRED on
-	// the accepted connection and signal the child to hand over its
-	// listener (SCM_RIGHTS + SCM_CREDENTIALS), as flue-broker does.
-	ctrlC := make(chan net.Conn, 1)
-	go func() {
-		c, err := ctrlL.Accept()
-		if err != nil {
-			return
-		}
-		ctrlC <- c
-	}()
-	var ctrl net.Conn
-	select {
-	case ctrl = <-ctrlC:
-		// The child is connected.
-	case <-time.After(15 * time.Second):
-		_ = broker.Process.Kill()
-		t.Fatalf("broker child did not connect within 15s")
-	}
+	ctrl, broker, brokerSock := startSessionBrokerChild(t, "broker")
 	defer ctrl.Close()
-	{
-		rc, err := ctrl.(*net.UnixConn).SyscallConn()
-		if err != nil {
-			t.Fatalf("syscall conn: %v", err)
-		}
-		var ctrlFD int
-		_ = rc.Control(func(fd uintptr) { ctrlFD = int(fd) })
-		if err := unix.SetsockoptInt(ctrlFD, unix.SOL_SOCKET, unix.SO_PASSCRED, 1); err != nil {
-			t.Fatalf("SO_PASSCRED: %v", err)
-		}
-	}
-	if _, err := ctrl.Write([]byte{'r'}); err != nil { // "ready": go ahead and hand over
-		t.Fatalf("signal child: %v", err)
-	}
 
 	var pol policy
 	pol.sock = agentL.Addr().String()
@@ -755,14 +702,17 @@ func TestReceiveListenerSessionCheck(t *testing.T) {
 	}
 }
 
-// runSessionBroker runs in the child copy of the test binary (the fake
-// broker). It calls setsid (the situation `podman exec -t` creates: the
-// process becomes the leader of a new session), listens on the
-// session-check socket and hands the listener over to the parent exactly
-// as flue-broker does, then dials its own socket as a client of its new
-// session and lists keys through the proxy. Exit 0 means the request was
-// accepted and proxied; any other exit code means refused or broken.
-func runSessionBroker() {
+// sessionBrokerHandover runs in the child copy that plays the broker:
+// it calls setsid (the situation `podman exec -t` creates: the process
+// becomes the leader of a new session), listens on the session-check
+// socket, dials the control channel, waits for the parent's "ready"
+// byte, and hands the listener over (SCM_RIGHTS + SCM_CREDENTIALS),
+// exactly as flue-broker does after the host is ready.
+// forkBeforeHandover, if non-nil, runs after "ready" but before the
+// handover, so the child can plant a session member (a wrapped command)
+// the host's session check will see. A child failure exits with its own
+// code, so the parent's Wait() can tell what went wrong.
+func sessionBrokerHandover(forkBeforeHandover func()) (l net.Listener, ctrl net.Conn) {
 	if _, err := unix.Setsid(); err != nil {
 		os.Exit(90)
 	}
@@ -771,7 +721,7 @@ func runSessionBroker() {
 	if err != nil {
 		os.Exit(91)
 	}
-	ctrl, err := net.Dial("unix", os.Getenv(envSessionCtrl))
+	ctrl, err = net.Dial("unix", os.Getenv(envSessionCtrl))
 	if err != nil {
 		l.Close()
 		os.Exit(92)
@@ -785,10 +735,13 @@ func runSessionBroker() {
 	// Wait for the parent to have enabled SO_PASSCRED on its end, then
 	// hand the listener over (SCM_RIGHTS + SCM_CREDENTIALS), exactly as
 	// flue-broker does after the host is ready.
-	if _, err := ctrl.Read(make([]byte, 1)); err != nil {
+	if _, err := ctrl.Read(make([]byte, 1)); err != nil { // wait for "ready"
 		l.Close()
 		ctrl.Close()
 		os.Exit(94)
+	}
+	if forkBeforeHandover != nil {
+		forkBeforeHandover()
 	}
 	oob := unix.UnixRights(int(lf.Fd()))
 	if _, _, err := ctrl.(*net.UnixConn).WriteMsgUnix([]byte{0}, oob, nil); err != nil {
@@ -797,10 +750,20 @@ func runSessionBroker() {
 		os.Exit(94)
 	}
 	lf.Close() // close only the dup; l keeps the listener
+	return l, ctrl
+}
+
+// runSessionBroker runs in the child copy of the test binary (the fake
+// broker) for TestReceiveListenerSessionCheck: after handing the
+// listener over, it dials its own socket as a client of its new session
+// and lists keys through the proxy. Exit 0 means the request was
+// accepted and proxied; any other exit code means refused or broken.
+func runSessionBroker() {
+	l, _ := sessionBrokerHandover(nil)
 
 	// The user's command, from the broker's own session: list keys
 	// through the proxy.
-	c, err := net.Dial("unix", sock)
+	c, err := net.Dial("unix", l.Addr().String())
 	if err != nil {
 		os.Exit(95)
 	}
@@ -829,53 +792,8 @@ func TestReceiveListenerRequiredModeWrappedCommand(t *testing.T) {
 		t.Skip("session ids come from /proc")
 	}
 
-	tmp := t.TempDir()
-	ctrlL, err := net.Listen("unix", filepath.Join(tmp, "ctrl"))
-	if err != nil {
-		t.Fatalf("listen ctrl: %v", err)
-	}
-	t.Cleanup(func() { ctrlL.Close() })
-
-	broker := exec.Command(os.Args[0], "-test.run="+t.Name())
-	broker.Env = append(os.Environ(),
-		envSessionRole+"=broker-wrapped",
-		envSessionCtrl+"="+ctrlL.Addr().String(),
-		envSessionSock+"="+filepath.Join(tmp, "broker.sock"))
-	if err := broker.Start(); err != nil {
-		t.Fatalf("start broker child: %v", err)
-	}
-	t.Cleanup(func() { _ = broker.Process.Kill() })
-
-	// Accept the control connection, enable SO_PASSCRED on it (accepted
-	// sockets do not inherit the option from the listener), and tell the
-	// child to hand over its listener.
-	ctrlC := make(chan net.Conn, 1)
-	go func() {
-		if c, err := ctrlL.Accept(); err == nil {
-			ctrlC <- c
-		}
-	}()
-	var ctrl net.Conn
-	select {
-	case ctrl = <-ctrlC:
-	case <-time.After(15 * time.Second):
-		t.Fatalf("broker child did not connect within 15s")
-	}
+	ctrl, _, _ := startSessionBrokerChild(t, "broker-wrapped")
 	defer ctrl.Close()
-	{
-		rc, err := ctrl.(*net.UnixConn).SyscallConn()
-		if err != nil {
-			t.Fatalf("syscall conn: %v", err)
-		}
-		var ctrlFD int
-		_ = rc.Control(func(fd uintptr) { ctrlFD = int(fd) })
-		if err := unix.SetsockoptInt(ctrlFD, unix.SOL_SOCKET, unix.SO_PASSCRED, 1); err != nil {
-			t.Fatalf("SO_PASSCRED: %v", err)
-		}
-	}
-	if _, err := ctrl.Write([]byte{'r'}); err != nil { // "ready": hand over
-		t.Fatalf("signal child: %v", err)
-	}
 
 	// Required mode: the injected-broker-with-tty case.
 	var pol policy
@@ -900,52 +818,20 @@ func TestReceiveListenerRequiredModeWrappedCommand(t *testing.T) {
 }
 
 // runSessionBrokerWrapped runs in the child copy for
-// TestReceiveListenerRequiredModeWrappedCommand. It setsid (becoming the
-// leader of a new session, as a pty exec does), then — before handing the
-// listener over — forks a wrapped command (a member of its session, the
-// situation the old privacy test misread as shared), hands the listener
-// over, and blocks until the test tears it down.
+// TestReceiveListenerRequiredModeWrappedCommand. Before handing the
+// listener over it forks a wrapped command (a member of the broker's
+// session, the situation the old privacy test misread as shared), then
+// blocks until the test tears it down.
 func runSessionBrokerWrapped() {
-	if _, err := unix.Setsid(); err != nil {
-		os.Exit(90)
-	}
-	sock := os.Getenv(envSessionSock)
-	l, err := net.Listen("unix", sock)
-	if err != nil {
-		os.Exit(91)
-	}
-	ctrl, err := net.Dial("unix", os.Getenv(envSessionCtrl))
-	if err != nil {
-		l.Close()
-		os.Exit(92)
-	}
-	lf, err := l.(*net.UnixListener).File()
-	if err != nil {
-		l.Close()
-		ctrl.Close()
-		os.Exit(93)
-	}
-	if _, err := ctrl.Read(make([]byte, 1)); err != nil { // wait for "ready"
-		l.Close()
-		ctrl.Close()
-		os.Exit(94)
-	}
-	// The wrapped command: a child of this session-leading process, so a
-	// member of the broker's session. Started before the handover so it
-	// is present when the host checks the session. `sleep 2` self-
-	// terminates, so tearing this process down afterwards orphans nothing
-	// that lingers.
-	if err := exec.Command("sleep", "2").Start(); err != nil {
-		lf.Close()
-		ctrl.Close()
-		os.Exit(97)
-	}
-	oob := unix.UnixRights(int(lf.Fd()))
-	if _, _, err := ctrl.(*net.UnixConn).WriteMsgUnix([]byte{0}, oob, nil); err != nil {
-		lf.Close()
-		ctrl.Close()
-		os.Exit(94)
-	}
-	lf.Close() // close only the dup; l keeps the listener
-	select {}  // block until the test tears us down
+	_, _ = sessionBrokerHandover(func() {
+		// The wrapped command: a child of this session-leading process,
+		// so a member of the broker's session. Started before the
+		// handover so it is present when the host checks the session.
+		// `sleep 2` self-terminates, so tearing this process down
+		// afterwards orphans nothing that lingers.
+		if err := exec.Command("sleep", "2").Start(); err != nil {
+			os.Exit(97)
+		}
+	})
+	select {} // block until the test tears us down
 }

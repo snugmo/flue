@@ -36,17 +36,13 @@ func makeControlPair(t *testing.T) (a, b net.Conn) {
 	return ca, cb
 }
 
-// TestReceiveListener verifies that receiveListener reads the single
-// listener-fd control message, starts a working accept loop, and that the
-// loop stops (acceptDone closes) when the returned listener is closed.
-// Unlike the old control-channel EOF approach, this does not depend on the
-// netpoller reporting peer closure.
-func TestReceiveListener(t *testing.T) {
-	host, broker := makeControlPair(t)
-
-	// Simulate the broker: create a real Unix listener and hand its fd to
-	// the host over the control channel (SCM_RIGHTS), exactly as flue-broker
-	// does, then close the now one-shot control channel.
+// handOverListener simulates the broker's one-shot handover: it creates
+// a real Unix listener and passes its fd to the given end of the control
+// channel via SCM_RIGHTS (closing that end), exactly as flue-broker
+// does. It returns the listener; a t.Cleanup keeps the path alive, and
+// callers that only need a successful handover can ignore it.
+func handOverListener(t *testing.T, broker net.Conn) net.Listener {
+	t.Helper()
 	l, err := net.Listen("unix", "")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -64,6 +60,37 @@ func TestReceiveListener(t *testing.T) {
 	}
 	lf.Close() // close only the dup; l keeps the path
 	broker.Close()
+	return l
+}
+
+// enablePassCred enables SO_PASSCRED on the raw fd of a Unix connection
+// (accepted sockets do not inherit the option from their listener),
+// exactly as runChildWithAgent does on the host side, so the peer's
+// SCM_CREDENTIALS are delivered with the next message.
+func enablePassCred(t *testing.T, conn net.Conn) {
+	t.Helper()
+	rc, err := conn.(*net.UnixConn).SyscallConn()
+	if err != nil {
+		t.Fatalf("syscall conn: %v", err)
+	}
+	var fd int
+	_ = rc.Control(func(rawfd uintptr) { fd = int(rawfd) })
+	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_PASSCRED, 1); err != nil {
+		t.Fatalf("setsockopt SO_PASSCRED: %v", err)
+	}
+}
+
+// TestReceiveListener verifies that receiveListener reads the single
+// listener-fd control message, starts a working accept loop, and that the
+// loop stops (acceptDone closes) when the returned listener is closed.
+// Unlike the old control-channel EOF approach, this does not depend on the
+// netpoller reporting peer closure.
+func TestReceiveListener(t *testing.T) {
+	host, broker := makeControlPair(t)
+
+	// Simulate the broker's one-shot listener handover, then let the
+	// host take it over.
+	_ = handOverListener(t, broker)
 
 	var wg clientSet
 	pol := &policy{}
